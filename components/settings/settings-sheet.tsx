@@ -40,12 +40,13 @@ export function SettingsSheet({
             <label className="mb-1 block text-sm text-slate-300">Backend host</label>
             <Input
               value={local.backendHost}
-              onChange={(event) =>
+              onChange={(event) => {
+                const { value } = event.currentTarget;
                 setLocal((previous) => ({
                   ...previous,
-                  backendHost: event.currentTarget.value,
-                }))
-              }
+                  backendHost: value,
+                }));
+              }}
               placeholder="http://localhost:11434"
             />
             <div className="mt-2 flex items-center gap-2">
@@ -68,12 +69,13 @@ export function SettingsSheet({
             <select
               value={local.theme}
               className="h-10 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              onChange={(event) =>
+              onChange={(event) => {
+                const { value } = event.currentTarget;
                 setLocal((previous) => ({
                   ...previous,
-                  theme: event.currentTarget.value as AppSettings["theme"],
-                }))
-              }
+                  theme: value as AppSettings["theme"],
+                }));
+              }}
             >
               <option value="dark">Dark</option>
               <option value="light">Light</option>
@@ -85,12 +87,13 @@ export function SettingsSheet({
             <label className="mb-1 block text-sm text-slate-300">GHchat data directory</label>
             <Input
               value={local.dataDirectory}
-              onChange={(event) =>
+              onChange={(event) => {
+                const { value } = event.currentTarget;
                 setLocal((previous) => ({
                   ...previous,
-                  dataDirectory: event.currentTarget.value,
-                }))
-              }
+                  dataDirectory: value,
+                }));
+              }}
               placeholder="/Volumes/ExternalSSD/ghchat-data"
             />
             <p className="mt-1 text-xs text-slate-500">
@@ -108,12 +111,13 @@ export function SettingsSheet({
             <input
               type="checkbox"
               checked={local.performanceMode}
-              onChange={(event) =>
+              onChange={(event) => {
+                const { checked } = event.currentTarget;
                 setLocal((previous) => ({
                   ...previous,
-                  performanceMode: event.currentTarget.checked,
-                }))
-              }
+                  performanceMode: checked,
+                }));
+              }}
               className="h-4 w-4"
             />
           </label>
