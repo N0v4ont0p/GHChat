@@ -1,352 +1,389 @@
-# GHchat
-
 <div align="center">
 
-![GHchat logo](./public/ghchat-logo.svg)
+# GHchat
 
-**Premium local-first AI chat for macOS, built for Ollama.**
+**A premium macOS desktop AI chat app powered by open-source models.**
 
-[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs)](https://nextjs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+Built with Electron, React, and the Hugging Face Inference API — fast, private, and beautiful.
+
+<br/>
+
+![macOS](https://img.shields.io/badge/macOS-13%2B-black?style=flat-square&logo=apple)
+![Electron](https://img.shields.io/badge/Electron-34-47848F?style=flat-square&logo=electron)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
 </div>
 
-GHchat is a polished local AI chat app designed for people who want a beautiful, modern chat experience on macOS without depending on cloud inference for day-to-day use.
+---
 
-> Built with Apple Silicon workflows in mind (especially M2 MacBook Air) and Ollama as the default local provider.
+## What is GHchat?
+
+GHchat is a native macOS desktop application that lets you have real conversations with powerful open-source AI models — without sending your data to a cloud service, without a monthly subscription, and without leaving the comfort of your own machine.
+
+Your conversations are stored locally in SQLite. Your API key is encrypted by the OS. Your data doesn't leave your computer except to reach Hugging Face's public Inference API.
+
+**Who it's for:**  
+Developers, researchers, and power users who want a clean, fast AI chat experience without the overhead of a browser or a web dashboard.
 
 ---
 
-## 1) Project intro
+## Features
 
-### What GHchat is
-GHchat is a local-first AI chat interface that connects to your local Ollama runtime, lets you choose installed models, streams responses smoothly, renders markdown/code beautifully, and stores history/settings in local SQLite.
-
-### Who it is for
-- macOS users who want a premium local chat UX
-- developers experimenting with local models
-- privacy-conscious users who prefer local inference where possible
-
-### Key features
-- automatic Ollama status detection + fallback host config
-- model picker + streaming responses
-- SQLite-backed local chat history
-- premium dark UI with smooth motion and tasteful depth
-- native macOS desktop packaging via Tauri (`.app` bundle target)
-- external-drive-friendly project and data directory setup
-
-### Screenshots
-> Add screenshots in `docs/screenshots/` and link them here.
-
-- `![Main chat](docs/screenshots/main-chat.png)`
-- `![Settings](docs/screenshots/settings.png)`
+| Feature | Detail |
+|---|---|
+| 🤗 Hugging Face API | Chat with Mistral, Llama 3, Qwen, Gemma, Zephyr, and more |
+| 🔒 Secure key storage | API key encrypted via `electron.safeStorage` — never plain text |
+| 💬 Persistent history | All conversations stored locally in SQLite |
+| ⚡ Streaming responses | Real-time token-by-token output with stop generation support |
+| 🔁 Regenerate replies | Re-run any assistant response with one click |
+| 🎯 Smart model picker | Curated presets with categories, descriptions, and speed ratings |
+| 📝 Markdown rendering | Full markdown with syntax-highlighted code blocks |
+| 📋 Copy code | One-click copy on every code block |
+| 🖥️ Native macOS shell | Traffic lights, vibrancy, `hiddenInset` title bar |
+| 🚀 Onboarding flow | Step-by-step first-run setup for API key and model selection |
 
 ---
 
-## 2) Features
+## Screenshots
 
-- **Local-first AI chat** with provider abstraction
-- **Ollama detection** (`online`, `not running`, `not detected`, `unreachable`)
-- **Model picker** for installed local models
-- **Streaming assistant responses**
-- **Markdown + code rendering** with syntax highlighting + copy button
-- **Local persistence** for chats/messages/settings (SQLite)
-- **Premium UI** (dark by default, restrained animation, polished composition)
-- **External-drive-ready** data directory support via `GHCHAT_DATA_DIR`
+> _Screenshots coming once the app is packaged. Run `pnpm dev` to see the live UI._
 
 ---
 
-## 3) Tech stack
+## Tech Stack
 
-- **Next.js (App Router)**
-- **React + TypeScript (strict)**
-- **Tailwind CSS**
-- **shadcn-style UI primitives**
-- **Framer Motion**
-- **Zustand**
-- **TanStack Query**
-- **react-markdown + remark-gfm + rehype-highlight**
-- **SQLite + Drizzle ORM + better-sqlite3**
-- **pnpm**
+| Layer | Technology |
+|---|---|
+| Desktop shell | [Electron](https://electronjs.org) 34 |
+| Build tooling | [electron-vite](https://electron-vite.org) + Vite |
+| Packaging | [electron-builder](https://electron.build) |
+| Frontend | [React](https://react.dev) 18 + [TypeScript](https://typescriptlang.org) 5 |
+| Styling | [Tailwind CSS](https://tailwindcss.com) v3 |
+| Components | [shadcn/ui](https://ui.shadcn.com) (Radix UI + CVA) |
+| Animation | [Framer Motion](https://framer.motion.com) |
+| State | [Zustand](https://zustand-demo.pmnd.rs) |
+| Server state | [TanStack Query](https://tanstack.com/query) v5 |
+| Database | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) + [Drizzle ORM](https://orm.drizzle.team) |
+| AI provider | [Hugging Face Inference](https://huggingface.co/docs/api-inference) |
+| Syntax highlighting | [highlight.js](https://highlightjs.org) via rehype |
 
 ---
 
-## 4) Quick start
+## Quick Start
 
 ```bash
-# 1) Clone
+# Clone the repo
 git clone https://github.com/N0v4ont0p/GHChat.git
 cd GHChat
 
-# 2) Install
-corepack enable
-pnpm install
+# Install dependencies
+pnpm install --ignore-scripts   # skips native rebuild in CI
 
-# 3) Run Ollama separately
-ollama serve
+# (Optional) Rebuild better-sqlite3 for your Electron version
+pnpm run rebuild:native
 
-# 4) Pull at least one model
-ollama pull gemma3:4b
-
-# 5) Start GHchat
+# Start in development mode
 pnpm dev
 ```
 
-Open: `http://localhost:3000`
+Then open Settings, paste your Hugging Face API key, pick a model, and start chatting.
 
 ---
 
-## 5) Full installation guide for macOS
+## Full Setup Guide
 
-1. Install Homebrew if needed:
-   ```bash
-   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   ```
-2. Install Node.js 20+ (example):
-   ```bash
-   brew install node
-   ```
-3. Enable pnpm via Corepack:
-   ```bash
-   corepack enable
-   corepack prepare pnpm@latest --activate
-   ```
-4. Clone and install:
-   ```bash
-   git clone https://github.com/N0v4ont0p/GHChat.git
-   cd GHChat
-   pnpm install
-   ```
-5. Start GHchat:
-    ```bash
-    pnpm dev
-    ```
+### Prerequisites
 
----
+- **Node.js** 20 or later
+- **pnpm** 9 or later (`npm install -g pnpm` or use corepack)
+- **macOS** 13 Ventura or later (for vibrancy and `electron.safeStorage`)
+- **Xcode Command Line Tools** (for building native modules)
+  ```bash
+  xcode-select --install
+  ```
 
-## 6) Desktop app packaging (Tauri, macOS)
-
-GHchat includes a first-class desktop target under `src-tauri/` so you can build and ship a native macOS `.app` while keeping the React/Next.js UI.
-
-### Desktop development
-Run the web UI in dev mode inside a native Tauri window:
+### Install
 
 ```bash
-pnpm desktop:dev
+pnpm install --ignore-scripts
+pnpm run rebuild:native          # builds better-sqlite3 for Electron
 ```
 
-### Build a macOS `.app` bundle
-
-**No Apple account or Apple Developer subscription required.**
-
-GHchat uses ad-hoc code signing (`-`), which lets you build and run a personal `.app` without registering with Apple. The build commands bake in the right signing environment automatically:
+### Develop
 
 ```bash
-pnpm desktop:build
-```
-
-For Apple Silicon-specific output (M1/M2/M3):
-
-```bash
-pnpm desktop:build:apple-silicon
-```
-
-Generated app bundle path:
-
-```text
-src-tauri/target/release/bundle/macos/GHchat.app
-```
-
-### First launch: clearing the Gatekeeper quarantine
-
-macOS quarantines apps that were not downloaded from the App Store or signed by a registered Apple Developer. On the first launch you may see a dialog saying the app "cannot be opened because the developer cannot be verified."
-
-To clear it, run once after building (or after copying the `.app` from another location):
-
-```bash
-xattr -rd com.apple.quarantine src-tauri/target/release/bundle/macos/GHchat.app
-```
-
-Alternatively: right-click `GHchat.app` in Finder → **Open** → click **Open** in the confirmation dialog.
-
-After either step the app will open normally on every subsequent launch.
-
-> **Note:** If you want to distribute GHchat to other users without the quarantine warning, you would need a paid Apple Developer account to notarize the app. That is only relevant for public distribution — for personal use, the ad-hoc build above works fine.
-
----
-
-## 7) Ollama setup instructions
-
-### Install Ollama on macOS
-- Download from: https://ollama.com/download
-- Or follow official install docs.
-
-### Verify installation
-```bash
-ollama --version
-```
-
-### Start Ollama
-```bash
-ollama serve
-```
-
-### Check models
-```bash
-ollama list
-```
-
-### Pull a model (example)
-```bash
-ollama pull gemma3:4b
-```
-
-### Choose model in GHchat
-- Open GHchat
-- Use the top-bar model selector
-- Start chatting
-
----
-
-## 8) External drive setup guide
-
-You can run GHchat from an external SSD and also store GHchat data there.
-
-### A) Keep the project on an external SSD
-```bash
-cd /Volumes/YourExternalSSD
-git clone https://github.com/N0v4ont0p/GHChat.git
-cd GHChat
-pnpm install
 pnpm dev
+# Electron opens automatically with Vite HMR
 ```
 
-### B) Store GHchat local data on external SSD
-Set `GHCHAT_DATA_DIR` before running:
+### Build
 
 ```bash
-export GHCHAT_DATA_DIR="/Volumes/YourExternalSSD/ghchat-data"
-pnpm dev
-```
-
-GHchat stores SQLite and app data under that directory.
-
-### C) Ollama model storage and disk usage
-Local models can consume substantial disk space. Depending on your Ollama setup, model storage may be configured separately from GHchat.
-
-Practical approach:
-- Keep GHchat code + data on external SSD
-- Keep Ollama running locally and point GHchat to its host (default `http://localhost:11434`)
-- If you relocate Ollama/model storage, follow Ollama’s official storage/config guidance
-
-### D) Realistic portability notes
-- GHchat project and GHchat data can live externally
-- The built `GHchat.app` can be copied and run from an external SSD
-- Some macOS-managed support files can still be created internally (for example in `~/Library/Application Support`, `~/Library/Caches`, or system-managed WebKit/state locations)
-- Full system-level portability is not always possible for every dependency/toolchain
-
----
-
-## 9) Model recommendations for M2 MacBook Air
-
-These are practical starting points (not benchmark claims):
-
-| Scenario | Recommendation | Why |
-|---|---|---|
-| Lower memory setup | Gemma-family small variant (e.g. ~2B class where available) | Faster and lighter under memory pressure |
-| Balanced setup | Smaller “edge” style variant (e.g. Gemma 4 / Gemma 3 around 4B) | Good quality-speed balance for daily chat |
-| Heavier / experimental | Larger variants (7B+) | Better quality potential, but slower and more thermal/memory heavy on Air |
-
-Guidance:
-- Start small, confirm smooth UX, then scale up.
-- Larger models may reduce responsiveness and increase thermals on fanless laptops.
-
----
-
-## 10) Troubleshooting
-
-### Ollama not found
-- Install Ollama first
-- Verify with `ollama --version`
-
-### Ollama installed but not running
-- Run `ollama serve`
-- Refresh GHchat status
-
-### No models listed
-- Pull a model: `ollama pull gemma3:4b`
-- Check `ollama list`
-
-### Port issues
-- Ensure host/port in Settings matches Ollama (`http://localhost:11434` by default)
-
-### App launches but chat fails
-- Verify selected model exists
-- Verify Ollama status is `online`
-- Check terminal for API errors
-
-### External drive path issues
-- Confirm drive is mounted
-- Verify `GHCHAT_DATA_DIR` points to a writable path
-
-### Permissions issues
-- Ensure terminal/app has file access permissions to external volume
-
----
-
-## 11) Development
-
-```bash
-pnpm install
-pnpm dev
-pnpm desktop:dev
-pnpm desktop:web:prepare
-pnpm desktop:build
-pnpm lint
 pnpm build
-pnpm format
+# Outputs to out/ (main, preload, renderer)
 ```
 
-### Important folders
-- `app/` – Next.js routes + API
-- `components/` – layout/chat/settings/ui
-- `lib/providers/` – provider abstraction + Ollama provider
-- `lib/db/` – SQLite + Drizzle schema/repository
-- `stores/` – Zustand state
-- `src-tauri/` – native desktop shell + macOS bundle config
-- `scripts/prepare-desktop-web.mjs` – prepares bundled Next standalone output for desktop packaging
-- `types/` – shared types
+### Package for macOS
+
+```bash
+# Universal (both arm64 and x64 in one run)
+pnpm run package:mac
+
+# Apple Silicon only
+pnpm run package:mac:arm64
+
+# Intel only
+pnpm run package:mac:x64
+```
+
+The packaged `.dmg` and `.zip` output goes to the `dist/` directory.
+
+> **Note:** Code signing is not configured for distribution. For personal use, open System Preferences → Security & Privacy and allow the app after first launch.
 
 ---
 
-## 12) Architecture overview
+## Hugging Face API Key Setup
 
-- **App shell:** sidebar + topbar + chat + composer
-- **Provider abstraction:** `LLMProvider` interface with Ollama implementation
-- **Persistence layer:** SQLite with Drizzle schema and repository access
-- **UI/state layers:** React UI, Zustand for local UI state, TanStack Query for server state
-- **Desktop shell:** Tauri runtime launches the packaged standalone Next server and wraps it as a native macOS app
+### Getting your key
+
+1. Go to [huggingface.co](https://huggingface.co) and create a free account
+2. Navigate to **Settings → Access Tokens**
+3. Click **New token**, set a name, and choose **Read** permissions
+4. Copy the token — it starts with `hf_`
+
+### Adding it to GHchat
+
+- On first launch, the onboarding flow will walk you through entering and verifying your key
+- You can update it any time from **Settings → API Key**
+- Click **Verify** to confirm the key is valid before saving
+
+### How GHchat stores your key
+
+GHchat uses **`electron.safeStorage`**, Electron's built-in OS-level secret storage:
+
+- On **macOS**, secrets are encrypted using the system Keychain
+- The encrypted blob is written to a file in your app data directory (e.g. `~/Library/Application Support/ghchat/.hf-key`)
+- The key is **never stored in plain text**, never written to localStorage, and never logged
+- Removing the app's data directory clears the key
+
+### Changing or removing your key
+
+- Open **Settings → API Key** and paste a new key, then click **Save**
+- To remove the key entirely, click **Clear stored key** in the settings panel
+- After clearing, GHchat will restart the onboarding flow on next launch
 
 ---
 
-## 13) Future roadmap
+## Model Recommendation Guide
 
-- pluggable providers beyond Ollama
-- richer keyboard navigation + prompt tools
-- optional import/export for conversation archives
+GHchat curates a list of models that work reliably with the Hugging Face Inference API, organized into four categories. You don't need to know model internals to make a good choice.
+
+### 💬 General Chat — Best for most people
+
+| Model | Why choose it |
+|---|---|
+| **Mistral 7B Instruct** *(default)* | Fast, balanced, works great for everyday questions and long conversations |
+| **Zephyr 7B** | Excellent at following instructions with a natural, helpful tone |
+| **Gemma 2 9B** | More thoughtful responses with Google's safety tuning |
+
+### 🧑‍💻 Coding — For programming tasks
+
+| Model | Why choose it |
+|---|---|
+| **Qwen 2.5 Coder 7B** | Purpose-built for code — strong at Python, TypeScript, Rust, Go, and debugging |
+| **Phi 3.5 Mini** | Compact but surprisingly capable for code tasks and long contexts |
+
+### ⚡ Fast — For quick answers
+
+| Model | Why choose it |
+|---|---|
+| **Phi 3 Mini** | Ultra-fast, low latency, great for simple Q&A and summaries |
+| **Qwen 2.5 1.5B** | Smallest available, instant responses for lightweight tasks |
+
+### �� Reasoning — For complex problems
+
+| Model | Why choose it |
+|---|---|
+| **Llama 3 8B Instruct** | Meta's flagship open model — excellent at analysis and multi-step reasoning |
+| **Qwen 2.5 7B** | Strong structured reasoning, especially good for non-English languages |
+
+**Recommendation for new users:** Start with **Mistral 7B Instruct**. It's the best all-rounder and responds quickly. Switch to a specialized model once you know what you need.
 
 ---
 
-## 14) License
+## External Drive Guide
 
-Released under the [MIT License](./LICENSE).
+GHchat's repository and packaged app can live on an external SSD. Here's what you need to know.
+
+### Running from an external drive
+
+You can clone the repo and run `pnpm dev` from any path — the app doesn't have to live on your internal disk.
+
+```bash
+# On an external drive mounted at /Volumes/MySSD
+cd /Volumes/MySSD/GHChat
+pnpm install --ignore-scripts
+pnpm run rebuild:native   # important — native modules must be rebuilt for your Electron
+pnpm dev
+```
+
+### Where data lives at runtime
+
+Even if GHchat's source code is on an external drive, macOS stores **runtime data on your internal disk**:
+
+| Data | Location |
+|---|---|
+| SQLite database | `~/Library/Application Support/ghchat/ghchat.db` |
+| Encrypted API key | `~/Library/Application Support/ghchat/.hf-key` |
+| Electron logs | `~/Library/Logs/ghchat/` |
+
+This is intentional: macOS apps write to `app.getPath('userData')` which always resolves to the internal Library. This ensures:
+- Data persists even when the drive is unplugged
+- The OS can encrypt and secure the API key
+- No risk of data loss on drive ejection
+
+### Caveats for external drives
+
+| Scenario | What happens |
+|---|---|
+| Drive ejected while app runs | App keeps running; your data is safe on the internal disk |
+| Reinstall on a different machine | You need to re-enter your API key; conversations stay on the original machine |
+| Moving the packaged `.app` | Drag the app from `dist/mac-arm64/GHchat.app` to `/Applications` — data path is unchanged |
+| Native module mismatch | If you move `node_modules` between machines, run `pnpm run rebuild:native` |
 
 ---
 
-## Environment variables
+## Architecture Overview
 
-See `.env.example`.
+```
+GHchat
+├── Electron Main Process
+│   ├── Window management (hiddenInset titleBar, vibrancy)
+│   ├── IPC handlers (conversations, messages, settings, HF streaming)
+│   ├── SQLite + Drizzle ORM (better-sqlite3)
+│   ├── electron.safeStorage (API key encryption)
+│   └── Provider system
+│       └── HuggingFaceProvider
+│           ├── healthCheck()
+│           ├── validateApiKey()
+│           ├── listModels() / getRecommendedModels()
+│           └── streamChat() + AbortController for stop
+│
+├── Electron Preload
+│   └── contextBridge → window.ghchat.{invoke, send, on}
+│
+└── React Renderer
+    ├── Onboarding flow (first-run)
+    ├── App shell (Sidebar + ChatWindow)
+    ├── Zustand (UI state: streaming, draft, selected conversation)
+    ├── TanStack Query (conversations, messages, settings)
+    ├── Settings modal (API key + category model picker)
+    └── Chat UI (MessageBubble + markdown + syntax highlighting)
+```
 
-- `GHCHAT_BACKEND_HOST` – default Ollama host in settings
-- `GHCHAT_DATA_DIR` – custom GHchat data directory (great for external SSD workflows)
+### Provider interface
+
+The `LLMProvider` interface makes it straightforward to add future providers:
+
+```typescript
+interface LLMProvider {
+  id: string;
+  name: string;
+  requiresApiKey: boolean;
+
+  healthCheck(): Promise<ProviderHealthResult>;
+  validateApiKey(key: string): Promise<KeyValidationResult>;
+  listModels(apiKey?: string): Promise<ModelInfo[]>;
+  getRecommendedModels(): ModelPreset[];
+  streamChat(options: StreamChatOptions): Promise<void>;
+}
+```
+
+Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implementing this interface and registering the provider in `electron/main/providers/index.ts`.
+
+---
+
+## Troubleshooting
+
+### Invalid API key
+
+- Make sure the key starts with `hf_` and was copied in full
+- Use the **Verify** button in Settings before saving
+- Keys need at least **Read** permissions — write-only tokens won't work
+- If you recently created the token, wait 30 seconds and try again
+
+### No response / streaming stops
+
+- Check your internet connection
+- The model may be loading on Hugging Face — wait 20–30 seconds and retry
+- Some models require a Pro subscription; try a different model
+- Click **Regenerate** to retry the last response without retyping
+
+### Model errors
+
+- `503 loading`: The model is cold-starting on HF infrastructure. Try again in ~30 seconds
+- `403 Forbidden`: Your account may not have access to gated models (e.g. Llama requires accepting terms on HF)
+- `404 Not Found`: The model ID may have changed — check the model page on huggingface.co
+- `429 Rate limit`: You've hit the free tier limit. Wait a few minutes or upgrade to HF Pro
+
+### Database / path issues
+
+- DB path: `~/Library/Application Support/ghchat/ghchat.db`
+- If the app fails to open, delete the DB file and restart (you'll lose conversation history)
+- WAL mode is enabled by default for performance and concurrent access safety
+
+### External drive issues
+
+- If the app crashes on launch after moving between machines: run `pnpm run rebuild:native`
+- The app's SQLite data is always on the internal disk — the external drive only holds source code
+
+### macOS app launch / security
+
+- On first launch of a packaged `.app`: right-click → Open, then click "Open" in the dialog
+- Or go to System Settings → Privacy & Security → click "Open Anyway" next to GHchat
+- This is required for unsigned apps — expected behavior on macOS
+
+---
+
+## Development Commands
+
+```bash
+pnpm dev                    # Start Electron + Vite HMR
+pnpm build                  # Build main, preload, and renderer
+pnpm preview                # Preview the built renderer
+pnpm lint                   # Run ESLint
+pnpm format                 # Format with Prettier
+pnpm format:check           # Check formatting without writing
+pnpm run rebuild:native     # Rebuild better-sqlite3 for Electron
+pnpm run package:mac        # Build + package macOS .dmg (arm64 + x64)
+pnpm run package:mac:arm64  # Build + package macOS .dmg (Apple Silicon)
+pnpm run package:mac:x64    # Build + package macOS .dmg (Intel)
+```
+
+---
+
+## Roadmap
+
+- [ ] Ollama provider (local models, no API key needed)
+- [ ] LM Studio provider (OpenAI-compatible local API)
+- [ ] Conversation search
+- [ ] Export conversations as Markdown / JSON
+- [ ] System prompt customization
+- [ ] Light mode
+- [ ] Keyboard shortcuts panel
+- [ ] Token usage display
+- [ ] Multiple provider support in a single session
+
+---
+
+## License
+
+[MIT](LICENSE) — do whatever you want with this code.
+
+---
+
+<div align="center">
+<sub>Built with ☕ and open-source models · No cloud lock-in · No tracking · Just chat</sub>
+</div>
