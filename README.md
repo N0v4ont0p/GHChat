@@ -123,11 +123,28 @@ Open: `http://localhost:3000`
     pnpm dev
     ```
 
+> **Desktop development only:** If you plan to use `pnpm desktop:dev` or build the native `.app`, you also need Rust installed (see section 6 below).
+
 ---
 
 ## 6) Desktop app packaging (Tauri, macOS)
 
 GHchat includes a first-class desktop target under `src-tauri/` so you can build and ship a native macOS `.app` while keeping the React/Next.js UI.
+
+### Prerequisites for desktop development
+
+Tauri requires the **Rust toolchain**. If you see an error like `failed to run 'cargo metadata'`, Rust is not installed. Install it with:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Restart your terminal (or run `source ~/.cargo/env`) after installation. Verify with:
+
+```bash
+rustc --version
+cargo --version
+```
 
 ### Desktop development
 Run the web UI in dev mode inside a native Tauri window:
@@ -265,6 +282,11 @@ Guidance:
 ---
 
 ## 10) Troubleshooting
+
+### `cargo metadata` not found / Rust not installed
+- This error appears when running `pnpm desktop:dev` or `pnpm desktop:build` without Rust installed.
+- Install Rust via `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` and restart your terminal.
+- Verify with `cargo --version`, then retry the desktop command.
 
 ### Ollama not found
 - Install Ollama first
