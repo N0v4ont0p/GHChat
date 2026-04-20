@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { DEFAULT_MODEL } from "@/lib/models";
 
 interface SettingsState {
   selectedModel: string;
@@ -8,7 +9,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  selectedModel: "mistralai/Mistral-7B-Instruct-v0.3",
+  selectedModel: DEFAULT_MODEL,
   settingsOpen: false,
   setSelectedModel: (selectedModel) => set({ selectedModel }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),

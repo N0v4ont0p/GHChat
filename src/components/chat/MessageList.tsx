@@ -7,9 +7,10 @@ import type { Message } from "@/types";
 
 interface Props {
   messages: Message[];
+  onRegenerate: () => void;
 }
 
-export function MessageList({ messages }: Props) {
+export function MessageList({ messages, onRegenerate }: Props) {
   const { isStreaming, streamingText } = useChatStore();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -17,11 +18,21 @@ export function MessageList({ messages }: Props) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, streamingText]);
 
+  const lastAssistantIndex = messages.reduce(
+    (acc, m, i) => (m.role === "assistant" ? i : acc),
+    -1,
+  );
+
   return (
     <ScrollArea className="flex-1">
-      <div className="flex flex-col pb-4 pt-2">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+      <div className="flex flex-col px-2 pb-6 pt-4">
+        {messages.map((msg, idx) => (
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            isLastAssistant={!isStreaming && idx === lastAssistantIndex}
+            onRegenerate={onRegenerate}
+          />
         ))}
 
         {isStreaming && streamingText && (
@@ -33,6 +44,7 @@ export function MessageList({ messages }: Props) {
               content: streamingText,
               createdAt: Date.now(),
             }}
+            isStreaming
           />
         )}
 

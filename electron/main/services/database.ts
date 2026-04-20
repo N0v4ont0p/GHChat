@@ -149,6 +149,10 @@ export function appendMessage({
   return { id, conversationId, role: role as Message["role"], content, createdAt };
 }
 
+export function deleteMessage(id: string): void {
+  getDb().delete(messagesTable).where(eq(messagesTable.id, id)).run();
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 export function getSettings(): AppSettings {

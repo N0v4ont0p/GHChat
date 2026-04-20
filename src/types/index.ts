@@ -1,5 +1,9 @@
 export type MessageRole = "user" | "assistant" | "system";
 
+export type ModelCategory = "general" | "coding" | "fast" | "reasoning";
+
+export type ModelSpeed = "fast" | "medium" | "slow";
+
 export interface AppSettings {
   defaultModel: string;
   theme: "dark" | "light" | "system";
@@ -9,6 +13,28 @@ export interface ModelInfo {
   id: string;
   name: string;
   description?: string;
+}
+
+export interface ModelPreset {
+  id: string;
+  name: string;
+  category: ModelCategory;
+  description: string;
+  whyChoose: string;
+  isDefault?: boolean;
+  isPopular?: boolean;
+  speed?: ModelSpeed;
+  contextWindow?: string;
+}
+
+export interface ProviderHealthResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface KeyValidationResult {
+  valid: boolean;
+  message: string;
 }
 
 export interface Conversation {
@@ -33,12 +59,15 @@ export const IPC = {
   CONVERSATIONS_DELETE: "conversations:delete",
   MESSAGES_LIST: "messages:list",
   MESSAGES_APPEND: "messages:append",
+  MESSAGES_DELETE: "messages:delete",
   SETTINGS_GET: "settings:get",
   SETTINGS_UPDATE: "settings:update",
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
   HF_MODELS_LIST: "hf:models:list",
+  HF_KEY_VALIDATE: "hf:key:validate",
   HF_CHAT_STREAM: "hf:chat:stream",
+  HF_CHAT_STOP: "hf:chat:stop",
   HF_CHAT_TOKEN: "hf:chat:token",
   HF_CHAT_END: "hf:chat:end",
   HF_CHAT_ERROR: "hf:chat:error",

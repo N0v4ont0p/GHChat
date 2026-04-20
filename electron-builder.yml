@@ -5,14 +5,25 @@ directories:
   buildResources: resources
 files:
   - out/**/*
-  - resources/**/*
   - package.json
+  - "!node_modules/**"
 mac:
   category: public.app-category.productivity
   target:
     - target: dmg
       arch: [arm64, x64]
-  signingIdentity: "-"
+    - target: zip
+      arch: [arm64, x64]
+  minimumSystemVersion: "13.0"
+  darkModeSupport: true
 dmg:
-  title: GHchat
+  title: GHchat ${version}
+  background: null
+  window:
+    width: 600
+    height: 400
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
 afterSign: false
+asar: true

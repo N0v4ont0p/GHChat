@@ -1,7 +1,7 @@
 {
   "name": "ghchat",
   "version": "0.2.0",
-  "description": "Premium macOS desktop AI chat app",
+  "description": "Premium macOS desktop AI chat app powered by Hugging Face",
   "main": "out/main/index.js",
   "private": true,
   "scripts": {
@@ -10,11 +10,11 @@
     "preview": "electron-vite preview",
     "package:mac": "electron-vite build && electron-builder --mac",
     "package:mac:arm64": "electron-vite build && electron-builder --mac --arm64",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "lint": "eslint src electron --ext .ts,.tsx",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "db:generate": "drizzle-kit generate"
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+    "package:mac:x64": "electron-vite build && electron-builder --mac --x64"
   },
   "dependencies": {
     "@huggingface/inference": "^2.8.1",
@@ -31,6 +31,7 @@
     "drizzle-orm": "^0.30.10",
     "electron": "^34.0.0",
     "framer-motion": "^11.18.2",
+    "highlight.js": "^11.11.1",
     "lucide-react": "^0.344.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -44,10 +45,12 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@typescript-eslint/parser": "^8.58.2",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "drizzle-kit": "^0.20.14",

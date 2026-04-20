@@ -1,5 +1,5 @@
 import type { IpcMain } from "electron";
-import { listMessages, appendMessage } from "../services/database";
+import { listMessages, appendMessage, deleteMessage } from "../services/database";
 import { IPC } from "./channels";
 
 export function registerMessageHandlers(ipcMain: IpcMain): void {
@@ -14,4 +14,6 @@ export function registerMessageHandlers(ipcMain: IpcMain): void {
       payload: { conversationId: string; role: string; content: string },
     ) => appendMessage(payload),
   );
+
+  ipcMain.handle(IPC.MESSAGES_DELETE, (_e, id: string) => deleteMessage(id));
 }

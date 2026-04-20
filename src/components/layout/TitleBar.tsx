@@ -1,10 +1,13 @@
 export function TitleBar() {
   return (
     <div
-      className="flex h-11 w-full items-center justify-center bg-transparent"
+      className="relative flex h-11 w-full shrink-0 items-center justify-center bg-transparent"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
-      <span className="text-xs font-medium text-muted-foreground select-none">GHchat</span>
+      {/* App name — center-aligned, traffic lights sit left */}
+      <span className="select-none text-xs font-medium text-muted-foreground/60 tracking-wide">
+        GHchat
+      </span>
     </div>
   );
 }

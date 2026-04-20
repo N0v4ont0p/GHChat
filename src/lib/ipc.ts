@@ -1,5 +1,11 @@
 import { IPC } from "@/types";
-import type { Conversation, Message, AppSettings, ModelInfo } from "@/types";
+import type {
+  Conversation,
+  Message,
+  AppSettings,
+  ModelPreset,
+  KeyValidationResult,
+} from "@/types";
 
 const api = () => window.ghchat;
 
@@ -18,6 +24,7 @@ export const ipc = {
     api().invoke<Message[]>(IPC.MESSAGES_LIST, conversationId),
   appendMessage: (payload: { conversationId: string; role: string; content: string }) =>
     api().invoke<Message>(IPC.MESSAGES_APPEND, payload),
+  deleteMessage: (id: string) => api().invoke<void>(IPC.MESSAGES_DELETE, id),
 
   // Settings
   getSettings: () => api().invoke<AppSettings>(IPC.SETTINGS_GET),
@@ -29,5 +36,10 @@ export const ipc = {
   setApiKey: (key: string) => api().invoke<void>(IPC.KEYCHAIN_SET, key),
 
   // HF
-  listModels: () => api().invoke<ModelInfo[]>(IPC.HF_MODELS_LIST),
+  listModels: () => api().invoke<ModelPreset[]>(IPC.HF_MODELS_LIST),
+  validateApiKey: (key: string) => api().invoke<KeyValidationResult>(IPC.HF_KEY_VALIDATE, key),
+
+  // Streaming
+  stopStream: (requestId: string) =>
+    api().send(IPC.HF_CHAT_STOP, { requestId }),
 };

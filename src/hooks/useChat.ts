@@ -28,9 +28,11 @@ export function useChat(conversationId: string | null) {
   const { selectedModel } = useSettingsStore();
 
   const activeRequestId = useRef<string | null>(null);
+  // Mirror of streamingText in a ref so event callbacks see the latest value
   const streamingTextRef = useRef(streamingText);
   streamingTextRef.current = streamingText;
 
+  // ── IPC listeners ──────────────────────────────────────────────────────────
   useEffect(() => {
     const offToken = window.ghchat.on(
       IPC.HF_CHAT_TOKEN,
@@ -51,19 +53,18 @@ export function useChat(conversationId: string | null) {
         const fullText = streamingTextRef.current;
         activeRequestId.current = null;
 
+        if (!fullText.trim()) {
+          resetStreaming();
+          return;
+        }
+
         ipc
-          .appendMessage({
-            conversationId,
-            role: "assistant",
-            content: fullText,
-          })
+          .appendMessage({ conversationId, role: "assistant", content: fullText })
           .then(() => {
             qc.invalidateQueries({ queryKey: ["messages", conversationId] });
             resetStreaming();
           })
-          .catch(() => {
-            resetStreaming();
-          });
+          .catch(() => resetStreaming());
       },
     );
 
@@ -74,7 +75,7 @@ export function useChat(conversationId: string | null) {
         if (requestId !== activeRequestId.current) return;
         activeRequestId.current = null;
         resetStreaming();
-        toast.error(`AI error: ${error}`);
+        toast.error(error, { duration: 6000 });
       },
     );
 
@@ -85,24 +86,25 @@ export function useChat(conversationId: string | null) {
     };
   }, [conversationId, appendStreamingToken, resetStreaming, qc]);
 
+  // ── Send a new message ─────────────────────────────────────────────────────
   const sendMessage = useCallback(
     async (content: string) => {
       if (!conversationId || isStreaming || !content.trim()) return;
 
-      // Save user message
-      await ipc.appendMessage({ conversationId, role: "user", content });
-      qc.invalidateQueries({ queryKey: ["messages", conversationId] });
-
-      // Get all messages for context
-      const messages = await ipc.listMessages(conversationId);
       const apiKey = await ipc.getApiKey();
-
       if (!apiKey) {
-        toast.error("No API key set. Open Settings to add your Hugging Face API key.");
+        toast.error("No API key set. Open Settings to add your Hugging Face API key.", {
+          duration: 5000,
+          action: { label: "Open Settings", onClick: () => {} },
+        });
         return;
       }
 
-      const requestId = `req-${Date.now()}`;
+      await ipc.appendMessage({ conversationId, role: "user", content });
+      qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+      const messages = await ipc.listMessages(conversationId);
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       activeRequestId.current = requestId;
       setStreaming(true);
 
@@ -116,5 +118,46 @@ export function useChat(conversationId: string | null) {
     [conversationId, isStreaming, selectedModel, setStreaming, qc],
   );
 
-  return { sendMessage, isStreaming, streamingText };
+  // ── Stop the active stream ─────────────────────────────────────────────────
+  const stopStream = useCallback(() => {
+    const id = activeRequestId.current;
+    if (!id) return;
+    ipc.stopStream(id);
+    // The main process sends HF_CHAT_END after aborting, which cleans up state
+  }, []);
+
+  // ── Regenerate the last assistant reply ────────────────────────────────────
+  const regenerate = useCallback(async () => {
+    if (!conversationId || isStreaming) return;
+
+    const messages = await ipc.listMessages(conversationId);
+    if (messages.length === 0) return;
+
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role !== "assistant") return;
+
+    // Remove the stale assistant message
+    await ipc.deleteMessage(lastMsg.id);
+    qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+    const apiKey = await ipc.getApiKey();
+    if (!apiKey) {
+      toast.error("No API key set. Open Settings to add your Hugging Face API key.");
+      return;
+    }
+
+    const remaining = messages.slice(0, -1);
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    activeRequestId.current = requestId;
+    setStreaming(true);
+
+    window.ghchat.send(IPC.HF_CHAT_STREAM, {
+      requestId,
+      model: selectedModel,
+      messages: remaining.map((m) => ({ role: m.role, content: m.content })),
+      apiKey,
+    });
+  }, [conversationId, isStreaming, selectedModel, setStreaming, qc]);
+
+  return { sendMessage, stopStream, regenerate, isStreaming, streamingText };
 }
