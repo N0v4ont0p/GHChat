@@ -25,6 +25,9 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
-    "resources": ["resources/web"]
+    "resources": ["resources/web"],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

@@ -137,7 +137,10 @@ pnpm desktop:dev
 ```
 
 ### Build a macOS `.app` bundle
-This builds Next.js in standalone mode, prepares bundled web resources, and then creates the macOS app bundle:
+
+**No Apple account or Apple Developer subscription required.**
+
+GHchat uses ad-hoc code signing (`-`), which lets you build and run a personal `.app` without registering with Apple. The build commands bake in the right signing environment automatically:
 
 ```bash
 pnpm desktop:build
@@ -154,6 +157,22 @@ Generated app bundle path:
 ```text
 src-tauri/target/release/bundle/macos/GHchat.app
 ```
+
+### First launch: clearing the Gatekeeper quarantine
+
+macOS quarantines apps that were not downloaded from the App Store or signed by a registered Apple Developer. On the first launch you may see a dialog saying the app "cannot be opened because the developer cannot be verified."
+
+To clear it, run once after building (or after copying the `.app` from another location):
+
+```bash
+xattr -rd com.apple.quarantine src-tauri/target/release/bundle/macos/GHchat.app
+```
+
+Alternatively: right-click `GHchat.app` in Finder → **Open** → click **Open** in the confirmation dialog.
+
+After either step the app will open normally on every subsequent launch.
+
+> **Note:** If you want to distribute GHchat to other users without the quarantine warning, you would need a paid Apple Developer account to notarize the app. That is only relevant for public distribution — for personal use, the ad-hoc build above works fine.
 
 ---
 
