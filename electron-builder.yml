@@ -1,0 +1,18 @@
+appId: com.n0v4ont0p.ghchat
+productName: GHchat
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  signingIdentity: "-"
+dmg:
+  title: GHchat
+afterSign: false

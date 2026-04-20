@@ -1,0 +1,17 @@
+export const IPC = {
+  CONVERSATIONS_LIST: "conversations:list",
+  CONVERSATIONS_CREATE: "conversations:create",
+  CONVERSATIONS_RENAME: "conversations:rename",
+  CONVERSATIONS_DELETE: "conversations:delete",
+  MESSAGES_LIST: "messages:list",
+  MESSAGES_APPEND: "messages:append",
+  SETTINGS_GET: "settings:get",
+  SETTINGS_UPDATE: "settings:update",
+  KEYCHAIN_GET: "keychain:get",
+  KEYCHAIN_SET: "keychain:set",
+  HF_MODELS_LIST: "hf:models:list",
+  HF_CHAT_STREAM: "hf:chat:stream",
+  HF_CHAT_TOKEN: "hf:chat:token",
+  HF_CHAT_END: "hf:chat:end",
+  HF_CHAT_ERROR: "hf:chat:error",
+} as const;
