@@ -47,8 +47,13 @@ fn stop_next_server(app: &AppHandle) {
 
   if let Ok(mut guard) = state.0.lock() {
     if let Some(mut child) = guard.take() {
-      let _ = child.kill();
-      let _ = child.wait();
+      if let Err(err) = child.kill() {
+        eprintln!("failed to stop packaged Next.js server: {err}");
+      }
+
+      if let Err(err) = child.wait() {
+        eprintln!("failed waiting for packaged Next.js server shutdown: {err}");
+      }
     }
   }
 }

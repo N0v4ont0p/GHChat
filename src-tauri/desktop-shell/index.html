@@ -34,16 +34,25 @@
         color: #cbd5e1;
         font-size: 0.95rem;
       }
+      .hint {
+        margin-top: 10px;
+        color: #94a3b8;
+        font-size: 0.85rem;
+      }
     </style>
   </head>
   <body>
     <div class="card">
       <h1>Starting GHchat…</h1>
       <p>Booting the bundled Next.js runtime.</p>
+      <p class="hint" id="status"></p>
     </div>
 
     <script>
       const target = 'http://127.0.0.1:3210';
+      const statusNode = document.getElementById('status');
+      const startedAt = Date.now();
+      const maxWaitMs = 20000;
 
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,6 +63,10 @@
             window.location.replace(target);
             return;
           } catch {
+            if (Date.now() - startedAt > maxWaitMs && statusNode) {
+              statusNode.textContent =
+                'Still waiting for the local server. Ensure Node.js is installed and restart GHchat.';
+            }
             await sleep(400);
           }
         }
