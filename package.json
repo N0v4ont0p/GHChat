@@ -8,13 +8,13 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package:mac": "electron-vite build && electron-builder --mac",
-    "package:mac:arm64": "electron-vite build && electron-builder --mac --arm64",
+    "package:mac": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac",
+    "package:mac:arm64": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --arm64",
     "lint": "eslint src electron --ext .ts,.tsx",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
-    "package:mac:x64": "electron-vite build && electron-builder --mac --x64"
+    "rebuild:native": "CXXFLAGS='-std=gnu++20' electron-rebuild -f -w better-sqlite3",
+    "package:mac:x64": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --x64"
   },
   "dependencies": {
     "@huggingface/inference": "^2.8.1",
