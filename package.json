@@ -6,6 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "desktop:dev": "tauri dev",
+    "desktop:web:build": "next build",
+    "desktop:web:prepare": "pnpm desktop:web:build && node ./scripts/prepare-desktop-web.mjs",
+    "desktop:build": "APPLE_SIGNING_IDENTITY=- tauri build --bundles app",
+    "desktop:build:apple-silicon": "APPLE_SIGNING_IDENTITY=- tauri build --target aarch64-apple-darwin --bundles app",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -31,6 +36,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",

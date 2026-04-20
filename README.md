@@ -33,6 +33,7 @@ GHchat is a local-first AI chat interface that connects to your local Ollama run
 - model picker + streaming responses
 - SQLite-backed local chat history
 - premium dark UI with smooth motion and tasteful depth
+- native macOS desktop packaging via Tauri (`.app` bundle target)
 - external-drive-friendly project and data directory setup
 
 ### Screenshots
@@ -118,13 +119,64 @@ Open: `http://localhost:3000`
    pnpm install
    ```
 5. Start GHchat:
-   ```bash
-   pnpm dev
-   ```
+    ```bash
+    pnpm dev
+    ```
 
 ---
 
-## 6) Ollama setup instructions
+## 6) Desktop app packaging (Tauri, macOS)
+
+GHchat includes a first-class desktop target under `src-tauri/` so you can build and ship a native macOS `.app` while keeping the React/Next.js UI.
+
+### Desktop development
+Run the web UI in dev mode inside a native Tauri window:
+
+```bash
+pnpm desktop:dev
+```
+
+### Build a macOS `.app` bundle
+
+**No Apple account or Apple Developer subscription required.**
+
+GHchat uses ad-hoc code signing (`-`), which lets you build and run a personal `.app` without registering with Apple. The build commands bake in the right signing environment automatically:
+
+```bash
+pnpm desktop:build
+```
+
+For Apple Silicon-specific output (M1/M2/M3):
+
+```bash
+pnpm desktop:build:apple-silicon
+```
+
+Generated app bundle path:
+
+```text
+src-tauri/target/release/bundle/macos/GHchat.app
+```
+
+### First launch: clearing the Gatekeeper quarantine
+
+macOS quarantines apps that were not downloaded from the App Store or signed by a registered Apple Developer. On the first launch you may see a dialog saying the app "cannot be opened because the developer cannot be verified."
+
+To clear it, run once after building (or after copying the `.app` from another location):
+
+```bash
+xattr -rd com.apple.quarantine src-tauri/target/release/bundle/macos/GHchat.app
+```
+
+Alternatively: right-click `GHchat.app` in Finder → **Open** → click **Open** in the confirmation dialog.
+
+After either step the app will open normally on every subsequent launch.
+
+> **Note:** If you want to distribute GHchat to other users without the quarantine warning, you would need a paid Apple Developer account to notarize the app. That is only relevant for public distribution — for personal use, the ad-hoc build above works fine.
+
+---
+
+## 7) Ollama setup instructions
 
 ### Install Ollama on macOS
 - Download from: https://ollama.com/download
@@ -157,7 +209,7 @@ ollama pull gemma3:4b
 
 ---
 
-## 7) External drive setup guide
+## 8) External drive setup guide
 
 You can run GHchat from an external SSD and also store GHchat data there.
 
@@ -190,12 +242,13 @@ Practical approach:
 
 ### D) Realistic portability notes
 - GHchat project and GHchat data can live externally
-- Some macOS/tooling support files may still exist internally
+- The built `GHchat.app` can be copied and run from an external SSD
+- Some macOS-managed support files can still be created internally (for example in `~/Library/Application Support`, `~/Library/Caches`, or system-managed WebKit/state locations)
 - Full system-level portability is not always possible for every dependency/toolchain
 
 ---
 
-## 8) Model recommendations for M2 MacBook Air
+## 9) Model recommendations for M2 MacBook Air
 
 These are practical starting points (not benchmark claims):
 
@@ -211,7 +264,7 @@ Guidance:
 
 ---
 
-## 9) Troubleshooting
+## 10) Troubleshooting
 
 ### Ollama not found
 - Install Ollama first
@@ -242,11 +295,14 @@ Guidance:
 
 ---
 
-## 10) Development
+## 11) Development
 
 ```bash
 pnpm install
 pnpm dev
+pnpm desktop:dev
+pnpm desktop:web:prepare
+pnpm desktop:build
 pnpm lint
 pnpm build
 pnpm format
@@ -258,29 +314,31 @@ pnpm format
 - `lib/providers/` – provider abstraction + Ollama provider
 - `lib/db/` – SQLite + Drizzle schema/repository
 - `stores/` – Zustand state
+- `src-tauri/` – native desktop shell + macOS bundle config
+- `scripts/prepare-desktop-web.mjs` – prepares bundled Next standalone output for desktop packaging
 - `types/` – shared types
 
 ---
 
-## 11) Architecture overview
+## 12) Architecture overview
 
 - **App shell:** sidebar + topbar + chat + composer
 - **Provider abstraction:** `LLMProvider` interface with Ollama implementation
 - **Persistence layer:** SQLite with Drizzle schema and repository access
 - **UI/state layers:** React UI, Zustand for local UI state, TanStack Query for server state
+- **Desktop shell:** Tauri runtime launches the packaged standalone Next server and wraps it as a native macOS app
 
 ---
 
-## 12) Future roadmap
+## 13) Future roadmap
 
-- optional desktop packaging (Tauri-ready structure)
 - pluggable providers beyond Ollama
 - richer keyboard navigation + prompt tools
 - optional import/export for conversation archives
 
 ---
 
-## 13) License
+## 14) License
 
 Released under the [MIT License](./LICENSE).
 

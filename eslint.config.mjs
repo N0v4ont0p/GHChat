@@ -11,6 +11,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "src-tauri/resources/web/**",
     "next-env.d.ts",
   ]),
 ]);
