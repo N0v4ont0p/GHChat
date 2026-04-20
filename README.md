@@ -157,7 +157,7 @@ ollama pull gemma3:4b
 
 ---
 
-## 7) External drive setup guide (mandatory)
+## 7) External drive setup guide
 
 You can run GHchat from an external SSD and also store GHchat data there.
 
