@@ -21,6 +21,15 @@ interface ErrorPayload {
   error: string;
 }
 
+/** Derive a short conversation title from the first user message */
+function deriveTitleFromMessage(content: string): string {
+  const trimmed = content.trim().replace(/\s+/g, " ");
+  // Take first sentence or first 50 chars, whichever is shorter
+  const sentence = trimmed.split(/[.!?\n]/)[0].trim();
+  const candidate = sentence.length > 4 ? sentence : trimmed;
+  return candidate.length > 52 ? candidate.slice(0, 50).trimEnd() + "…" : candidate;
+}
+
 export function useChat(conversationId: string | null) {
   const qc = useQueryClient();
   const { isStreaming, streamingText, setStreaming, appendStreamingToken, resetStreaming } =
@@ -102,6 +111,19 @@ export function useChat(conversationId: string | null) {
 
       await ipc.appendMessage({ conversationId, role: "user", content });
       qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+      // Auto-name the conversation from the first user message
+      const existingMessages = await ipc.listMessages(conversationId);
+      const userMessages = existingMessages.filter((m) => m.role === "user");
+      if (userMessages.length === 1) {
+        // This is the first user message — derive a title
+        const newTitle = deriveTitleFromMessage(content);
+        if (newTitle) {
+          ipc.renameConversation(conversationId, newTitle).then(() => {
+            qc.invalidateQueries({ queryKey: ["conversations"] });
+          }).catch(() => {});
+        }
+      }
 
       const messages = await ipc.listMessages(conversationId);
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;

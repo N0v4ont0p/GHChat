@@ -13,7 +13,9 @@ interface Props {
   isStreaming: boolean;
 }
 
-const MAX_HEIGHT = 160; // ~6 lines
+const MAX_HEIGHT = 180; // ~7 lines
+const CHAR_WARN_THRESHOLD = 1800;
+const CHAR_MAX = 4000;
 
 export function Composer({ onSend, onStop, isStreaming }: Props) {
   const { draft, setDraft } = useChatStore();
@@ -57,12 +59,19 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
     [handleSend],
   );
 
+  const charCount = draft.length;
+  const overWarn = charCount >= CHAR_WARN_THRESHOLD;
+  const overMax = charCount >= CHAR_MAX;
+  const canSend = draft.trim().length > 0 && !isStreaming && !overMax;
+
   return (
-    <div className="shrink-0 border-t border-border/50 bg-card/20 px-4 py-3">
+    <div className="shrink-0 border-t border-border/30 bg-card/10 px-4 py-3">
       <div
         className={cn(
-          "flex items-end gap-2 rounded-xl border bg-secondary/60 px-3 py-2 transition-colors",
-          isStreaming ? "border-primary/20" : "border-border hover:border-border/80",
+          "focus-glow flex items-end gap-2 rounded-xl border bg-secondary/50 px-3 py-2.5 transition-all duration-200",
+          isStreaming
+            ? "border-primary/25 bg-secondary/40"
+            : "border-border/60 hover:border-border/90",
         )}
       >
         <Textarea
@@ -71,7 +80,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={isStreaming ? "Generating…" : "Message GHchat…"}
-          className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/50"
+          className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40"
           disabled={isStreaming}
           rows={1}
           style={{ maxHeight: MAX_HEIGHT }}
@@ -81,7 +90,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
           <Button
             size="icon"
             variant="ghost"
-            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground hover:bg-red-500/10"
+            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95"
             onClick={onStop}
             title="Stop generating"
           >
@@ -90,9 +99,12 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
         ) : (
           <Button
             size="icon"
-            className="h-8 w-8 shrink-0"
+            className={cn(
+              "h-8 w-8 shrink-0 transition-all active:scale-95",
+              canSend ? "shadow-sm shadow-primary/20" : "opacity-40",
+            )}
             onClick={handleSend}
-            disabled={!draft.trim()}
+            disabled={!canSend}
             title="Send (Enter)"
           >
             <Send className="h-3.5 w-3.5" />
@@ -100,12 +112,29 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
         )}
       </div>
 
-      <p className="mt-1.5 text-center text-[10px] text-muted-foreground/50">
-        {modelName}
-        {!isStreaming && (
-          <span className="ml-2 opacity-60">↵ send · ⇧↵ newline</span>
+      <div className="mt-1.5 flex items-center justify-between px-1">
+        <p className="text-[10px] text-muted-foreground/50">
+          {modelName}
+          {!isStreaming && (
+            <span className="ml-2 opacity-60">↵ send · ⇧↵ newline</span>
+          )}
+        </p>
+
+        {charCount > 0 && (
+          <span
+            className={cn(
+              "text-[10px] tabular-nums transition-colors",
+              overMax
+                ? "text-red-400"
+                : overWarn
+                  ? "text-amber-400/80"
+                  : "text-muted-foreground/40",
+            )}
+          >
+            {charCount.toLocaleString()}{overMax ? ` / ${CHAR_MAX.toLocaleString()} max` : ""}
+          </span>
         )}
-      </p>
+      </div>
     </div>
   );
 }

@@ -14,6 +14,30 @@ interface Props {
 
 const SCROLL_BOTTOM_THRESHOLD = 32;
 
+/** Format a timestamp into a human-readable date label */
+function formatDateLabel(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+
+function DateDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      <div className="flex-1 h-px bg-border/30" />
+      <span className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-wider">
+        {label}
+      </span>
+      <div className="flex-1 h-px bg-border/30" />
+    </div>
+  );
+}
+
 export function MessageList({ messages, onRegenerate }: Props) {
   const { isStreaming, streamingText } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -86,18 +110,35 @@ export function MessageList({ messages, onRegenerate }: Props) {
     -1,
   );
 
+  // Build list with date dividers
+  const items: Array<{ type: "divider"; label: string } | { type: "message"; msg: Message; idx: number }> = [];
+  let lastLabel = "";
+  messages.forEach((msg, idx) => {
+    const label = formatDateLabel(msg.createdAt);
+    if (label !== lastLabel) {
+      items.push({ type: "divider", label });
+      lastLabel = label;
+    }
+    items.push({ type: "message", msg, idx });
+  });
+
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1 overflow-hidden">
       <ScrollArea ref={scrollAreaRef} className="h-full">
-        <div className="flex flex-col px-2 pb-6 pt-4">
-          {messages.map((msg, idx) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              isLastAssistant={!isStreaming && idx === lastAssistantIndex}
-              onRegenerate={onRegenerate}
-            />
-          ))}
+        <div className="flex flex-col pb-6 pt-2">
+          {items.map((item) =>
+            item.type === "divider" ? (
+              <DateDivider key={`divider-${item.label}`} label={item.label} />
+            ) : (
+              <MessageBubble
+                key={item.msg.id}
+                message={item.msg}
+                index={item.idx}
+                isLastAssistant={!isStreaming && item.idx === lastAssistantIndex}
+                onRegenerate={onRegenerate}
+              />
+            ),
+          )}
 
           {isStreaming && streamingText && (
             <MessageBubble
@@ -108,6 +149,7 @@ export function MessageList({ messages, onRegenerate }: Props) {
                 content: streamingText,
                 createdAt: Date.now(),
               }}
+              index={messages.length}
               isStreaming
             />
           )}
@@ -122,14 +164,14 @@ export function MessageList({ messages, onRegenerate }: Props) {
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
           <Button
             size="sm"
-            className="pointer-events-auto h-8 rounded-full bg-card/95 shadow-md backdrop-blur-sm"
+            className="pointer-events-auto h-8 gap-1.5 rounded-full bg-card/95 shadow-lg backdrop-blur-sm ring-1 ring-border/50 text-xs"
             variant="outline"
             onClick={() => {
               bottomRef.current?.scrollIntoView({ behavior: "smooth" });
               setShowJumpToLatest(false);
             }}
           >
-            <ArrowDown className="mr-1 h-3.5 w-3.5" />
+            <ArrowDown className="h-3.5 w-3.5" />
             Jump to latest
           </Button>
         </div>
@@ -137,3 +179,4 @@ export function MessageList({ messages, onRegenerate }: Props) {
     </div>
   );
 }
+

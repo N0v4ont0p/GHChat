@@ -5,6 +5,7 @@ interface ChatState {
   draft: string;
   isStreaming: boolean;
   streamingText: string;
+  streamingTokenCount: number;
   setSelectedConversationId: (id: string | null) => void;
   setDraft: (v: string) => void;
   setStreaming: (v: boolean) => void;
@@ -17,11 +18,16 @@ export const useChatStore = create<ChatState>((set) => ({
   draft: "",
   isStreaming: false,
   streamingText: "",
+  streamingTokenCount: 0,
   setSelectedConversationId: (selectedConversationId) =>
     set({ selectedConversationId }),
   setDraft: (draft) => set({ draft }),
   setStreaming: (isStreaming) => set({ isStreaming }),
   appendStreamingToken: (token) =>
-    set((s) => ({ streamingText: s.streamingText + token })),
-  resetStreaming: () => set({ isStreaming: false, streamingText: "" }),
+    set((s) => ({
+      streamingText: s.streamingText + token,
+      streamingTokenCount: s.streamingTokenCount + 1,
+    })),
+  resetStreaming: () =>
+    set({ isStreaming: false, streamingText: "", streamingTokenCount: 0 }),
 }));
