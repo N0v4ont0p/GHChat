@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 192" fill="none">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="280" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7BBBFF"/>
+      <stop offset="100%" stop-color="#7040F0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Left outer C-bracket (forms the G) -->
+  <polyline
+    points="112,34 90,11 32,11 10,34 10,158 32,181 90,181 112,158"
+    stroke="url(#g)" stroke-width="11" stroke-linejoin="miter" stroke-linecap="butt" fill="none"/>
+
+  <!-- Right outer D-bracket (forms the H) -->
+  <polyline
+    points="168,34 190,11 248,11 270,34 270,158 248,181 190,181 168,158"
+    stroke="url(#g)" stroke-width="11" stroke-linejoin="miter" stroke-linecap="butt" fill="none"/>
+
+  <!-- Upper horizontal circuit trace connecting both brackets -->
+  <line x1="112" y1="80" x2="168" y2="80" stroke="url(#g)" stroke-width="11" stroke-linecap="butt"/>
+
+  <!-- PCB via nodes on the upper trace -->
+  <circle cx="131" cy="80" r="8.5" fill="url(#g)"/>
+  <circle cx="149" cy="80" r="8.5" fill="url(#g)"/>
+
+  <!-- Vertical trace down from left node (G inner stem / H left stem) -->
+  <line x1="131" y1="80" x2="131" y2="116" stroke="url(#g)" stroke-width="11" stroke-linecap="butt"/>
+
+  <!-- G-shelf: short horizontal trace going right from bottom of vertical -->
+  <line x1="131" y1="116" x2="163" y2="116" stroke="url(#g)" stroke-width="11" stroke-linecap="square"/>
+
+  <!-- H top arm: angled stub at upper gap of right bracket (going up-left, like top of H peeking through) -->
+  <line x1="168" y1="42" x2="152" y2="26" stroke="url(#g)" stroke-width="11" stroke-linecap="square"/>
+
+  <!-- H bottom arm: angled stub at lower gap of right bracket (going down-left, like bottom of H) -->
+  <line x1="168" y1="150" x2="150" y2="170" stroke="url(#g)" stroke-width="11" stroke-linecap="square"/>
+</svg>

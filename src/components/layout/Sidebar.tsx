@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Settings, Trash2, Pencil, MessageSquare } from "lucide-react";
+import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -44,9 +45,12 @@ export function Sidebar() {
       <aside className="flex h-full w-[240px] shrink-0 flex-col border-r border-border/50 bg-card/20">
         {/* Header */}
         <div className="flex items-center justify-between px-3 pt-3 pb-2">
-          <span className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider pl-1">
-            Chats
-          </span>
+          <div className="flex items-center gap-1.5 pl-1">
+            <img src={logoUrl} alt="GHchat" className="h-5 w-5 object-contain" />
+            <span className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-wider">
+              Chats
+            </span>
+          </div>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
