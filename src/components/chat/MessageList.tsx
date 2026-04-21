@@ -18,6 +18,7 @@ export function MessageList({ messages, onRegenerate }: Props) {
   const { isStreaming, streamingText } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRafRef = useRef<number | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
@@ -47,13 +48,34 @@ export function MessageList({ messages, onRegenerate }: Props) {
   }, [getViewport, updateBottomState]);
 
   useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAtBottom) {
+      if (messages.length > 0) setShowJumpToLatest(true);
+      return;
+    }
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, isAtBottom]);
+
+  useEffect(() => {
+    if (!isStreaming) return;
     if (isAtBottom) {
       // Streaming emits tokens at high frequency; "auto" avoids repeated smooth-scroll animations.
-      bottomRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
-    } else if (messages.length > 0 || streamingText) {
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "auto" });
+        scrollRafRef.current = null;
+      });
+    } else if (streamingText) {
       setShowJumpToLatest(true);
     }
-  }, [messages.length, streamingText, isStreaming, isAtBottom]);
+  }, [streamingText, isStreaming, isAtBottom]);
 
   const lastAssistantIndex = messages.reduce(
     (acc, m, i) => (m.role === "assistant" ? i : acc),

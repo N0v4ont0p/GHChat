@@ -69,7 +69,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   };
 
   return (
-    <div className="relative flex h-full w-full items-center justify-center bg-background">
+    <div className="relative flex h-screen w-full items-center justify-center bg-background">
       <div
         className="absolute inset-x-0 top-0 z-20 flex h-11 items-center justify-center"
         style={{ WebkitAppRegion: "drag" } as { WebkitAppRegion: "drag" }}
