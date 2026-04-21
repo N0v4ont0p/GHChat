@@ -206,7 +206,9 @@ export class HuggingFaceProvider implements LLMProvider {
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!shouldFallbackToTextGeneration(message)) throw err;
+      if (!shouldFallbackToTextGeneration(message)) {
+        throw new Error(`Chat request failed and fallback was not applicable: ${message}`);
+      }
     }
 
     const prompt = buildPromptFromMessages(messages);

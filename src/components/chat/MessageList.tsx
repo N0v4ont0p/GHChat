@@ -17,16 +17,13 @@ const SCROLL_BOTTOM_THRESHOLD = 32;
 export function MessageList({ messages, onRegenerate }: Props) {
   const { isStreaming, streamingText } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
-  const getViewport = useCallback(() => {
-    return scrollAreaRef.current?.querySelector(
-      "[data-radix-scroll-area-viewport]",
-    ) as HTMLDivElement | null;
-  }, []);
+  const getViewport = useCallback(() => viewportRef.current, []);
 
   const updateBottomState = useCallback(() => {
     const viewport = getViewport();
@@ -39,12 +36,19 @@ export function MessageList({ messages, onRegenerate }: Props) {
   }, [getViewport]);
 
   useEffect(() => {
-    const viewport = getViewport();
+    const viewport =
+      (scrollAreaRef.current?.querySelector(
+        "[data-radix-scroll-area-viewport]",
+      ) as HTMLDivElement | null) ?? null;
     if (!viewport) return;
+    viewportRef.current = viewport;
     updateBottomState();
     const onScroll = () => updateBottomState();
     viewport.addEventListener("scroll", onScroll);
-    return () => viewport.removeEventListener("scroll", onScroll);
+    return () => {
+      viewport.removeEventListener("scroll", onScroll);
+      viewportRef.current = null;
+    };
   }, [getViewport, updateBottomState]);
 
   useEffect(() => {
