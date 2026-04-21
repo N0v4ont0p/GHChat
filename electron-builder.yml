@@ -8,6 +8,7 @@ files:
   - package.json
   - "!node_modules/**"
 mac:
+  identity: null
   category: public.app-category.productivity
   target:
     - target: dmg
