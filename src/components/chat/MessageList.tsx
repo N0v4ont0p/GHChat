@@ -12,6 +12,8 @@ interface Props {
   onRegenerate: () => void;
 }
 
+const SCROLL_BOTTOM_THRESHOLD = 32;
+
 export function MessageList({ messages, onRegenerate }: Props) {
   const { isStreaming, streamingText } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -30,7 +32,7 @@ export function MessageList({ messages, onRegenerate }: Props) {
     if (!viewport) return;
     const distanceToBottom =
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    const nearBottom = distanceToBottom < 32;
+    const nearBottom = distanceToBottom < SCROLL_BOTTOM_THRESHOLD;
     setIsAtBottom(nearBottom);
     if (nearBottom) setShowJumpToLatest(false);
   }, [getViewport]);

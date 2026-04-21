@@ -239,7 +239,8 @@ function shouldFallbackToTextGeneration(rawError: string): boolean {
     normalized.includes("cannot find route") ||
     normalized.includes("route not found") ||
     normalized.includes("does not support chat") ||
-    normalized.includes("unsupported")
+    normalized.includes("unsupported task") ||
+    normalized.includes("unsupported model")
   );
 }
 
