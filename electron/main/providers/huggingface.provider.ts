@@ -231,17 +231,17 @@ export class HuggingFaceProvider implements LLMProvider {
 }
 
 function shouldFallbackToTextGeneration(rawError: string): boolean {
-  const normalized = rawError.toLowerCase();
-  return (
-    normalized.includes("/v1/chat/completions") ||
-    normalized.includes("chat completion") ||
-    normalized.includes("task not found") ||
-    normalized.includes("cannot find route") ||
-    normalized.includes("route not found") ||
-    normalized.includes("does not support chat") ||
-    normalized.includes("unsupported task") ||
-    normalized.includes("unsupported model")
-  );
+  const chatRoutePatterns = [
+    /\/v1\/chat\/completions/i,
+    /chat completion/i,
+    /task not found/i,
+    /cannot find route/i,
+    /route not found/i,
+    /does not support chat/i,
+    /chat.+not supported/i,
+    /unsupported (task|model).+chat/i,
+  ];
+  return chatRoutePatterns.some((pattern) => pattern.test(rawError));
 }
 
 function buildPromptFromMessages(

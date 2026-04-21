@@ -48,6 +48,7 @@ export function MessageList({ messages, onRegenerate }: Props) {
 
   useEffect(() => {
     if (isAtBottom) {
+      // Streaming emits tokens at high frequency; "auto" avoids repeated smooth-scroll animations.
       bottomRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
     } else if (messages.length > 0 || streamingText) {
       setShowJumpToLatest(true);
