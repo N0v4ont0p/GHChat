@@ -54,7 +54,6 @@ function ConversationItem({
   conv: Conversation;
   isSelected: boolean;
   onSelect: () => void;
-  onRename: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -70,7 +69,6 @@ function ConversationItem({
     e.stopPropagation();
     setValue(conv.title);
     setRenaming(true);
-    onRename(e);
   };
 
   return (
@@ -239,7 +237,6 @@ export function Sidebar() {
                       conv={conv}
                       isSelected={selectedConversationId === conv.id}
                       onSelect={() => setSelectedConversationId(conv.id)}
-                      onRename={() => {}}
                       onDelete={(e) => { e.stopPropagation(); deleteConversation.mutate(conv.id); }}
                     />
                   ))}

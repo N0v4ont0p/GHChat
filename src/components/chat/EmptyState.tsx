@@ -47,10 +47,9 @@ export function EmptyState() {
   const category = preset?.category ?? "general";
 
   const handlePromptClick = async (prompt: string) => {
-    const conv = await createConversation.mutateAsync();
+    await createConversation.mutateAsync();
     // A tiny delay lets the conversation selection settle before we inject the draft
     setTimeout(() => {
-      void conv;
       setDraft(prompt);
     }, 80);
   };

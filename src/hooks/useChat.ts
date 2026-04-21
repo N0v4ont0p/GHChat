@@ -27,7 +27,7 @@ function deriveTitleFromMessage(content: string): string {
   // Take first sentence or first 50 chars, whichever is shorter
   const sentence = trimmed.split(/[.!?\n]/)[0].trim();
   const candidate = sentence.length > 4 ? sentence : trimmed;
-  return candidate.length > 52 ? candidate.slice(0, 50).trimEnd() + "…" : candidate;
+  return candidate.length > 50 ? candidate.slice(0, 50).trimEnd() + "…" : candidate;
 }
 
 export function useChat(conversationId: string | null) {

@@ -206,7 +206,7 @@ export function MessageBubble({ message, isLastAssistant, isStreaming, onRegener
                 }}
               >
                 {/* Blinking cursor appended during streaming */}
-                {isStreaming ? message.content : message.content}
+                {message.content}
               </ReactMarkdown>
             )}
             {/* Streaming cursor */}
@@ -244,7 +244,7 @@ export function MessageBubble({ message, isLastAssistant, isStreaming, onRegener
                       className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground opacity-60 transition-all hover:opacity-100 hover:text-foreground hover:bg-white/5 active:scale-95"
                     >
                       <RefreshCw className="h-3 w-3" />
-                      Retry
+                      Regenerate
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Regenerate response</TooltipContent>
