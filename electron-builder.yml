@@ -26,5 +26,4 @@ dmg:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
-afterSign: false
 asar: true
