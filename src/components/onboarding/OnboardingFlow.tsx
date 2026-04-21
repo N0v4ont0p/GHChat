@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ExternalLink, ArrowRight, CheckCircle2, Loader2, Sparkles } from "lucide-react";
+import { ExternalLink, ArrowRight, CheckCircle2, Loader2 } from "lucide-react";
+import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -93,8 +94,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         <AnimatePresence mode="wait">
           {step === "welcome" && (
             <motion.div key="welcome" {...SLIDE} className="space-y-8 text-center">
-              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-primary/10 ring-1 ring-primary/20">
-                <Sparkles className="h-10 w-10 text-primary" />
+              <div className="mx-auto flex h-24 w-24 items-center justify-center">
+                <img src={logoUrl} alt="GHchat logo" className="h-24 w-24 object-contain" />
               </div>
               <div className="space-y-3">
                 <h1 className="text-3xl font-bold tracking-tight">Welcome to GHchat</h1>
