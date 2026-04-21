@@ -98,7 +98,6 @@ export function MessageList({ messages, onRegenerate }: Props) {
             onClick={() => {
               bottomRef.current?.scrollIntoView({ behavior: "smooth" });
               setShowJumpToLatest(false);
-              setIsAtBottom(true);
             }}
           >
             <ArrowDown className="mr-1 h-3.5 w-3.5" />
