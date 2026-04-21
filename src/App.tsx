@@ -32,7 +32,15 @@ export default function App() {
 
   if (appState === "loading") {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="relative flex h-full items-center justify-center bg-background">
+        <div
+          className="absolute inset-x-0 top-0 z-20 flex h-11 items-center justify-center"
+          style={{ WebkitAppRegion: "drag" } as { WebkitAppRegion: "drag" }}
+        >
+          <span className="select-none text-xs font-medium tracking-wide text-muted-foreground/60">
+            GHchat
+          </span>
+        </div>
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
@@ -44,4 +52,3 @@ export default function App() {
 
   return <AppShell />;
 }
-

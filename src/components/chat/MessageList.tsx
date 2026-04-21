@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowDown } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
 import { MessageBubble } from "./MessageBubble";
 import { StreamingIndicator } from "./StreamingIndicator";
 import { useChatStore } from "@/stores/chat-store";
@@ -12,11 +14,43 @@ interface Props {
 
 export function MessageList({ messages, onRegenerate }: Props) {
   const { isStreaming, streamingText } = useChatStore();
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+
+  const getViewport = useCallback(() => {
+    return scrollAreaRef.current?.querySelector(
+      "[data-radix-scroll-area-viewport]",
+    ) as HTMLDivElement | null;
+  }, []);
+
+  const updateBottomState = useCallback(() => {
+    const viewport = getViewport();
+    if (!viewport) return;
+    const distanceToBottom =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    const nearBottom = distanceToBottom < 32;
+    setIsAtBottom(nearBottom);
+    if (nearBottom) setShowJumpToLatest(false);
+  }, [getViewport]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, streamingText]);
+    const viewport = getViewport();
+    if (!viewport) return;
+    updateBottomState();
+    const onScroll = () => updateBottomState();
+    viewport.addEventListener("scroll", onScroll);
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [getViewport, updateBottomState]);
+
+  useEffect(() => {
+    if (isAtBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
+    } else if (messages.length > 0 || streamingText) {
+      setShowJumpToLatest(true);
+    }
+  }, [messages.length, streamingText, isStreaming, isAtBottom]);
 
   const lastAssistantIndex = messages.reduce(
     (acc, m, i) => (m.role === "assistant" ? i : acc),
@@ -24,34 +58,54 @@ export function MessageList({ messages, onRegenerate }: Props) {
   );
 
   return (
-    <ScrollArea className="flex-1">
-      <div className="flex flex-col px-2 pb-6 pt-4">
-        {messages.map((msg, idx) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            isLastAssistant={!isStreaming && idx === lastAssistantIndex}
-            onRegenerate={onRegenerate}
-          />
-        ))}
+    <div className="relative flex-1">
+      <ScrollArea ref={scrollAreaRef} className="h-full">
+        <div className="flex flex-col px-2 pb-6 pt-4">
+          {messages.map((msg, idx) => (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              isLastAssistant={!isStreaming && idx === lastAssistantIndex}
+              onRegenerate={onRegenerate}
+            />
+          ))}
 
-        {isStreaming && streamingText && (
-          <MessageBubble
-            message={{
-              id: "__streaming__",
-              conversationId: "",
-              role: "assistant",
-              content: streamingText,
-              createdAt: Date.now(),
+          {isStreaming && streamingText && (
+            <MessageBubble
+              message={{
+                id: "__streaming__",
+                conversationId: "",
+                role: "assistant",
+                content: streamingText,
+                createdAt: Date.now(),
+              }}
+              isStreaming
+            />
+          )}
+
+          {isStreaming && !streamingText && <StreamingIndicator />}
+
+          <div ref={bottomRef} />
+        </div>
+      </ScrollArea>
+
+      {showJumpToLatest && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
+          <Button
+            size="sm"
+            className="pointer-events-auto h-8 rounded-full bg-card/95 shadow-md backdrop-blur-sm"
+            variant="outline"
+            onClick={() => {
+              bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+              setShowJumpToLatest(false);
+              setIsAtBottom(true);
             }}
-            isStreaming
-          />
-        )}
-
-        {isStreaming && !streamingText && <StreamingIndicator />}
-
-        <div ref={bottomRef} />
-      </div>
-    </ScrollArea>
+          >
+            <ArrowDown className="mr-1 h-3.5 w-3.5" />
+            Jump to latest
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }

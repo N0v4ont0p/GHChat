@@ -185,21 +185,74 @@ export class HuggingFaceProvider implements LLMProvider {
 
     const hf = new HfInference(apiKey);
 
-    const stream = hf.chatCompletionStream({
-      model,
-      messages: messages.map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
-      })),
-      max_tokens: 2048,
-    });
+    try {
+      const stream = hf.chatCompletionStream(
+        {
+          model,
+          messages: messages.map((m) => ({
+            role: m.role as "user" | "assistant" | "system",
+            content: m.content,
+          })),
+          max_tokens: 2048,
+        },
+        { signal },
+      );
 
-    for await (const chunk of stream) {
+      for await (const chunk of stream) {
+        if (signal?.aborted) break;
+        const token = chunk.choices[0]?.delta?.content;
+        if (token) onToken(token);
+      }
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!shouldFallbackToTextGeneration(message)) throw err;
+    }
+
+    const prompt = buildPromptFromMessages(messages);
+    const fallbackStream = hf.textGenerationStream(
+      {
+        model,
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 2048,
+          return_full_text: false,
+        },
+      },
+      { signal },
+    );
+
+    for await (const chunk of fallbackStream) {
       if (signal?.aborted) break;
-      const token = chunk.choices[0]?.delta?.content;
-      if (token) onToken(token);
+      const token = chunk.token?.text;
+      if (token && !chunk.token.special) onToken(token);
     }
   }
+}
+
+function shouldFallbackToTextGeneration(rawError: string): boolean {
+  const normalized = rawError.toLowerCase();
+  return (
+    normalized.includes("/v1/chat/completions") ||
+    normalized.includes("chat completion") ||
+    normalized.includes("task not found") ||
+    normalized.includes("cannot find route") ||
+    normalized.includes("route not found") ||
+    normalized.includes("unsupported") ||
+    normalized.includes("text-generation")
+  );
+}
+
+function buildPromptFromMessages(
+  messages: Array<{ role: "user" | "assistant" | "system"; content: string }>,
+): string {
+  const lines = messages.map((m) => {
+    if (m.role === "system") return `System: ${m.content}`;
+    if (m.role === "assistant") return `Assistant: ${m.content}`;
+    return `User: ${m.content}`;
+  });
+  lines.push("Assistant:");
+  return lines.join("\n\n");
 }
 
 export const huggingFaceProvider = new HuggingFaceProvider();
