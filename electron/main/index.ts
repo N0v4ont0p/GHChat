@@ -2,10 +2,13 @@ import { app, BrowserWindow } from "electron";
 import { initDatabase } from "./services/database";
 import { registerAllIpcHandlers } from "./ipc";
 import { createMainWindow } from "./window";
+import { getApiKey } from "./services/keychain";
+import { huggingFaceProvider } from "./providers";
 
 app.whenReady().then(() => {
   initDatabase();
   registerAllIpcHandlers();
+  void huggingFaceProvider.warmupForToken(getApiKey());
   createMainWindow();
 
   app.on("activate", () => {

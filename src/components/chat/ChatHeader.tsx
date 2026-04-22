@@ -5,19 +5,23 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { getPreset, CATEGORY_META } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
+import { useModels } from "@/hooks/useModels";
 
 const CATEGORY_COLORS: Record<string, string> = {
+  auto: "bg-cyan-500/15 text-cyan-400",
   general: "bg-blue-500/15 text-blue-400",
   coding: "bg-emerald-500/15 text-emerald-400",
   fast: "bg-amber-500/15 text-amber-400",
   reasoning: "bg-violet-500/15 text-violet-400",
+  longContext: "bg-fuchsia-500/15 text-fuchsia-400",
 };
 
 export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount } = useChatStore();
+  const { data: models = [] } = useModels();
 
-  const preset = getPreset(selectedModel);
+  const preset = getPreset(models, selectedModel);
   const displayName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
   const categoryMeta = CATEGORY_META[category];

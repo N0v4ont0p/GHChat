@@ -11,6 +11,7 @@ export const IPC = {
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
   HF_MODELS_LIST: "hf:models:list",
+  HF_DIAGNOSTICS_GET: "hf:diagnostics:get",
   HF_KEY_VALIDATE: "hf:key:validate",
   HF_CHAT_STREAM: "hf:chat:stream",
   HF_CHAT_STOP: "hf:chat:stop",

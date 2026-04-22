@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ipc } from "@/lib/ipc";
-import { MODEL_PRESETS, CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
+import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
-import type { ModelCategory } from "@/types";
+import type { ModelCategory, HuggingFaceDiagnostics } from "@/types";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -32,7 +33,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
+  const [validatedToken, setValidatedToken] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<HuggingFaceDiagnostics | null>(null);
   const { selectedModel, setSelectedModel } = useSettingsStore();
+  const { data: models = [] } = useModels(validatedToken ?? undefined);
+  const availableModels = models.length > 0 ? models : (diagnostics?.models ?? []);
 
   const validateKey = async () => {
     const trimmed = apiKey.trim();
@@ -44,6 +49,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       const result = await ipc.validateApiKey(trimmed);
       setKeyStatus(result.valid ? "valid" : "invalid");
       setKeyMessage(result.message);
+      setValidatedToken(result.valid ? trimmed : null);
+      setDiagnostics(result.diagnostics ?? null);
     } finally {
       setValidating(false);
     }
@@ -221,6 +228,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   <span className="text-foreground">Electron safeStorage</span>. Never written
                   in plain text.
                 </p>
+                {diagnostics?.tokenValid && diagnostics.bestWorkingModels.length > 0 && (
+                  <p className="text-xs text-green-400/90">
+                    Best working models for your account right now:{" "}
+                    {diagnostics.bestWorkingModels
+                      .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
+                      .join(", ")}
+                  </p>
+                )}
               </div>
 
               <div className="flex gap-3">
@@ -274,7 +289,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {MODEL_PRESETS.filter((m) => m.category === selectedCategory).map((m) => (
+                {availableModels.filter((m) => m.category === selectedCategory).map((m) => (
                   <button
                     key={m.id}
                     onClick={() => setSelectedModel(m.id)}
@@ -294,12 +309,17 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                               Recommended
                             </Badge>
                           )}
-                          {m.isPopular && !m.isDefault && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                              Popular
-                            </Badge>
-                          )}
-                        </div>
+                            {m.isPopular && !m.isDefault && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                Popular
+                              </Badge>
+                            )}
+                            {m.verifiedStatus === "verified" && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-green-300">
+                                Verified
+                              </Badge>
+                            )}
+                          </div>
                         <p className="text-xs text-muted-foreground">{m.description}</p>
                         <p className="mt-1.5 text-xs text-muted-foreground/70 leading-relaxed">
                           {m.whyChoose}
@@ -323,6 +343,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                         {m.contextWindow && (
                           <span className="text-muted-foreground/60">{m.contextWindow}</span>
                         )}
+                        <span className="text-muted-foreground/60">{m.costTier}</span>
                       </div>
                     </div>
                     {selectedModel === m.id && (

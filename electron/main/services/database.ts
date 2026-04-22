@@ -6,6 +6,7 @@ import { app } from "electron";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import type { Conversation, Message, AppSettings } from "../../../src/types";
+import { DEFAULT_MODEL } from "../../../src/lib/models";
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ export const messagesTable = sqliteTable("messages", {
 
 export const settingsTable = sqliteTable("settings", {
   id: text("id").primaryKey().default("app"),
-  defaultModel: text("default_model").notNull().default("mistralai/Mistral-7B-Instruct-v0.3"),
+  defaultModel: text("default_model").notNull().default(DEFAULT_MODEL),
   theme: text("theme").notNull().default("dark"),
 });
 
@@ -57,10 +58,10 @@ export function initDatabase(): void {
     );
     CREATE TABLE IF NOT EXISTS settings (
       id TEXT PRIMARY KEY DEFAULT 'app',
-      default_model TEXT NOT NULL DEFAULT 'mistralai/Mistral-7B-Instruct-v0.3',
+      default_model TEXT NOT NULL DEFAULT '${DEFAULT_MODEL}',
       theme TEXT NOT NULL DEFAULT 'dark'
     );
-    INSERT OR IGNORE INTO settings (id, default_model, theme) VALUES ('app', 'mistralai/Mistral-7B-Instruct-v0.3', 'dark');
+    INSERT OR IGNORE INTO settings (id, default_model, theme) VALUES ('app', '${DEFAULT_MODEL}', 'dark');
   `);
 
   db = drizzle(sqlite);
@@ -158,7 +159,7 @@ export function deleteMessage(id: string): void {
 export function getSettings(): AppSettings {
   const row = getDb().select().from(settingsTable).where(eq(settingsTable.id, "app")).get();
   return {
-    defaultModel: row?.defaultModel ?? "mistralai/Mistral-7B-Instruct-v0.3",
+    defaultModel: row?.defaultModel ?? DEFAULT_MODEL,
     theme: (row?.theme ?? "dark") as AppSettings["theme"],
   };
 }

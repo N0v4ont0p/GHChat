@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu } from "lucide-react";import {
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu } from "lucide-react";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -12,10 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/stores/settings-store";
 import { ipc } from "@/lib/ipc";
-import { MODEL_PRESETS, CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
+import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
+import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { ModelCategory } from "@/types";
+import type { ModelCategory, HuggingFaceDiagnostics } from "@/types";
 
 export function SettingsModal() {
   const { settingsOpen, setSettingsOpen, selectedModel, setSelectedModel } =
@@ -28,14 +30,20 @@ export function SettingsModal() {
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"apikey" | "model">("apikey");
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
+  const [validatedToken, setValidatedToken] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<HuggingFaceDiagnostics | null>(null);
+  const { data: models = [] } = useModels(validatedToken ?? undefined);
+  const availableModels = models.length > 0 ? models : (diagnostics?.models ?? []);
 
   useEffect(() => {
     if (settingsOpen) {
       ipc.getApiKey().then((k) => {
         setApiKey(k);
+        setValidatedToken(k || null);
         setKeyStatus("idle");
         setKeyMessage("");
       }).catch(() => {});
+      ipc.getHfDiagnostics().then(setDiagnostics).catch(() => {});
     }
   }, [settingsOpen]);
 
@@ -48,6 +56,8 @@ export function SettingsModal() {
       const result = await ipc.validateApiKey(trimmed);
       setKeyStatus(result.valid ? "valid" : "invalid");
       setKeyMessage(result.message);
+      setValidatedToken(result.valid ? trimmed : null);
+      setDiagnostics(result.diagnostics ?? null);
     } finally {
       setValidating(false);
     }
@@ -164,10 +174,43 @@ export function SettingsModal() {
                   <span className="text-foreground font-medium">Electron safeStorage</span>.
                   Never written in plain text or uploaded anywhere.
                 </p>
+                {diagnostics && (
+                  <div className="space-y-1 pt-1">
+                    <p className={cn(diagnostics.tokenValid ? "text-green-400/90" : "text-red-400/90")}>
+                      Token: {diagnostics.tokenMessage}
+                    </p>
+                    <p>
+                      Best working models now:{" "}
+                      {diagnostics.bestWorkingModels.length > 0
+                        ? diagnostics.bestWorkingModels
+                            .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
+                            .join(", ")
+                        : "None verified yet"}
+                    </p>
+                    {diagnostics.lastProviderError && (
+                      <p className="text-red-400/90">Last provider error: {diagnostics.lastProviderError}</p>
+                    )}
+                    {diagnostics.recommendedFallback && (
+                      <p className="text-amber-400/90">
+                        Recommended fallback:{" "}
+                        {availableModels.find((m) => m.id === diagnostics.recommendedFallback)?.name ??
+                          diagnostics.recommendedFallback}
+                      </p>
+                    )}
+                    <p>
+                      Model validity:{" "}
+                      {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "verified").length} verified
+                      {" · "}
+                      {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "unavailable").length} unavailable
+                    </p>
+                  </div>
+                )}
                 {apiKey && (
                   <button
                     onClick={() => {
                       setApiKey("");
+                      setValidatedToken(null);
+                      setDiagnostics(null);
                       setKeyStatus("idle");
                       setKeyMessage("");
                     }}
@@ -207,7 +250,7 @@ export function SettingsModal() {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {MODEL_PRESETS.filter((m) => m.category === selectedCategory).map((m) => (
+                {availableModels.filter((m) => m.category === selectedCategory).map((m) => (
                   <button
                     key={m.id}
                     onClick={() => setSelectedModel(m.id)}
@@ -230,6 +273,11 @@ export function SettingsModal() {
                           {m.isPopular && !m.isDefault && (
                             <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
                               Popular
+                            </Badge>
+                          )}
+                          {m.verifiedStatus === "verified" && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-green-300">
+                              Verified
                             </Badge>
                           )}
                         </div>
@@ -264,6 +312,7 @@ export function SettingsModal() {
                             {m.contextWindow}
                           </span>
                         )}
+                        <span className="text-[10px] text-muted-foreground/50">{m.costTier}</span>
                       </div>
                     </div>
                   </button>

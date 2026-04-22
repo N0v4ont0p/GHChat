@@ -1,8 +1,16 @@
 export type MessageRole = "user" | "assistant" | "system";
 
-export type ModelCategory = "general" | "coding" | "fast" | "reasoning";
+export type ModelCategory =
+  | "auto"
+  | "general"
+  | "coding"
+  | "fast"
+  | "reasoning"
+  | "longContext";
 
 export type ModelSpeed = "fast" | "medium" | "slow";
+export type ModelCostTier = "free" | "standard" | "premium";
+export type ModelVerificationStatus = "unknown" | "verified" | "unavailable";
 
 export interface AppSettings {
   defaultModel: string;
@@ -25,6 +33,22 @@ export interface ModelPreset {
   isPopular?: boolean;
   speed?: ModelSpeed;
   contextWindow?: string;
+  supportsStreaming: boolean;
+  costTier: ModelCostTier;
+  fallbackModel?: string;
+  verifiedStatus: ModelVerificationStatus;
+  verifiedMessage?: string;
+  lastCheckedAt?: number;
+}
+
+export interface HuggingFaceDiagnostics {
+  tokenValid: boolean;
+  tokenMessage: string;
+  checkedAt: number;
+  models: ModelPreset[];
+  bestWorkingModels: string[];
+  lastProviderError?: string;
+  recommendedFallback?: string;
 }
 
 export interface ProviderHealthResult {
@@ -35,6 +59,7 @@ export interface ProviderHealthResult {
 export interface KeyValidationResult {
   valid: boolean;
   message: string;
+  diagnostics?: HuggingFaceDiagnostics;
 }
 
 export interface Conversation {
@@ -65,6 +90,7 @@ export const IPC = {
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
   HF_MODELS_LIST: "hf:models:list",
+  HF_DIAGNOSTICS_GET: "hf:diagnostics:get",
   HF_KEY_VALIDATE: "hf:key:validate",
   HF_CHAT_STREAM: "hf:chat:stream",
   HF_CHAT_STOP: "hf:chat:stop",

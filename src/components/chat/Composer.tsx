@@ -5,6 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useChatStore } from "@/stores/chat-store";
 import { getPreset } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -20,9 +21,10 @@ const CHAR_MAX = 4000;
 export function Composer({ onSend, onStop, isStreaming }: Props) {
   const { draft, setDraft } = useChatStore();
   const { selectedModel } = useSettingsStore();
+  const { data: models = [] } = useModels();
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  const preset = getPreset(selectedModel);
+  const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
 
   // Auto-resize textarea

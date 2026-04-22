@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainEvent } from "electron";
 import { huggingFaceProvider } from "../providers";
 import { IPC } from "./channels";
+import { getApiKey } from "../services/keychain";
 
 // Active abort controllers keyed by requestId — used to stop streaming
 const activeStreams = new Map<string, AbortController>();
@@ -14,12 +15,29 @@ interface StreamRequest {
 
 export function registerHfHandlers(ipcMain: IpcMain): void {
   // ── List recommended models ──────────────────────────────────────────────
-  ipcMain.handle(IPC.HF_MODELS_LIST, () => huggingFaceProvider.getRecommendedModels());
+  ipcMain.handle(IPC.HF_MODELS_LIST, async (_e, apiKey?: string) => {
+    const key = (apiKey ?? getApiKey()).trim();
+    if (!key) return huggingFaceProvider.getRecommendedModels();
+    return huggingFaceProvider.listModelPresets(key);
+  });
+
+  ipcMain.handle(IPC.HF_DIAGNOSTICS_GET, async (_e, apiKey?: string) => {
+    const key = (apiKey ?? getApiKey()).trim();
+    if (!key) {
+      return {
+        tokenValid: false,
+        tokenMessage: "No key set.",
+        checkedAt: Date.now(),
+        models: huggingFaceProvider.getRecommendedModels(),
+        bestWorkingModels: [],
+        recommendedFallback: "Qwen/Qwen2.5-1.5B-Instruct",
+      };
+    }
+    return huggingFaceProvider.getDiagnostics(key, { forceProbe: true });
+  });
 
   // ── Validate API key ─────────────────────────────────────────────────────
-  ipcMain.handle(IPC.HF_KEY_VALIDATE, async (_e, key: string) =>
-    huggingFaceProvider.validateApiKey(key),
-  );
+  ipcMain.handle(IPC.HF_KEY_VALIDATE, async (_e, key: string) => huggingFaceProvider.validateApiKey(key));
 
   // ── Start streaming chat ─────────────────────────────────────────────────
   ipcMain.on(
