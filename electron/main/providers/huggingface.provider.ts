@@ -14,6 +14,13 @@ const AUTO_MODEL_ID = "__auto__";
 const PROBE_TIMEOUT_MS = 9000;
 const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
 const DIAGNOSTIC_CACHE_TTL_MS = 3 * 60 * 1000;
+// Roughly where prompt size starts to benefit from long-context routing for free-tier models.
+const LONG_CONTEXT_THRESHOLD = 2800;
+const MAX_ERROR_MESSAGE_LENGTH = 180;
+const LONG_CONTEXT_REGEX = /\b(transcript|contract|full\s+document|long\s+context|large\s+file)\b/;
+const SCORE_HIGH = 3;
+const SCORE_MEDIUM = 2;
+const SCORE_LOW = 1;
 
 type Role = "user" | "assistant" | "system";
 
@@ -448,7 +455,14 @@ export class HuggingFaceProvider implements LLMProvider {
     });
 
     if (!res.ok) throw await createRouterErrorFromResponse(res, model);
-    await res.json().catch(() => ({} as RouterCompletionResponse));
+    // Consume and minimally validate the payload so probing confirms a real completion shape.
+    const parsed = (await res.json().catch(() => ({} as RouterCompletionResponse))) as RouterCompletionResponse;
+    if (!Array.isArray(parsed.choices)) {
+      const err = new Error("Probe response did not include completion choices.") as RouterError;
+      err.status = 503;
+      err.model = model;
+      throw err;
+    }
   }
 
   private resolveRoute(
@@ -597,7 +611,7 @@ export class HuggingFaceProvider implements LLMProvider {
 
 function classifyPromptCategory(prompt: string): ModelCategory {
   const lower = prompt.toLowerCase();
-  if (/\b(code|bug|debug|typescript|javascript|python|rust|go|sql|refactor|compile|stack trace)\b/.test(lower)) {
+  if (/\b(code|bug|debug|typescript|javascript|python|rust|go|sql|refactor|compile|stack\s+trace)\b/.test(lower)) {
     return "coding";
   }
   if (/\b(explain why|prove|reason|analyze|analysis|tradeoff|step by step|derive)\b/.test(lower)) {
@@ -606,7 +620,7 @@ function classifyPromptCategory(prompt: string): ModelCategory {
   if (/\b(summarize|tl;dr|quick|brief|short answer|one line)\b/.test(lower)) {
     return "fast";
   }
-  if (prompt.length > 2800 || /\b(transcript|contract|full document|long context|large file)\b/.test(lower)) {
+  if (prompt.length > LONG_CONTEXT_THRESHOLD || LONG_CONTEXT_REGEX.test(lower)) {
     return "longContext";
   }
   return "general";
@@ -616,24 +630,24 @@ function getLastUserMessage(messages: RouterChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (messages[i].role === "user") return messages[i].content;
   }
-  return messages[messages.length - 1]?.content ?? "";
+  return "";
 }
 
 function rankWorkingModels(models: ModelPreset[]): ModelPreset[] {
   const verificationScore: Record<ModelVerificationStatus, number> = {
-    verified: 3,
-    unknown: 2,
-    unavailable: 1,
+    verified: SCORE_HIGH,
+    unknown: SCORE_MEDIUM,
+    unavailable: SCORE_LOW,
   };
   const costScore: Record<ModelPreset["costTier"], number> = {
-    free: 3,
-    standard: 2,
-    premium: 1,
+    free: SCORE_HIGH,
+    standard: SCORE_MEDIUM,
+    premium: SCORE_LOW,
   };
   const speedScore: Record<NonNullable<ModelPreset["speed"]>, number> = {
-    fast: 3,
-    medium: 2,
-    slow: 1,
+    fast: SCORE_HIGH,
+    medium: SCORE_MEDIUM,
+    slow: SCORE_LOW,
   };
   return [...models].sort((a, b) => {
     const scoreA =
@@ -715,7 +729,9 @@ function mapRouterErrorToUserMessage(
   if (/network|fetch|ENOTFOUND|ECONNREFUSED/i.test(message)) {
     return "Network error — check your internet connection and try again.";
   }
-  return message.length > 180 ? `${message.slice(0, 180)}…` : message;
+  return message.length > MAX_ERROR_MESSAGE_LENGTH
+    ? `${message.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…`
+    : message;
 }
 
 export const huggingFaceProvider = new HuggingFaceProvider();

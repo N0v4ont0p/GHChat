@@ -309,17 +309,17 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                               Recommended
                             </Badge>
                           )}
-                            {m.isPopular && !m.isDefault && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                                Popular
-                              </Badge>
-                            )}
-                            {m.verifiedStatus === "verified" && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-green-300">
-                                Verified
-                              </Badge>
-                            )}
-                          </div>
+                          {m.isPopular && !m.isDefault && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                              Popular
+                            </Badge>
+                          )}
+                          {m.verifiedStatus === "verified" && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-green-300">
+                              Verified
+                            </Badge>
+                          )}
+                        </div>
                         <p className="text-xs text-muted-foreground">{m.description}</p>
                         <p className="mt-1.5 text-xs text-muted-foreground/70 leading-relaxed">
                           {m.whyChoose}
