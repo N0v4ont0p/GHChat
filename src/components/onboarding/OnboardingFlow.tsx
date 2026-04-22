@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ExternalLink, ArrowRight, CheckCircle2, Loader2, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
+import { ExternalLink, ArrowRight, CheckCircle2, Loader2, ShieldAlert, Clock, AlertTriangle, RefreshCw } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,7 @@ import { CATEGORY_META, ALL_CATEGORIES, AUTO_MODEL_ID } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
-import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus } from "@/types";
+import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -56,16 +56,39 @@ function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
           Unavailable
         </Badge>
       );
+    case "billing-blocked":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-red-300 gap-0.5">
+          <AlertTriangle className="h-2.5 w-2.5" />
+          Billing blocked
+        </Badge>
+      );
     default:
       return null;
   }
+}
+
+function LayerStatus({ label, layer }: { label: string; layer: ValidationLayerState }) {
+  const color =
+    layer.status === "success"
+      ? "text-green-400"
+      : layer.status === "warning"
+        ? "text-amber-400"
+        : layer.status === "failed"
+          ? "text-red-400"
+          : "text-muted-foreground";
+  return (
+    <p className={`text-xs ${color}`}>
+      <span className="font-medium">{label}:</span> {layer.message}
+    </p>
+  );
 }
 
 export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [step, setStep] = useState<Step>("welcome");
   const [apiKey, setApiKey] = useState("");
   const [validating, setValidating] = useState(false);
-  const [keyStatus, setKeyStatus] = useState<"idle" | "valid" | "invalid">("idle");
+  const [keyStatus, setKeyStatus] = useState<"idle" | "ready" | "warning" | "invalid">("idle");
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("auto");
@@ -83,13 +106,25 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setKeyStatus("idle");
     try {
       const result = await ipc.validateApiKey(trimmed);
-      setKeyStatus(result.valid ? "valid" : "invalid");
+      const diag = result.diagnostics;
+      if (!result.valid) {
+        setKeyStatus("invalid");
+      } else if (
+        diag &&
+        diag.inferenceValidation.status === "success" &&
+        diag.modelValidation.status === "success" &&
+        diag.streamingValidation.status === "success"
+      ) {
+        setKeyStatus("ready");
+      } else {
+        setKeyStatus("warning");
+      }
       setKeyMessage(result.message);
       setValidatedToken(result.valid ? trimmed : null);
-      if (result.valid && result.diagnostics) {
-        setDiagnostics(result.diagnostics);
+      if (result.valid && diag) {
+        setDiagnostics(diag);
         // Pre-select the best working model, or fall back to Auto
-        const best = result.diagnostics.bestWorkingModels[0] ?? AUTO_MODEL_ID;
+        const best = diag.bestWorkingModels[0] ?? AUTO_MODEL_ID;
         setSelectedModel(best);
         setSelectedCategory("auto");
         // Auto-advance to model step — the user has validated and we have results
@@ -101,7 +136,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   };
 
   const handleKeyStep = async () => {
-    if (keyStatus !== "valid") {
+    if (keyStatus === "idle" || keyStatus === "invalid") {
       await validateKey();
       return;
     }
@@ -234,8 +269,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                     onKeyDown={(e) => e.key === "Enter" && handleKeyStep()}
                     className={cn(
                       "flex-1 font-mono text-sm",
-                      keyStatus === "valid" && "border-green-500/50",
-                      keyStatus === "invalid" && "border-red-500/50",
+                       keyStatus === "ready" && "border-green-500/50",
+                       keyStatus === "warning" && "border-amber-500/50",
+                       keyStatus === "invalid" && "border-red-500/50",
                     )}
                     autoComplete="off"
                     autoFocus
@@ -264,15 +300,22 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   <p
                     className={cn(
                       "text-xs",
-                      keyStatus === "valid" ? "text-green-400" : "text-red-400",
-                    )}
-                  >
-                    {keyStatus === "valid" && (
-                      <CheckCircle2 className="mr-1 inline h-3 w-3" />
-                    )}
-                    {keyMessage}
-                  </p>
-                )}
+                       keyStatus === "ready"
+                         ? "text-green-400"
+                         : keyStatus === "warning"
+                           ? "text-amber-400"
+                           : "text-red-400",
+                     )}
+                   >
+                     {keyStatus === "ready" && (
+                       <CheckCircle2 className="mr-1 inline h-3 w-3" />
+                     )}
+                     {keyStatus === "warning" && (
+                       <AlertTriangle className="mr-1 inline h-3 w-3" />
+                     )}
+                     {keyMessage}
+                   </p>
+                 )}
 
                 <p className="text-xs text-muted-foreground">
                   Stored with OS-level encryption via{" "}
@@ -280,18 +323,24 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   in plain text.
                 </p>
 
-                {diagnostics?.tokenValid && diagnostics.bestWorkingModels.length > 0 && (
-                  <div className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2 space-y-0.5">
-                    <p className="text-xs font-medium text-green-400">
-                      ✓ Found {diagnostics.bestWorkingModels.length} working model{diagnostics.bestWorkingModels.length !== 1 ? "s" : ""} for your account
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {diagnostics.bestWorkingModels
-                        .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
-                        .join(", ")}
-                    </p>
-                  </div>
-                )}
+                 {diagnostics && (
+                   <div className="rounded-lg border border-border/60 bg-card/40 px-3 py-2 space-y-1">
+                     <LayerStatus label="Token" layer={diagnostics.tokenValidation} />
+                     <LayerStatus label="Inference" layer={diagnostics.inferenceValidation} />
+                     <LayerStatus label="Models" layer={diagnostics.modelValidation} />
+                     <LayerStatus label="Streaming" layer={diagnostics.streamingValidation} />
+                     {diagnostics.bestWorkingModels.length > 0 && (
+                       <p className="text-xs text-muted-foreground">
+                         Best working models right now:{" "}
+                         <span className="text-foreground">
+                           {diagnostics.bestWorkingModels
+                             .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
+                             .join(", ")}
+                         </span>
+                       </p>
+                     )}
+                   </div>
+                 )}
               </div>
 
               <div className="flex gap-3">
@@ -303,10 +352,10 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   onClick={handleKeyStep}
                   disabled={!apiKey.trim() || validating}
                 >
-                  {keyStatus === "valid" ? (
-                    <>
-                      Continue <ArrowRight className="h-4 w-4" />
-                    </>
+                   {keyStatus === "ready" || keyStatus === "warning" ? (
+                     <>
+                       Continue <ArrowRight className="h-4 w-4" />
+                     </>
                   ) : (
                     "Verify & continue"
                   )}
@@ -320,10 +369,29 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold tracking-tight">Your models are ready</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  GHchat checked which models work for your account.{" "}
+                  GHchat verified token, inference, and model availability for your account.{" "}
                   <span className="text-foreground font-medium">Auto</span> is selected by
                   default — it routes each prompt to the best working model automatically.
                 </p>
+                {diagnostics && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={async () => {
+                        const next = await ipc.refreshHfDiagnostics(apiKey.trim() || undefined);
+                        setDiagnostics(next);
+                      }}
+                    >
+                      <RefreshCw className="mr-1 h-3 w-3" />
+                      Refresh model availability
+                    </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      Last checked {new Date(diagnostics.checkedAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Category tabs */}
@@ -412,6 +480,15 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                             <span className="text-muted-foreground/60">{m.contextWindow}</span>
                           )}
                           <span className="text-muted-foreground/60">{m.costTier}</span>
+                          {m.freeTierFriendly && (
+                            <span className="text-green-400/70">free-tier friendly</span>
+                          )}
+                          {m.isSlow && (
+                            <span className="text-amber-400/70">slow</span>
+                          )}
+                          {m.isExperimental && (
+                            <span className="text-fuchsia-400/70">experimental</span>
+                          )}
                         </div>
                       </div>
                       {selectedModel === m.id && (

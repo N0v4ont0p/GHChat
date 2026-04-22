@@ -1,11 +1,12 @@
 import { create } from "zustand";
 import { DEFAULT_MODEL } from "@/lib/models";
-import type { StructuredChatError, ChatRoutingInfo } from "@/types";
+import type { StructuredChatError, ChatRoutingInfo, StreamLifecycleState } from "@/types";
 
 interface ChatState {
   selectedConversationId: string | null;
   draft: string;
   isStreaming: boolean;
+  streamState: StreamLifecycleState;
   streamingText: string;
   streamingTokenCount: number;
   /** Structured error from the most recent failed stream, cleared on next send */
@@ -15,6 +16,7 @@ interface ChatState {
   setSelectedConversationId: (id: string | null) => void;
   setDraft: (v: string) => void;
   setStreaming: (v: boolean) => void;
+  setStreamState: (state: StreamLifecycleState) => void;
   appendStreamingToken: (token: string) => void;
   resetStreaming: () => void;
   setLastStreamError: (err: StructuredChatError | null) => void;
@@ -25,6 +27,7 @@ export const useChatStore = create<ChatState>((set) => ({
   selectedConversationId: null,
   draft: "",
   isStreaming: false,
+  streamState: "idle",
   streamingText: "",
   streamingTokenCount: 0,
   lastStreamError: null,
@@ -33,6 +36,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ selectedConversationId }),
   setDraft: (draft) => set({ draft }),
   setStreaming: (isStreaming) => set({ isStreaming }),
+  setStreamState: (streamState) => set({ streamState }),
   appendStreamingToken: (token) =>
     set((s) => ({
       streamingText: s.streamingText + token,

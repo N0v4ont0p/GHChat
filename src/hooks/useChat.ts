@@ -7,7 +7,7 @@ import { AUTO_MODEL_ID } from "@/lib/models";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { IpcRendererEvent } from "electron";
-import type { ChatErrorRecoveryAction, StructuredChatError } from "@/types";
+import type { ChatErrorRecoveryAction, StructuredChatError, ChatFailureKind } from "@/types";
 
 interface TokenPayload {
   requestId: string;
@@ -25,6 +25,7 @@ interface ErrorPayload {
   fallbackModel?: string;
   fallbackModelName?: string;
   failedModel?: string;
+  kind?: ChatFailureKind;
   actions?: ChatErrorRecoveryAction[];
 }
 
@@ -52,6 +53,7 @@ export function useChat(conversationId: string | null) {
     isStreaming,
     streamingText,
     setStreaming,
+    setStreamState,
     appendStreamingToken,
     resetStreaming,
     setLastStreamError,
@@ -81,6 +83,7 @@ export function useChat(conversationId: string | null) {
       (_e: IpcRendererEvent, payload: unknown) => {
         const p = payload as RoutingPayload;
         if (p.requestId === activeRequestId.current) {
+          setStreamState(p.isFallback ? "fallback-switching" : "streaming");
           setRoutingInfo({
             model: p.model,
             modelName: p.modelName,
@@ -102,6 +105,7 @@ export function useChat(conversationId: string | null) {
         activeRequestId.current = null;
 
         if (!fullText.trim()) {
+          setStreamState("completed");
           resetStreaming();
           return;
         }
@@ -110,9 +114,13 @@ export function useChat(conversationId: string | null) {
           .appendMessage({ conversationId, role: "assistant", content: fullText })
           .then(() => {
             qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+            setStreamState("completed");
             resetStreaming();
           })
-          .catch(() => resetStreaming());
+          .catch(() => {
+            setStreamState("failed");
+            resetStreaming();
+          });
       },
     );
 
@@ -122,15 +130,17 @@ export function useChat(conversationId: string | null) {
         const p = payload as ErrorPayload;
         if (p.requestId !== activeRequestId.current) return;
         activeRequestId.current = null;
+        setStreamState("failed");
         resetStreaming();
 
         const structuredError: StructuredChatError = {
           message: p.error,
+          kind: p.kind,
           status: p.status,
           failedModel: p.failedModel,
           fallbackModel: p.fallbackModel,
           fallbackModelName: p.fallbackModelName,
-          actions: p.actions ?? ["retry", "auto", "settings"],
+          actions: p.actions ?? ["retry", "auto", "refresh-models", "settings"],
         };
         setLastStreamError(structuredError);
         // Also show a brief toast for accessibility / notification
@@ -144,26 +154,30 @@ export function useChat(conversationId: string | null) {
       offEnd();
       offError();
     };
-  }, [conversationId, appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc]);
+  }, [conversationId, appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState]);
 
   // ── Internal helper: dispatch a chat stream request ────────────────────────
   const dispatchStream = useCallback(
     async (modelId: string, messages: Array<{ role: string; content: string }>) => {
+      setStreamState("validating");
       const apiKey = await ipc.getApiKey();
       if (!apiKey) {
         toast.error("No API key set. Open Settings to add your Hugging Face API key.", {
           duration: 5000,
         });
+        setStreamState("failed");
         return;
       }
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       activeRequestId.current = requestId;
       setStreaming(true);
+      setStreamState("routing");
       setLastStreamError(null);
       setRoutingInfo(null);
       window.ghchat.send(IPC.HF_CHAT_STREAM, { requestId, model: modelId, messages, apiKey });
+      setStreamState("streaming");
     },
-    [setStreaming, setLastStreamError, setRoutingInfo],
+    [setStreaming, setStreamState, setLastStreamError, setRoutingInfo],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
@@ -177,6 +191,7 @@ export function useChat(conversationId: string | null) {
           duration: 5000,
           action: { label: "Open Settings", onClick: () => {} },
         });
+        setStreamState("failed");
         return;
       }
 
@@ -199,16 +214,17 @@ export function useChat(conversationId: string | null) {
       const messages = await ipc.listMessages(conversationId);
       await dispatchStream(selectedModel, messages.map((m) => ({ role: m.role, content: m.content })));
     },
-    [conversationId, isStreaming, selectedModel, dispatchStream, qc],
+    [conversationId, isStreaming, selectedModel, dispatchStream, qc, setStreamState],
   );
 
   // ── Stop the active stream ─────────────────────────────────────────────────
   const stopStream = useCallback(() => {
     const id = activeRequestId.current;
     if (!id) return;
+    setStreamState("stopping");
     ipc.stopStream(id);
     // The main process sends HF_CHAT_END after aborting, which cleans up state
-  }, []);
+  }, [setStreamState]);
 
   // ── Regenerate the last assistant reply ────────────────────────────────────
   const regenerate = useCallback(async () => {
@@ -249,5 +265,23 @@ export function useChat(conversationId: string | null) {
     await retryStream(AUTO_MODEL_ID);
   }, [setSelectedModel, retryStream]);
 
-  return { sendMessage, stopStream, regenerate, retryStream, switchToAutoMode, isStreaming, streamingText };
+  const refreshModelAvailability = useCallback(async () => {
+    await ipc.refreshHfDiagnostics();
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["models"] }),
+      qc.invalidateQueries({ queryKey: ["models", "__stored__"] }),
+    ]);
+    toast.success("Model availability refreshed");
+  }, [qc]);
+
+  return {
+    sendMessage,
+    stopStream,
+    regenerate,
+    retryStream,
+    switchToAutoMode,
+    refreshModelAvailability,
+    isStreaming,
+    streamingText,
+  };
 }

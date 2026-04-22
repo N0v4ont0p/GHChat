@@ -7,6 +7,8 @@ import type {
   HuggingFaceDiagnostics,
   ModelCategory,
   ModelVerificationStatus,
+  ValidationLayerState,
+  ChatFailureKind,
 } from "../../../src/types";
 
 const HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1";
@@ -14,10 +16,12 @@ const AUTO_MODEL_ID = "__auto__";
 const PROBE_TIMEOUT_MS = 9000;
 const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
 const DIAGNOSTIC_CACHE_TTL_MS = 3 * 60 * 1000;
+const SLOW_PROBE_THRESHOLD_MS = 2500;
 // Roughly where prompt size starts to benefit from long-context routing for free-tier models.
 const LONG_CONTEXT_THRESHOLD = 2800;
 const MAX_ERROR_MESSAGE_LENGTH = 180;
 const LONG_CONTEXT_REGEX = /\b(transcript|contract|full\s+document|long\s+context|large\s+file)\b/;
+const UNSUPPORTED_ROUTE_REGEX = /\b(unsupported|not supported|task|incompatible|does not support)\b/i;
 const SCORE_HIGH = 4;
 const SCORE_MEDIUM = 3;
 // Rate-limited models are scored slightly above gated/unavailable: they may recover on retry,
@@ -44,11 +48,14 @@ interface RouterError extends Error {
   status?: number;
   model?: string;
   fallbackModel?: string;
+  kind?: ChatFailureKind;
 }
 
 interface ProbeResult {
   status: ModelVerificationStatus;
   message: string;
+  latencyMs?: number;
+  reason?: string;
 }
 
 const BASE_MODELS: ModelPreset[] = [
@@ -64,7 +71,9 @@ const BASE_MODELS: ModelPreset[] = [
     contextWindow: "adaptive",
     supportsStreaming: true,
     costTier: "free",
-    fallbackModel: "Qwen/Qwen2.5-7B-Instruct",
+    freeTierFriendly: true,
+    healthTags: ["free-tier-friendly", "fallback-ready"],
+    fallbackModel: "Qwen/Qwen2.5-1.5B-Instruct",
     verifiedStatus: "verified",
     verifiedMessage: "Router mode",
   },
@@ -73,13 +82,15 @@ const BASE_MODELS: ModelPreset[] = [
     name: "Qwen 2.5 7B Instruct",
     category: "general",
     description: "Reliable everyday chat model with strong quality/speed balance",
-    whyChoose: "Great default for normal chat and mixed tasks.",
+    whyChoose: "Strong quality when credits and availability are healthy.",
     isPopular: true,
     speed: "medium",
     contextWindow: "32k",
     supportsStreaming: true,
     costTier: "free",
-    fallbackModel: "meta-llama/Llama-3.1-8B-Instruct",
+    freeTierFriendly: false,
+    healthTags: ["fallback-ready"],
+    fallbackModel: "Qwen/Qwen2.5-1.5B-Instruct",
     verifiedStatus: "unknown",
   },
   {
@@ -92,6 +103,9 @@ const BASE_MODELS: ModelPreset[] = [
     contextWindow: "8k",
     supportsStreaming: true,
     costTier: "standard",
+    freeTierFriendly: false,
+    isExperimental: true,
+    healthTags: ["experimental"],
     fallbackModel: "Qwen/Qwen2.5-7B-Instruct",
     verifiedStatus: "unknown",
   },
@@ -106,6 +120,8 @@ const BASE_MODELS: ModelPreset[] = [
     contextWindow: "32k",
     supportsStreaming: true,
     costTier: "free",
+    freeTierFriendly: true,
+    healthTags: ["free-tier-friendly", "fallback-ready"],
     fallbackModel: "Qwen/Qwen2.5-7B-Instruct",
     verifiedStatus: "unknown",
   },
@@ -133,6 +149,8 @@ const BASE_MODELS: ModelPreset[] = [
     contextWindow: "32k",
     supportsStreaming: true,
     costTier: "free",
+    freeTierFriendly: true,
+    healthTags: ["free-tier-friendly", "fallback-ready"],
     fallbackModel: "microsoft/Phi-3-mini-4k-instruct",
     verifiedStatus: "unknown",
   },
@@ -146,6 +164,9 @@ const BASE_MODELS: ModelPreset[] = [
     contextWindow: "128k",
     supportsStreaming: true,
     costTier: "standard",
+    freeTierFriendly: false,
+    isSlow: true,
+    healthTags: ["slow"],
     fallbackModel: "Qwen/Qwen2.5-7B-Instruct",
     verifiedStatus: "unknown",
   },
@@ -159,6 +180,8 @@ const BASE_MODELS: ModelPreset[] = [
     contextWindow: "128k",
     supportsStreaming: true,
     costTier: "free",
+    freeTierFriendly: true,
+    healthTags: ["free-tier-friendly"],
     fallbackModel: "Qwen/Qwen2.5-7B-Instruct",
     verifiedStatus: "unknown",
   },
@@ -214,16 +237,23 @@ export class HuggingFaceProvider implements LLMProvider {
     }
 
     try {
-      const whoami = await this.fetchWhoAmI(token, AbortSignal.timeout(PROBE_TIMEOUT_MS));
-      if (!whoami.ok) {
-        return { valid: false, message: whoami.message };
-      }
-
-      this.tokenValidatedAt.set(token, Date.now());
       const diagnostics = await this.getDiagnostics(token, { forceProbe: true });
+      if (!diagnostics.tokenValid) {
+        return {
+          valid: false,
+          message: diagnostics.tokenValidation.message,
+          diagnostics,
+        };
+      }
+      const readyForEndToEnd =
+        diagnostics.inferenceValidation.status === "success" &&
+        diagnostics.modelValidation.status === "success" &&
+        diagnostics.streamingValidation.status === "success";
       return {
         valid: true,
-        message: `Valid — signed in as @${whoami.username ?? "user"}`,
+        message: readyForEndToEnd
+          ? "Token valid and chat path verified end-to-end."
+          : diagnostics.inferenceValidation.message,
         diagnostics,
       };
     } catch {
@@ -269,57 +299,86 @@ export class HuggingFaceProvider implements LLMProvider {
       const invalid = {
         tokenValid: false,
         tokenMessage: whoami.message,
+        tokenValidation: validationLayer("failed", whoami.message, now, whoami.status),
+        inferenceValidation: validationLayer("failed", "Inference unavailable until token is fixed.", now),
+        modelValidation: validationLayer("failed", "Model checks skipped because token is invalid.", now),
+        streamingValidation: validationLayer("failed", "Streaming cannot start with an invalid token.", now),
         checkedAt: now,
         models: models.map((m) => ({
           ...m,
           verifiedStatus: m.id === AUTO_MODEL_ID ? "verified" : "unknown",
           verifiedMessage: m.id === AUTO_MODEL_ID ? "Router mode" : "Token invalid",
+          verificationReason: m.id === AUTO_MODEL_ID ? "Auto routing mode." : whoami.message,
           lastCheckedAt: now,
         })),
         bestWorkingModels: [],
+        noVerifiedModels: true,
         lastProviderError: this.lastProviderErrorByToken.get(token),
         recommendedFallback: "Qwen/Qwen2.5-1.5B-Instruct",
       } satisfies HuggingFaceDiagnostics;
       this.diagnosticsByToken.set(token, invalid);
       return invalid;
     }
+    this.tokenValidatedAt.set(token, now);
 
     const probeTargets = models.filter((m) => m.id !== AUTO_MODEL_ID);
-    const updatedModels = await Promise.all(
-      probeTargets.map(async (model) => {
-        const result = await this.probeModel(token, model.id);
-        return {
-          ...model,
-          verifiedStatus: result.status,
-          verifiedMessage: result.message,
-          lastCheckedAt: now,
-        };
-      }),
-    );
+    const updatedModels: ModelPreset[] = [];
+    for (const model of probeTargets) {
+      const result = await this.probeModel(token, model.id);
+      const tags = new Set(model.healthTags ?? []);
+      if (model.freeTierFriendly) tags.add("free-tier-friendly");
+      if (model.isExperimental) tags.add("experimental");
+      const measuredSlow = (result.latencyMs ?? 0) > SLOW_PROBE_THRESHOLD_MS;
+      if (measuredSlow || model.isSlow) tags.add("slow");
+      if (model.fallbackModel) tags.add("fallback-ready");
+
+      updatedModels.push({
+        ...model,
+        verifiedStatus: result.status,
+        verifiedMessage: result.message,
+        verificationReason: result.reason ?? result.message,
+        avgLatencyMs: result.latencyMs,
+        healthTags: [...tags],
+        isSlow: measuredSlow || model.isSlow,
+        lastCheckedAt: now,
+      });
+    }
 
     const merged = models.map((model) => {
       if (model.id === AUTO_MODEL_ID) {
         return {
           ...model,
           verifiedStatus: "verified" as const,
-          verifiedMessage: "Router mode",
+          verifiedMessage: "Auto routing mode",
+          verificationReason: "GHchat routes prompts to verified healthy models.",
           lastCheckedAt: now,
         };
       }
       return updatedModels.find((m) => m.id === model.id) ?? model;
     });
 
+    const verified = merged.filter((m) => m.id !== AUTO_MODEL_ID && m.verifiedStatus === "verified");
+    const noVerifiedModels = verified.length === 0;
     const bestWorkingModels = rankWorkingModels(merged)
       .filter((m) => m.id !== AUTO_MODEL_ID)
       .slice(0, 4)
       .map((m) => m.id);
 
+    const inferenceValidation = buildInferenceValidation(merged, now);
+    const modelValidation = buildModelValidation(merged, now);
+    const streamingValidation = buildStreamingValidation(merged, now);
+
     const diagnostics = {
       tokenValid: true,
       tokenMessage: `Valid — signed in as @${whoami.username ?? "user"}`,
+      tokenValidation: validationLayer("success", `Token identity verified as @${whoami.username ?? "user"}.`, now),
+      inferenceValidation,
+      modelValidation,
+      streamingValidation,
       checkedAt: now,
       models: merged,
       bestWorkingModels,
+      noVerifiedModels,
       lastProviderError: this.lastProviderErrorByToken.get(token),
       recommendedFallback: bestWorkingModels[0] ?? "Qwen/Qwen2.5-1.5B-Instruct",
     } satisfies HuggingFaceDiagnostics;
@@ -333,11 +392,31 @@ export class HuggingFaceProvider implements LLMProvider {
     if (!token) {
       const err = new Error("401 Missing API key") as RouterError;
       err.status = 401;
+      err.kind = "token-invalid";
       throw err;
     }
 
     await this.ensureValidToken(token);
     const diagnostics = await this.getDiagnostics(token);
+    if (diagnostics.inferenceValidation.status === "failed") {
+      const err = new Error(diagnostics.inferenceValidation.message) as RouterError;
+      err.status = diagnostics.inferenceValidation.statusCode ?? 503;
+      err.kind = inferFailureKind(err.status, err.message);
+      throw err;
+    }
+    if (diagnostics.inferenceValidation.status === "warning" && diagnostics.inferenceValidation.statusCode === 402) {
+      const err = new Error("Token is valid, but inference is currently blocked by Hugging Face billing/credits.") as RouterError;
+      err.status = 402;
+      err.kind = "billing-blocked";
+      throw err;
+    }
+    if (diagnostics.modelValidation.status === "failed" && diagnostics.bestWorkingModels.length === 0) {
+      const err = new Error("No verified models are currently available for this token. Refresh model availability or use Auto after account status changes.") as RouterError;
+      err.status = 404;
+      err.kind = "model-unavailable";
+      throw err;
+    }
+
     const route = this.resolveRoute(options.model, options.messages, diagnostics.models);
     const attempted = new Set<string>();
     let activeModel = route.primaryModel;
@@ -373,7 +452,12 @@ export class HuggingFaceProvider implements LLMProvider {
         const routerError = toRouterError(error, activeModel);
         lastError = routerError;
         this.lastProviderErrorByToken.set(token, formatProviderError(routerError));
-        this.updateModelVerification(token, activeModel, "unavailable", formatProviderError(routerError));
+        this.updateModelVerification(
+          token,
+          activeModel,
+          statusFromHttp(routerError.status),
+          formatProviderError(routerError),
+        );
 
         const fallback = this.pickFallbackModel({
           requestedModel: options.model,
@@ -386,13 +470,13 @@ export class HuggingFaceProvider implements LLMProvider {
 
         if (fallback) {
           // Notify the renderer that routing has switched to a fallback model.
-          options.onRoutingDecision?.({
-            model: fallback,
-            modelName: modelName(fallback),
-            reason: `Switched from ${modelName(activeModel)} — it wasn't available`,
-            isAuto: route.isAuto,
-            isFallback: true,
-          });
+            options.onRoutingDecision?.({
+              model: fallback,
+              modelName: modelName(fallback),
+              reason: `Switched from ${modelName(activeModel)} to ${modelName(fallback)} because the first route was unavailable`,
+              isAuto: route.isAuto,
+              isFallback: true,
+            });
           activeModel = fallback;
           continue;
         }
@@ -410,6 +494,7 @@ export class HuggingFaceProvider implements LLMProvider {
     if (!whoami.ok) {
       const err = new Error(whoami.message) as RouterError;
       err.status = whoami.status;
+      err.kind = inferFailureKind(err.status, err.message);
       throw err;
     }
     this.tokenValidatedAt.set(token, Date.now());
@@ -442,10 +527,23 @@ export class HuggingFaceProvider implements LLMProvider {
 
   private async probeModel(token: string, model: string): Promise<ProbeResult> {
     try {
-      await this.runProbeCompletion(token, model);
-      return { status: "verified", message: "Verified for this account" };
+      const latencyMs = await this.runProbeCompletion(token, model);
+      const isSlow = latencyMs > SLOW_PROBE_THRESHOLD_MS;
+      return {
+        status: "verified",
+        message: isSlow
+          ? "Verified, but response latency was elevated during probe."
+          : "Verified for this account",
+        latencyMs,
+        reason: isSlow
+          ? `Probe completed in ${latencyMs}ms (marked slow).`
+          : `Probe completed in ${latencyMs}ms.`,
+      };
     } catch (error) {
       const routerError = toRouterError(error, model);
+      if (routerError.status === 402) {
+        return { status: "billing-blocked", message: "Token valid but billing/credits unavailable (402)" };
+      }
       if (routerError.status === 403) {
         return { status: "gated", message: "Requires model access on Hugging Face (403)" };
       }
@@ -462,7 +560,8 @@ export class HuggingFaceProvider implements LLMProvider {
     }
   }
 
-  private async runProbeCompletion(token: string, model: string): Promise<void> {
+  private async runProbeCompletion(token: string, model: string): Promise<number> {
+    const startedAt = Date.now();
     const res = await fetch(`${HF_ROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -488,6 +587,7 @@ export class HuggingFaceProvider implements LLMProvider {
       err.model = model;
       throw err;
     }
+    return Date.now() - startedAt;
   }
 
   private resolveRoute(
@@ -495,8 +595,9 @@ export class HuggingFaceProvider implements LLMProvider {
     messages: StreamChatOptions["messages"],
     models: ModelPreset[],
   ): { primaryModel: string; fallbackModel?: string; reason: string; isAuto: boolean } {
-    if (selectedModel && selectedModel !== AUTO_MODEL_ID) {
-      const selected = models.find((m) => m.id === selectedModel);
+    const normalizedSelection = normalizeRequestedModel(selectedModel, models);
+    if (normalizedSelection && normalizedSelection !== AUTO_MODEL_ID) {
+      const selected = models.find((m) => m.id === normalizedSelection);
       if (selected) {
         return {
           primaryModel: selected.id,
@@ -628,11 +729,15 @@ export class HuggingFaceProvider implements LLMProvider {
       ...diagnostics,
       checkedAt,
       models,
+      inferenceValidation: buildInferenceValidation(models, checkedAt),
+      modelValidation: buildModelValidation(models, checkedAt),
+      streamingValidation: buildStreamingValidation(models, checkedAt),
       lastProviderError: this.lastProviderErrorByToken.get(token),
       bestWorkingModels: rankWorkingModels(models)
         .filter((m) => m.id !== AUTO_MODEL_ID)
         .slice(0, 4)
         .map((m) => m.id),
+      noVerifiedModels: !models.some((m) => m.id !== AUTO_MODEL_ID && m.verifiedStatus === "verified"),
       recommendedFallback:
         rankWorkingModels(models).find((m) => m.id !== AUTO_MODEL_ID)?.id ??
         diagnostics.recommendedFallback,
@@ -647,7 +752,7 @@ function buildAutoReason(category: ModelCategory): string {
     case "reasoning":
       return "Chosen because your prompt looks analytical";
     case "fast":
-      return "Using a faster model to reduce wait time";
+      return "Using a faster verified model to reduce latency";
     case "longContext":
       return "Chosen for your long prompt or document";
     default:
@@ -686,6 +791,7 @@ function rankWorkingModels(models: ModelPreset[]): ModelPreset[] {
     // Rate-limited models may recover on retry; score them above gated/unavailable so
     // they're preferred when Auto mode has no verified alternative.
     "rate-limited": SCORE_RATE_LIMITED,
+    "billing-blocked": SCORE_LOW,
     // Gated and unavailable both require manual action to resolve.
     gated: SCORE_LOW,
     unavailable: SCORE_LOW,
@@ -701,20 +807,28 @@ function rankWorkingModels(models: ModelPreset[]): ModelPreset[] {
     slow: SCORE_LOW,
   };
   return [...models].sort((a, b) => {
+    // Ranking prioritizes: verified status > free-tier affordability > speed.
+    // Minor nudges then de-prioritize experimental/slow models for safer defaults.
     const scoreA =
       verificationScore[a.verifiedStatus] * 100 +
       costScore[a.costTier] * 10 +
-      speedScore[a.speed ?? "medium"];
+      speedScore[a.speed ?? "medium"] +
+      (a.freeTierFriendly ? 3 : 0) -
+      (a.isExperimental ? 1 : 0) -
+      (a.isSlow ? 1 : 0);
     const scoreB =
       verificationScore[b.verifiedStatus] * 100 +
       costScore[b.costTier] * 10 +
-      speedScore[b.speed ?? "medium"];
+      speedScore[b.speed ?? "medium"] +
+      (b.freeTierFriendly ? 3 : 0) -
+      (b.isExperimental ? 1 : 0) -
+      (b.isSlow ? 1 : 0);
     return scoreB - scoreA;
   });
 }
 
 function shouldFallbackByStatus(status?: number): boolean {
-  return status === 403 || status === 404 || status === 429 || status === 503;
+  return status === 402 || status === 403 || status === 404 || status === 429 || status === 503;
 }
 
 function toRouterError(error: unknown, model: string): RouterError {
@@ -752,6 +866,7 @@ function decorateFinalError(error: RouterError | null, fallbackModel?: string): 
   if (!error) {
     const unknown = new Error("Unknown model routing failure.") as RouterError;
     unknown.status = 500;
+    unknown.kind = "unknown";
     return unknown;
   }
   const mapped = mapRouterErrorToUserMessage(error.status, error.message, fallbackModel);
@@ -759,6 +874,7 @@ function decorateFinalError(error: RouterError | null, fallbackModel?: string): 
   decorated.status = error.status;
   decorated.model = error.model;
   decorated.fallbackModel = fallbackModel;
+  decorated.kind = inferFailureKind(error.status, error.message);
   return decorated;
 }
 
@@ -769,6 +885,8 @@ function mapRouterErrorToUserMessage(
 ): string {
   const fallbackHint = fallbackModel ? ` Try fallback model: ${fallbackModel}.` : "";
   if (status === 401) return "Invalid API key — open Settings to update it.";
+  if (status === 402)
+    return "Token is valid, but inference is blocked by Hugging Face credits/billing. Try a free-tier-friendly model or refresh availability after credits reset.";
   if (status === 403)
     return `Access denied for the selected model.${fallbackHint || " The model may require special access approval on Hugging Face — try another verified model."}`;
   if (status === 404)
@@ -777,12 +895,90 @@ function mapRouterErrorToUserMessage(
     return `Rate limit reached.${fallbackHint || " Wait a moment and try again."}`;
   if (status === 503)
     return `Model temporarily unavailable.${fallbackHint || " Retry in a moment."}`;
+  if (UNSUPPORTED_ROUTE_REGEX.test(message)) {
+    return "This model/route doesn't support the current chat task. Use Auto mode or refresh verified models.";
+  }
   if (/network|fetch|ENOTFOUND|ECONNREFUSED/i.test(message)) {
     return "Network error — check your internet connection and try again.";
   }
   return message.length > MAX_ERROR_MESSAGE_LENGTH
     ? `${message.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…`
     : message;
+}
+
+function validationLayer(
+  status: ValidationLayerState["status"],
+  message: string,
+  checkedAt: number,
+  statusCode?: number,
+): ValidationLayerState {
+  return { status, message, checkedAt, statusCode };
+}
+
+function buildInferenceValidation(models: ModelPreset[], now: number): ValidationLayerState {
+  const verified = models.filter((m) => m.id !== AUTO_MODEL_ID && m.verifiedStatus === "verified");
+  const billingBlocked = models.some((m) => m.verifiedStatus === "billing-blocked");
+  const rateLimited = models.some((m) => m.verifiedStatus === "rate-limited");
+  if (verified.length > 0) {
+    return validationLayer("success", "Inference is available for this account.", now);
+  }
+  if (billingBlocked) {
+    return validationLayer("warning", "Token valid, but inference is blocked by credits/billing (HTTP 402).", now, 402);
+  }
+  if (rateLimited) {
+    return validationLayer("warning", "Token valid, but probes are currently rate-limited.", now, 429);
+  }
+  return validationLayer("failed", "Token valid, but inference is unavailable right now.", now);
+}
+
+function buildModelValidation(models: ModelPreset[], now: number): ValidationLayerState {
+  const verified = models.filter((m) => m.id !== AUTO_MODEL_ID && m.verifiedStatus === "verified");
+  return verified.length > 0
+    ? validationLayer("success", `Verified ${verified.length} working model${verified.length === 1 ? "" : "s"} for your account.`, now)
+    : validationLayer("failed", "No verified models are currently available for this token.", now);
+}
+
+function buildStreamingValidation(models: ModelPreset[], now: number): ValidationLayerState {
+  const hasStreamingReady = models.some(
+    (m) => m.id !== AUTO_MODEL_ID && m.verifiedStatus === "verified" && m.supportsStreaming,
+  );
+  return hasStreamingReady
+    ? validationLayer("success", "Streaming path verified on at least one model.", now)
+    : validationLayer("failed", "Streaming readiness is not yet verified.", now);
+}
+
+function statusFromHttp(status?: number): ModelVerificationStatus {
+  if (status === 402) return "billing-blocked";
+  if (status === 403) return "gated";
+  if (status === 404) return "unavailable";
+  if (status === 429) return "rate-limited";
+  if (status === 503) return "unavailable";
+  return "unavailable";
+}
+
+function inferFailureKind(status: number | undefined, message: string): ChatFailureKind {
+  if (status === 401) return "token-invalid";
+  if (status === 402) return "billing-blocked";
+  if (status === 403) return "model-gated";
+  if (status === 404) return "model-unavailable";
+  if (status === 429) return "rate-limited";
+  if (status === 503) return "provider-unavailable";
+  if (UNSUPPORTED_ROUTE_REGEX.test(message)) return "route-unsupported";
+  if (/network|fetch|ENOTFOUND|ECONNREFUSED/i.test(message)) return "network";
+  return "unknown";
+}
+
+function normalizeRequestedModel(requested: string, models: ModelPreset[]): string {
+  const value = requested.trim();
+  if (!value) return AUTO_MODEL_ID;
+  if (value === AUTO_MODEL_ID) return AUTO_MODEL_ID;
+  const byExact = models.find((m) => m.id === value);
+  if (byExact) return byExact.id;
+  const lower = value.toLowerCase();
+  const byName = models.find((m) => m.name.toLowerCase() === lower);
+  if (byName) return byName.id;
+  const bySuffix = models.find((m) => m.id.toLowerCase().endsWith(`/${lower}`));
+  return bySuffix?.id ?? AUTO_MODEL_ID;
 }
 
 export const huggingFaceProvider = new HuggingFaceProvider();

@@ -14,6 +14,7 @@ interface Props {
   onRetry: () => void;
   onSwitchFallback: (modelId: string) => void;
   onUseAuto: () => void;
+  onRefreshModels: () => void;
   onOpenSettings: () => void;
 }
 
@@ -43,8 +44,8 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback, onUseAuto, onOpenSettings }: Props) {
-  const { isStreaming, streamingText, lastStreamError } = useChatStore();
+export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings }: Props) {
+  const { isStreaming, streamingText, streamState, lastStreamError } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -145,7 +146,7 @@ export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback,
             ),
           )}
 
-          {isStreaming && streamingText && (
+          {isStreaming && (
             <MessageBubble
               message={{
                 id: "__streaming__",
@@ -159,7 +160,9 @@ export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback,
             />
           )}
 
-          {isStreaming && !streamingText && <StreamingIndicator />}
+          {(isStreaming || streamState === "routing" || streamState === "validating" || streamState === "fallback-switching") && (
+            <StreamingIndicator />
+          )}
 
           {/* Inline error panel — only shown after a failed stream, cleared on next send */}
           {!isStreaming && lastStreamError && (
@@ -168,6 +171,7 @@ export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback,
               onRetry={onRetry}
               onSwitchFallback={onSwitchFallback}
               onUseAuto={onUseAuto}
+              onRefreshModels={onRefreshModels}
               onOpenSettings={onOpenSettings}
             />
           )}
@@ -195,4 +199,3 @@ export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback,
     </div>
   );
 }
-

@@ -1,7 +1,17 @@
 import { useChatStore } from "@/stores/chat-store";
 
 export function StreamingIndicator() {
-  const { routingInfo } = useChatStore();
+  const { routingInfo, streamState } = useChatStore();
+  const label =
+    streamState === "validating"
+      ? "Validating token and readiness…"
+      : streamState === "routing"
+        ? "Routing to the best verified model…"
+        : streamState === "fallback-switching"
+          ? "Switching to fallback model…"
+          : streamState === "stopping"
+            ? "Stopping…"
+            : "Streaming response…";
 
   return (
     <div className="flex items-center gap-2 px-6 py-4">
@@ -19,7 +29,7 @@ export function StreamingIndicator() {
       </div>
       <div className="flex flex-col gap-0.5">
         <span className="text-xs text-muted-foreground/60 animate-pulse-subtle">
-          Generating…
+          {label}
         </span>
         {routingInfo && (
           <span className="text-[10px] text-muted-foreground/40 leading-tight">

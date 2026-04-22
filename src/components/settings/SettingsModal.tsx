@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +17,7 @@ import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus } from "@/types";
+import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
 
 /** Compact verification badge used inside model cards */
 function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
@@ -50,9 +50,32 @@ function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
           Unavailable
         </Badge>
       );
+    case "billing-blocked":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-red-300 gap-0.5">
+          <AlertTriangle className="h-2.5 w-2.5" />
+          Billing blocked
+        </Badge>
+      );
     default:
       return null;
   }
+}
+
+function LayerStatus({ label, layer }: { label: string; layer: ValidationLayerState }) {
+  const color =
+    layer.status === "success"
+      ? "text-green-400/90"
+      : layer.status === "warning"
+        ? "text-amber-400/90"
+        : layer.status === "failed"
+          ? "text-red-400/90"
+          : "text-muted-foreground";
+  return (
+    <p className={color}>
+      <span className="font-medium">{label}:</span> {layer.message}
+    </p>
+  );
 }
 
 export function SettingsModal() {
@@ -61,7 +84,7 @@ export function SettingsModal() {
 
   const [apiKey, setApiKey] = useState("");
   const [validating, setValidating] = useState(false);
-  const [keyStatus, setKeyStatus] = useState<"idle" | "valid" | "invalid">("idle");
+  const [keyStatus, setKeyStatus] = useState<"idle" | "ready" | "warning" | "invalid">("idle");
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"apikey" | "model">("apikey");
@@ -90,10 +113,22 @@ export function SettingsModal() {
     setKeyStatus("idle");
     try {
       const result = await ipc.validateApiKey(trimmed);
-      setKeyStatus(result.valid ? "valid" : "invalid");
+      const diag = result.diagnostics;
+      if (!result.valid) {
+        setKeyStatus("invalid");
+      } else if (
+        diag &&
+        diag.inferenceValidation.status === "success" &&
+        diag.modelValidation.status === "success" &&
+        diag.streamingValidation.status === "success"
+      ) {
+        setKeyStatus("ready");
+      } else {
+        setKeyStatus("warning");
+      }
       setKeyMessage(result.message);
       setValidatedToken(result.valid ? trimmed : null);
-      setDiagnostics(result.diagnostics ?? null);
+      setDiagnostics(diag ?? null);
     } finally {
       setValidating(false);
     }
@@ -159,8 +194,9 @@ export function SettingsModal() {
                     onKeyDown={(e) => e.key === "Enter" && validateKey()}
                     className={cn(
                       "flex-1 font-mono text-sm",
-                      keyStatus === "valid" && "border-green-500/50",
-                      keyStatus === "invalid" && "border-red-500/50",
+                       keyStatus === "ready" && "border-green-500/50",
+                       keyStatus === "warning" && "border-amber-500/50",
+                       keyStatus === "invalid" && "border-red-500/50",
                     )}
                     autoComplete="off"
                   />
@@ -179,14 +215,20 @@ export function SettingsModal() {
                   <p
                     className={cn(
                       "flex items-center gap-1 text-xs",
-                      keyStatus === "valid" ? "text-green-400" : "text-red-400",
-                    )}
-                  >
-                    {keyStatus === "valid" ? (
-                      <CheckCircle2 className="h-3 w-3" />
-                    ) : (
-                      <XCircle className="h-3 w-3" />
-                    )}
+                       keyStatus === "ready"
+                         ? "text-green-400"
+                         : keyStatus === "warning"
+                           ? "text-amber-400"
+                           : "text-red-400",
+                     )}
+                   >
+                     {keyStatus === "ready" ? (
+                       <CheckCircle2 className="h-3 w-3" />
+                     ) : keyStatus === "warning" ? (
+                       <AlertTriangle className="h-3 w-3" />
+                     ) : (
+                       <XCircle className="h-3 w-3" />
+                     )}
                     {keyMessage}
                   </p>
                 )}
@@ -212,32 +254,10 @@ export function SettingsModal() {
                 </p>
                 {diagnostics && (
                   <div className="space-y-1 pt-1">
-                    <p className={cn(diagnostics.tokenValid ? "text-green-400/90" : "text-red-400/90")}>
-                      Token: {diagnostics.tokenMessage}
-                    </p>
-                    {diagnostics.tokenValid && (
-                      <p className="text-muted-foreground">
-                        Models:{" "}
-                        <span className="text-green-400/90">
-                          {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "verified").length} working
-                        </span>
-                        {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "gated").length > 0 && (
-                          <span className="text-amber-400/90 ml-1.5">
-                            · {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "gated").length} gated
-                          </span>
-                        )}
-                        {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "rate-limited").length > 0 && (
-                          <span className="text-amber-400/90 ml-1.5">
-                            · {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "rate-limited").length} rate-limited
-                          </span>
-                        )}
-                        {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "unavailable").length > 0 && (
-                          <span className="text-muted-foreground/60 ml-1.5">
-                            · {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "unavailable").length} unavailable
-                          </span>
-                        )}
-                      </p>
-                    )}
+                    <LayerStatus label="Token" layer={diagnostics.tokenValidation} />
+                    <LayerStatus label="Inference" layer={diagnostics.inferenceValidation} />
+                    <LayerStatus label="Models" layer={diagnostics.modelValidation} />
+                    <LayerStatus label="Streaming" layer={diagnostics.streamingValidation} />
                     {diagnostics.bestWorkingModels.length > 0 && (
                       <p>
                         Best working:{" "}
@@ -258,6 +278,23 @@ export function SettingsModal() {
                           diagnostics.recommendedFallback}
                       </p>
                     )}
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 text-[10px]"
+                        onClick={async () => {
+                          const refreshed = await ipc.refreshHfDiagnostics(apiKey.trim() || undefined);
+                          setDiagnostics(refreshed);
+                        }}
+                      >
+                        <RefreshCw className="mr-1 h-2.5 w-2.5" />
+                        Refresh model availability
+                      </Button>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        Last checked {new Date(diagnostics.checkedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
                   </div>
                 )}
                 {apiKey && (
@@ -378,6 +415,15 @@ export function SettingsModal() {
                             </span>
                           )}
                           <span className="text-[10px] text-muted-foreground/50">{m.costTier}</span>
+                          {m.freeTierFriendly && (
+                            <span className="text-[10px] text-green-400/70">free-tier friendly</span>
+                          )}
+                          {m.isSlow && (
+                            <span className="text-[10px] text-amber-400/70">slow</span>
+                          )}
+                          {m.isExperimental && (
+                            <span className="text-[10px] text-fuchsia-400/70">experimental</span>
+                          )}
                         </div>
                       </div>
                     </button>
