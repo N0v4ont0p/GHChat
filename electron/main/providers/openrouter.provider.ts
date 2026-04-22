@@ -74,9 +74,11 @@ const KNOWN_FREE_IDS = [
   "liquid/lfm-2.5-1.2b-instruct:free",
 ];
 
+const LARGE_MODEL_REGEX = /\b(70b|65b|40b|34b|33b|30b|27b|26b)\b/i;
+
 function detectCapabilities(id: string, name: string, contextLength: number): ModelCapabilities {
   const combined = id + " " + name;
-  const isLargeModel = /\b(70b|65b|40b|34b|33b|30b|27b|26b)\b/i.test(combined);
+  const isLargeModel = LARGE_MODEL_REGEX.test(combined);
   const coding = /coder|code|coding/i.test(combined);
   const reasoning = /nemotron|deepseek-r|qwq|o1|o3|thinking|reason/i.test(combined);
   const creative = /dolphin|hermes|roleplay|creative|uncensored/i.test(combined);
@@ -111,7 +113,7 @@ function normalizeToPreset(raw: RawOrModel): ModelPreset {
   else if (capabilities.fast) category = "fast";
   else if (capabilities.longContext) category = "longContext";
 
-  const isLarge = /\b(70b|65b|40b|34b|33b|30b)\b/i.test(raw.id + raw.name);
+  const isLarge = LARGE_MODEL_REGEX.test(raw.id + raw.name);
   const speed = capabilities.fast ? "fast" : isLarge ? "slow" : "medium";
 
   const whyParts: string[] = [];
@@ -230,6 +232,16 @@ interface RouteDecision {
   isAuto: boolean;
 }
 
+/**
+ * Maps HTTP status codes to typed failure kinds.
+ * OpenRouter uses standard HTTP semantics:
+ * 401 - invalid/expired API key
+ * 402 - insufficient credits
+ * 403 - model access denied (e.g. moderation block)
+ * 404 - model not found or not available in region
+ * 429 - rate limited (per-minute or per-day quota)
+ * 503 - provider overloaded or temporarily unavailable
+ */
 function inferFailureKind(status: number | undefined, message: string): ChatFailureKind {
   if (status === 401) return "token-invalid";
   if (status === 402) return "billing-blocked";
@@ -610,7 +622,11 @@ export class OpenRouterProvider implements LLMProvider {
         });
         this.runtimeHealthMap.set(activeModel, "available");
         if (usedFallback) {
-          this.diagnosticsByToken.delete(token);
+          // Update diagnostics to record fallback was used, instead of clearing the whole cache
+          const cached = this.diagnosticsByToken.get(token);
+          if (cached) {
+            this.diagnosticsByToken.set(token, { ...cached, usedFallbackRouter: activeModel === OR_FREE_ROUTER_ID });
+          }
         }
         return;
       } catch (err) {
