@@ -21,6 +21,7 @@ const SLOW_PROBE_THRESHOLD_MS = 2500;
 const LONG_CONTEXT_THRESHOLD = 2800;
 const MAX_ERROR_MESSAGE_LENGTH = 180;
 const LONG_CONTEXT_REGEX = /\b(transcript|contract|full\s+document|long\s+context|large\s+file)\b/;
+const UNSUPPORTED_ROUTE_REGEX = /\b(unsupported|not supported|task|incompatible|does not support)\b/i;
 const SCORE_HIGH = 4;
 const SCORE_MEDIUM = 3;
 // Rate-limited models are scored slightly above gated/unavailable: they may recover on retry,
@@ -472,7 +473,7 @@ export class HuggingFaceProvider implements LLMProvider {
             options.onRoutingDecision?.({
               model: fallback,
               modelName: modelName(fallback),
-              reason: `This model was unavailable, so GHchat switched to the best verified fallback`,
+              reason: `Switched from ${modelName(activeModel)} to ${modelName(fallback)} because the first route was unavailable`,
               isAuto: route.isAuto,
               isFallback: true,
             });
@@ -892,7 +893,7 @@ function mapRouterErrorToUserMessage(
     return `Rate limit reached.${fallbackHint || " Wait a moment and try again."}`;
   if (status === 503)
     return `Model temporarily unavailable.${fallbackHint || " Retry in a moment."}`;
-  if (/unsupported|not supported|task|incompatible|does not support/i.test(message)) {
+  if (UNSUPPORTED_ROUTE_REGEX.test(message)) {
     return "This model/route doesn't support the current chat task. Use Auto mode or refresh verified models.";
   }
   if (/network|fetch|ENOTFOUND|ECONNREFUSED/i.test(message)) {
@@ -960,7 +961,7 @@ function inferFailureKind(status: number | undefined, message: string): ChatFail
   if (status === 404) return "model-unavailable";
   if (status === 429) return "rate-limited";
   if (status === 503) return "provider-unavailable";
-  if (/unsupported|not supported|task|incompatible|does not support/i.test(message)) return "route-unsupported";
+  if (UNSUPPORTED_ROUTE_REGEX.test(message)) return "route-unsupported";
   if (/network|fetch|ENOTFOUND|ECONNREFUSED/i.test(message)) return "network";
   return "unknown";
 }

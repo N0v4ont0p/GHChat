@@ -307,8 +307,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                            : "text-red-400",
                      )}
                    >
-                     {(keyStatus === "ready" || keyStatus === "warning") && (
+                     {keyStatus === "ready" && (
                        <CheckCircle2 className="mr-1 inline h-3 w-3" />
+                     )}
+                     {keyStatus === "warning" && (
+                       <AlertTriangle className="mr-1 inline h-3 w-3" />
                      )}
                      {keyMessage}
                    </p>

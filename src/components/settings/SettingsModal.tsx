@@ -222,11 +222,13 @@ export function SettingsModal() {
                            : "text-red-400",
                      )}
                    >
-                     {keyStatus === "ready" || keyStatus === "warning" ? (
+                     {keyStatus === "ready" ? (
                        <CheckCircle2 className="h-3 w-3" />
+                     ) : keyStatus === "warning" ? (
+                       <AlertTriangle className="h-3 w-3" />
                      ) : (
                        <XCircle className="h-3 w-3" />
-                    )}
+                     )}
                     {keyMessage}
                   </p>
                 )}
