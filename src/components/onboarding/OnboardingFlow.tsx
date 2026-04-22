@@ -69,7 +69,15 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   };
 
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-background">
+    <div className="relative flex h-screen w-full items-center justify-center bg-background">
+      <div
+        className="absolute inset-x-0 top-0 z-20 flex h-11 items-center justify-center"
+        style={{ WebkitAppRegion: "drag" } as { WebkitAppRegion: "drag" }}
+      >
+        <span className="select-none text-xs font-medium tracking-wide text-muted-foreground/60">
+          GHchat
+        </span>
+      </div>
       {/* Subtle radial gradient backdrop */}
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_center,_hsl(263_70%_65%_/_0.06)_0%,_transparent_70%)]" />
 
