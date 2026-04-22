@@ -20,12 +20,12 @@ interface ChatErrorPanelProps {
 
 /** Human-readable context for each known HTTP error status */
 function contextForStatus(status: number | undefined): string {
-  if (status === 401) return "Your Hugging Face token appears to be invalid or revoked.";
-  if (status === 402) return "Your token is valid, but Hugging Face routed inference is currently blocked by credits or billing.";
+  if (status === 401) return "Your OpenRouter API key appears to be invalid or revoked.";
+  if (status === 402) return "Your key is valid, but inference is currently blocked by credits or billing.";
   if (status === 403)
-    return "Your account doesn't have access to this model. It may require approval on Hugging Face.";
+    return "Access to this model was denied. It may require special approval or be region-restricted.";
   if (status === 404)
-    return "The model wasn't found on the Hugging Face router. It may have moved or been removed.";
+    return "The model wasn't found on OpenRouter. It may have been removed or is no longer available for free.";
   if (status === 429)
     return "You've hit a rate limit on this model. Waiting a moment usually resolves this.";
   if (status === 503)

@@ -2,9 +2,9 @@
 
 # GHchat
 
-**A premium macOS desktop AI chat app powered by open-source models.**
+**A premium macOS desktop AI chat app powered by free open-source models via OpenRouter.**
 
-Built with Electron, React, and the Hugging Face Inference API — fast, private, and beautiful.
+Built with Electron, React, and the OpenRouter API — fast, private, and beautiful.
 
 <br/>
 
@@ -20,9 +20,11 @@ Built with Electron, React, and the Hugging Face Inference API — fast, private
 
 ## What is GHchat?
 
-GHchat is a native macOS desktop application that lets you have real conversations with powerful open-source AI models — without sending your data to a cloud service, without a monthly subscription, and without leaving the comfort of your own machine.
+GHchat is a native macOS desktop application that lets you have real conversations with powerful open-source AI models — for free, without sending your data to a cloud service, without a monthly subscription, and without leaving the comfort of your own machine.
 
-Your conversations are stored locally in SQLite. Your API key is encrypted by the OS. Your data doesn't leave your computer except to reach Hugging Face's public Inference API.
+GHchat fetches free models live from [`https://openrouter.ai/api/v1/models`](https://openrouter.ai/api/v1/models), supports all current free OpenRouter models, uses intelligent routing to pick the best model for each prompt, and adapts the UI to each model's capabilities instead of pretending every model supports the same features.
+
+Your conversations are stored locally in SQLite. Your API key is encrypted by the OS. Your data doesn't leave your computer except to reach OpenRouter's public API.
 
 **Who it's for:**  
 Developers, researchers, and power users who want a clean, fast AI chat experience without the overhead of a browser or a web dashboard.
@@ -33,16 +35,50 @@ Developers, researchers, and power users who want a clean, fast AI chat experien
 
 | Feature | Detail |
 |---|---|
-| 🤗 Hugging Face API | Chat with Mistral, Llama 3, Qwen, Gemma, Zephyr, and more |
+| 🆓 Free OpenRouter models | Live catalog of all current free models — Gemma, Llama, Qwen, Nemotron, Dolphin, and more |
+| 🤖 Intelligent Auto routing | Classifies your prompt (coding/reasoning/creative/fast/general) and picks the best model |
+| 🎯 Capability-adaptive UI | UI adapts per model — coding badge for code models, reasoning mode for analytical models |
+| 🔄 Live model catalog | Fetches `GET openrouter.ai/api/v1/models` on startup — always current, never stale |
 | 🔒 Secure key storage | API key encrypted via `electron.safeStorage` — never plain text |
 | 💬 Persistent history | All conversations stored locally in SQLite |
 | ⚡ Streaming responses | Real-time token-by-token output with stop generation support |
 | 🔁 Regenerate replies | Re-run any assistant response with one click |
-| 🎯 Smart model picker | Curated presets with categories, descriptions, and speed ratings |
 | 📝 Markdown rendering | Full markdown with syntax-highlighted code blocks |
 | 📋 Copy code | One-click copy on every code block |
 | 🖥️ Native macOS shell | Traffic lights, vibrancy, `hiddenInset` title bar |
 | 🚀 Onboarding flow | Step-by-step first-run setup for API key and model selection |
+
+---
+
+## How Free Model Routing Works
+
+GHchat's main process handles all model intelligence so the renderer stays clean:
+
+1. **Fetch** — `GET https://openrouter.ai/api/v1/models` on startup and cache for 5 minutes
+2. **Filter** — Keep only models where `pricing.prompt === "0"` and `pricing.completion === "0"`
+3. **Detect capabilities** — Rule-based detection from model ID/name: coding, reasoning, creative, fast, long context, tool use, special reasoning (chain-of-thought)
+4. **Build catalog** — Normalized free-model catalog with friendly names and capability metadata
+5. **Track runtime health** — `available`, `degraded`, `rate-limited`, `unavailable` per model
+6. **Route** — Auto mode classifies your prompt and scores candidates; manual mode uses your selection
+7. **Fallback** — If a direct free model fails, try the next best; ultimate fallback: `openrouter/free`
+8. **Stream** — Send tokens to the renderer with full lifecycle state (validating → routing → streaming → completed)
+9. **Adapt UI** — Renderer uses capability metadata to show relevant badges and modes
+
+### Verified free model IDs (as of initial release)
+
+| Model ID | Capability |
+|---|---|
+| `openrouter/free` | Auto fallback router |
+| `google/gemma-4-31b-it:free` | General chat |
+| `google/gemma-4-26b-a4b-it:free` | General chat (fallback) |
+| `meta-llama/llama-3.3-70b-instruct:free` | Reasoning / general |
+| `nvidia/nemotron-3-nano-30b-a3b:free` | Reasoning |
+| `qwen/qwen3-coder:free` | Coding |
+| `cognitivecomputations/dolphin-mistral-24b-venice-edition:free` | Creative |
+| `google/gemma-3-12b-it:free` | General |
+| `google/gemma-3n-e2b-it:free` | Fast |
+| `inclusionai/ling-2.6-flash:free` | General / fast |
+| `liquid/lfm-2.5-1.2b-instruct:free` | Fast / lightweight |
 
 ---
 
@@ -66,7 +102,7 @@ Developers, researchers, and power users who want a clean, fast AI chat experien
 | State | [Zustand](https://zustand-demo.pmnd.rs) |
 | Server state | [TanStack Query](https://tanstack.com/query) v5 |
 | Database | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) + [Drizzle ORM](https://orm.drizzle.team) |
-| AI provider | [Hugging Face Inference](https://huggingface.co/docs/api-inference) |
+| AI provider | [OpenRouter API](https://openrouter.ai/docs) (free models) |
 | Syntax highlighting | [highlight.js](https://highlightjs.org) via rehype |
 
 ---
@@ -88,7 +124,7 @@ pnpm run rebuild:native
 pnpm dev
 ```
 
-Then open Settings, paste your Hugging Face API key, pick a model, and start chatting.
+Then open Settings, paste your OpenRouter API key, pick a model (or leave on Auto), and start chatting.
 
 ---
 
@@ -144,14 +180,16 @@ The packaged `.dmg` and `.zip` output goes to the `dist/` directory.
 
 ---
 
-## Hugging Face API Key Setup
+## OpenRouter API Key Setup
 
 ### Getting your key
 
-1. Go to [huggingface.co](https://huggingface.co) and create a free account
-2. Navigate to **Settings → Access Tokens**
-3. Click **New token**, set a name, and choose **Read** permissions
-4. Copy the token — it starts with `hf_`
+1. Go to [openrouter.ai](https://openrouter.ai) and create a free account
+2. Navigate to **Keys** (or visit [openrouter.ai/keys](https://openrouter.ai/keys) directly)
+3. Click **Create key**, give it a name
+4. Copy the key — it starts with `sk-or-`
+
+Free-tier keys have access to all free models. No credit card required.
 
 ### Adding it to GHchat
 
@@ -164,7 +202,7 @@ The packaged `.dmg` and `.zip` output goes to the `dist/` directory.
 GHchat uses **`electron.safeStorage`**, Electron's built-in OS-level secret storage:
 
 - On **macOS**, secrets are encrypted using the system Keychain
-- The encrypted blob is written to a file in your app data directory (e.g. `~/Library/Application Support/ghchat/.hf-key`)
+- The encrypted blob is written to a file in your app data directory (e.g. `~/Library/Application Support/ghchat/.or-key`)
 - The key is **never stored in plain text**, never written to localStorage, and never logged
 - Removing the app's data directory clears the key
 
