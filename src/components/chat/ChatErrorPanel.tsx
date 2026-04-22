@@ -12,6 +12,8 @@ interface ChatErrorPanelProps {
   onSwitchFallback: (modelId: string) => void;
   /** Switch to Auto mode and retry */
   onUseAuto: () => void;
+  /** Re-run model probing for current token */
+  onRefreshModels: () => void;
   /** Open the Settings modal */
   onOpenSettings: () => void;
 }
@@ -19,6 +21,7 @@ interface ChatErrorPanelProps {
 /** Human-readable context for each known HTTP error status */
 function contextForStatus(status: number | undefined): string {
   if (status === 401) return "Your Hugging Face token appears to be invalid or revoked.";
+  if (status === 402) return "Your token is valid, but Hugging Face routed inference is currently blocked by credits or billing.";
   if (status === 403)
     return "Your account doesn't have access to this model. It may require approval on Hugging Face.";
   if (status === 404)
@@ -35,6 +38,7 @@ export function ChatErrorPanel({
   onRetry,
   onSwitchFallback,
   onUseAuto,
+  onRefreshModels,
   onOpenSettings,
 }: ChatErrorPanelProps) {
   const context = contextForStatus(error.status);
@@ -97,6 +101,18 @@ export function ChatErrorPanel({
           >
             <Zap className="h-3 w-3" />
             Use Auto mode
+          </Button>
+        )}
+
+        {error.actions.includes("refresh-models") && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 rounded-lg border-border/60 text-xs hover:border-primary/40 hover:bg-primary/5 hover:text-primary transition-colors"
+            onClick={onRefreshModels}
+          >
+            <RefreshCw className="h-3 w-3" />
+            Refresh model availability
           </Button>
         )}
 

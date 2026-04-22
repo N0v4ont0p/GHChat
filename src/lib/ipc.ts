@@ -41,6 +41,8 @@ export const ipc = {
   validateApiKey: (key: string) => api().invoke<KeyValidationResult>(IPC.HF_KEY_VALIDATE, key),
   getHfDiagnostics: (apiKey?: string) =>
     api().invoke<HuggingFaceDiagnostics>(IPC.HF_DIAGNOSTICS_GET, apiKey),
+  refreshHfDiagnostics: (apiKey?: string) =>
+    api().invoke<HuggingFaceDiagnostics>(IPC.HF_DIAGNOSTICS_REFRESH, apiKey),
 
   // Streaming
   stopStream: (requestId: string) =>

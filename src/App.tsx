@@ -21,7 +21,12 @@ export default function App() {
         if (settings.defaultModel) {
           setSelectedModel(settings.defaultModel);
         }
-        setAppState(apiKey ? "ready" : "onboarding");
+        if (!apiKey) {
+          setAppState("onboarding");
+          return;
+        }
+        const diagnostics = await ipc.getHfDiagnostics(apiKey);
+        setAppState(diagnostics.tokenValid ? "ready" : "onboarding");
       } catch {
         // If anything fails on init, show onboarding
         setAppState("onboarding");

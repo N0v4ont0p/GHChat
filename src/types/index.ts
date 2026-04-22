@@ -24,7 +24,23 @@ export type ModelVerificationStatus =
   | "verified"
   | "unavailable"
   | "gated"
-  | "rate-limited";
+  | "rate-limited"
+  | "billing-blocked";
+
+export type ModelHealthTag =
+  | "free-tier-friendly"
+  | "slow"
+  | "experimental"
+  | "fallback-ready";
+
+export type ValidationStatus = "idle" | "pending" | "success" | "warning" | "failed";
+
+export interface ValidationLayerState {
+  status: ValidationStatus;
+  message: string;
+  checkedAt?: number;
+  statusCode?: number;
+}
 
 export interface AppSettings {
   defaultModel: string;
@@ -49,18 +65,29 @@ export interface ModelPreset {
   contextWindow?: string;
   supportsStreaming: boolean;
   costTier: ModelCostTier;
+  freeTierFriendly?: boolean;
   fallbackModel?: string;
   verifiedStatus: ModelVerificationStatus;
   verifiedMessage?: string;
+  verificationReason?: string;
+  avgLatencyMs?: number;
+  healthTags?: ModelHealthTag[];
+  isExperimental?: boolean;
+  isSlow?: boolean;
   lastCheckedAt?: number;
 }
 
 export interface HuggingFaceDiagnostics {
   tokenValid: boolean;
   tokenMessage: string;
+  tokenValidation: ValidationLayerState;
+  inferenceValidation: ValidationLayerState;
+  modelValidation: ValidationLayerState;
+  streamingValidation: ValidationLayerState;
   checkedAt: number;
   models: ModelPreset[];
   bestWorkingModels: string[];
+  noVerifiedModels?: boolean;
   lastProviderError?: string;
   recommendedFallback?: string;
 }
@@ -73,8 +100,20 @@ export type ChatErrorRecoveryAction =
   | "retry"          // Re-send the same conversation to the same model
   | "fallback"       // Switch to the recommended fallback model and retry
   | "auto"           // Switch to Auto mode and retry
+  | "refresh-models" // Re-probe runtime model availability for this token
   | "settings"       // Open the Settings modal
   | "verify-token";  // Re-open onboarding / Settings to re-enter the API key
+
+export type ChatFailureKind =
+  | "token-invalid"
+  | "billing-blocked"
+  | "model-gated"
+  | "model-unavailable"
+  | "rate-limited"
+  | "provider-unavailable"
+  | "network"
+  | "route-unsupported"
+  | "unknown";
 
 /**
  * Structured chat error stored in the UI layer after a streaming failure.
@@ -83,6 +122,8 @@ export type ChatErrorRecoveryAction =
 export interface StructuredChatError {
   /** Human-friendly message already mapped from the provider error */
   message: string;
+  /** Normalized internal error kind for recovery UX */
+  kind?: ChatFailureKind;
   /** HTTP status code from the provider, if available */
   status?: number;
   /** Model ID that actually failed */
@@ -112,6 +153,16 @@ export interface ChatRoutingInfo {
   /** True when this is a fallback choice (previous model failed) */
   isFallback: boolean;
 }
+
+export type StreamLifecycleState =
+  | "idle"
+  | "validating"
+  | "routing"
+  | "streaming"
+  | "stopping"
+  | "completed"
+  | "fallback-switching"
+  | "failed";
 
 export interface ProviderHealthResult {
   ok: boolean;
@@ -153,6 +204,7 @@ export const IPC = {
   KEYCHAIN_SET: "keychain:set",
   HF_MODELS_LIST: "hf:models:list",
   HF_DIAGNOSTICS_GET: "hf:diagnostics:get",
+  HF_DIAGNOSTICS_REFRESH: "hf:diagnostics:refresh",
   HF_KEY_VALIDATE: "hf:key:validate",
   HF_CHAT_STREAM: "hf:chat:stream",
   HF_CHAT_STOP: "hf:chat:stop",

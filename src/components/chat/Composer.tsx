@@ -23,6 +23,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
   const { selectedModel } = useSettingsStore();
   const { data: models = [] } = useModels();
   const ref = useRef<HTMLTextAreaElement>(null);
+  const hadFocusBeforeStreamRef = useRef(false);
 
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
@@ -44,21 +45,33 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
     ref.current?.focus();
   }, []);
 
+  useEffect(() => {
+    if (isStreaming) {
+      hadFocusBeforeStreamRef.current = document.activeElement === ref.current;
+      return;
+    }
+    if (hadFocusBeforeStreamRef.current) {
+      requestAnimationFrame(() => ref.current?.focus());
+      hadFocusBeforeStreamRef.current = false;
+    }
+  }, [isStreaming]);
+
   const handleSend = useCallback(() => {
     const text = draft.trim();
     if (!text || isStreaming) return;
     setDraft("");
     onSend(text);
+    requestAnimationFrame(() => ref.current?.focus());
   }, [draft, isStreaming, setDraft, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !isStreaming) {
         e.preventDefault();
         handleSend();
       }
     },
-    [handleSend],
+    [handleSend, isStreaming],
   );
 
   const charCount = draft.length;
@@ -81,9 +94,8 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? "Generating…" : "Message GHchat…"}
+          placeholder={isStreaming ? "Draft your next message while GHchat responds…" : "Message GHchat…"}
           className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40"
-          disabled={isStreaming}
           rows={1}
           style={{ maxHeight: MAX_HEIGHT }}
         />
@@ -94,6 +106,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
             variant="ghost"
             className="h-8 w-8 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95"
             onClick={onStop}
+            onMouseDown={(e) => e.preventDefault()}
             title="Stop generating"
           >
             <Square className="h-3.5 w-3.5 fill-current" />
@@ -106,6 +119,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
               canSend ? "shadow-sm shadow-primary/20" : "opacity-40",
             )}
             onClick={handleSend}
+            onMouseDown={(e) => e.preventDefault()}
             disabled={!canSend}
             title="Send (Enter)"
           >

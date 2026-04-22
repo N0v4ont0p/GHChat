@@ -35,6 +35,8 @@ function HealthIndicator({ status, modelId }: { status: ModelVerificationStatus;
       return <ShieldAlert className="h-3 w-3 flex-shrink-0 text-amber-400/80" />;
     case "rate-limited":
       return <Clock className="h-3 w-3 flex-shrink-0 text-amber-400/80" />;
+    case "billing-blocked":
+      return <AlertTriangle className="h-3 w-3 flex-shrink-0 text-red-400/80" />;
     case "unavailable":
       return <AlertTriangle className="h-3 w-3 flex-shrink-0 text-red-400/70" />;
     default:
@@ -48,6 +50,7 @@ function healthTooltip(status: ModelVerificationStatus, modelId: string): string
     case "verified": return "Model verified and working for your account";
     case "gated": return "Requires model access approval on Hugging Face";
     case "rate-limited": return "Rate limited recently — may retry automatically";
+    case "billing-blocked": return "Token valid, but billing/credits currently block inference";
     case "unavailable": return "Model currently unavailable — Auto mode will reroute";
     default: return "Model not yet probed for your account";
   }
@@ -62,6 +65,7 @@ export function ChatHeader() {
   const displayName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
   const verifiedStatus = preset?.verifiedStatus ?? "unknown";
+  const healthTags = preset?.healthTags ?? [];
   const categoryMeta = CATEGORY_META[category];
   const categoryColorClass = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.general;
 
@@ -92,7 +96,14 @@ export function ChatHeader() {
           <TooltipContent side="bottom" className="space-y-0.5 max-w-[220px]">
             <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
             {!isStreaming && (
-              <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
+              <>
+                <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
+                {healthTags.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {healthTags.join(" · ")}
+                  </p>
+                )}
+              </>
             )}
             <p className="font-mono text-[11px] text-muted-foreground">{selectedModel}</p>
           </TooltipContent>

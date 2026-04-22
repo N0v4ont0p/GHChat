@@ -11,7 +11,7 @@ export function ChatWindow() {
   const { selectedConversationId } = useChatStore();
   const { setSettingsOpen } = useSettingsStore();
   const { data: messages = [] } = useMessages(selectedConversationId);
-  const { sendMessage, stopStream, regenerate, retryStream, switchToAutoMode, isStreaming } =
+  const { sendMessage, stopStream, regenerate, retryStream, switchToAutoMode, refreshModelAvailability, isStreaming } =
     useChat(selectedConversationId);
 
   if (!selectedConversationId) {
@@ -31,6 +31,7 @@ export function ChatWindow() {
         onRetry={() => void retryStream()}
         onSwitchFallback={(modelId) => void retryStream(modelId)}
         onUseAuto={() => void switchToAutoMode()}
+        onRefreshModels={() => void refreshModelAvailability()}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <Composer onSend={sendMessage} onStop={stopStream} isStreaming={isStreaming} />

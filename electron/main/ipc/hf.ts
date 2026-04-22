@@ -22,11 +22,12 @@ function actionsForStatus(
   fallbackModel: string | undefined,
 ): string[] {
   if (status === 401) return ["verify-token", "settings"];
+  if (status === 402) return ["refresh-models", "auto", "settings"];
   if (status === 403) return fallbackModel ? ["fallback", "auto", "settings"] : ["auto", "settings"];
   if (status === 404) return fallbackModel ? ["fallback", "auto", "settings"] : ["auto", "settings"];
-  if (status === 429) return fallbackModel ? ["retry", "fallback", "auto"] : ["retry", "auto"];
-  if (status === 503) return fallbackModel ? ["retry", "fallback", "auto"] : ["retry", "auto"];
-  return ["retry", "auto", "settings"];
+  if (status === 429) return fallbackModel ? ["retry", "fallback", "auto", "refresh-models"] : ["retry", "auto", "refresh-models"];
+  if (status === 503) return fallbackModel ? ["retry", "fallback", "auto", "refresh-models"] : ["retry", "auto", "refresh-models"];
+  return ["retry", "auto", "refresh-models", "settings"];
 }
 
 export function registerHfHandlers(ipcMain: IpcMain): void {
@@ -40,12 +41,39 @@ export function registerHfHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.HF_DIAGNOSTICS_GET, async (_e, apiKey?: string) => {
     const key = (apiKey ?? getApiKey()).trim();
     if (!key) {
+      const now = Date.now();
       return {
         tokenValid: false,
         tokenMessage: "No key set.",
-        checkedAt: Date.now(),
+        tokenValidation: { status: "failed", message: "No Hugging Face token configured.", checkedAt: now },
+        inferenceValidation: { status: "failed", message: "Inference unavailable until a token is provided.", checkedAt: now },
+        modelValidation: { status: "failed", message: "Model verification pending token setup.", checkedAt: now },
+        streamingValidation: { status: "failed", message: "Streaming readiness pending token setup.", checkedAt: now },
+        checkedAt: now,
         models: huggingFaceProvider.getRecommendedModels(),
         bestWorkingModels: [],
+        noVerifiedModels: true,
+        recommendedFallback: "Qwen/Qwen2.5-1.5B-Instruct",
+      };
+    }
+    return huggingFaceProvider.getDiagnostics(key);
+  });
+
+  ipcMain.handle(IPC.HF_DIAGNOSTICS_REFRESH, async (_e, apiKey?: string) => {
+    const key = (apiKey ?? getApiKey()).trim();
+    if (!key) {
+      const now = Date.now();
+      return {
+        tokenValid: false,
+        tokenMessage: "No key set.",
+        tokenValidation: { status: "failed", message: "No Hugging Face token configured.", checkedAt: now },
+        inferenceValidation: { status: "failed", message: "Inference unavailable until a token is provided.", checkedAt: now },
+        modelValidation: { status: "failed", message: "Model verification pending token setup.", checkedAt: now },
+        streamingValidation: { status: "failed", message: "Streaming readiness pending token setup.", checkedAt: now },
+        checkedAt: now,
+        models: huggingFaceProvider.getRecommendedModels(),
+        bestWorkingModels: [],
+        noVerifiedModels: true,
         recommendedFallback: "Qwen/Qwen2.5-1.5B-Instruct",
       };
     }
@@ -98,13 +126,14 @@ export function registerHfHandlers(ipcMain: IpcMain): void {
         } else {
           // The provider already maps errors to human-friendly messages; send
           // the structured payload so the renderer can render recovery actions.
-          const routerErr = err as { message?: string; status?: number; fallbackModel?: string; model?: string };
+          const routerErr = err as { message?: string; status?: number; fallbackModel?: string; model?: string; kind?: string };
           const message = routerErr.message ?? String(err);
           const status = routerErr.status;
           const fallbackModel = routerErr.fallbackModel;
           const failedModel = routerErr.model;
+          const kind = routerErr.kind;
           const actions = actionsForStatus(status, fallbackModel);
-          send(IPC.HF_CHAT_ERROR, { requestId, error: message, status, fallbackModel, failedModel, actions });
+          send(IPC.HF_CHAT_ERROR, { requestId, error: message, status, fallbackModel, failedModel, kind, actions });
         }
       } finally {
         activeStreams.delete(requestId);
