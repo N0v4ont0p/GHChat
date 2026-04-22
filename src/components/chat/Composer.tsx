@@ -94,7 +94,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? "Draft your next message while GHchat responds…" : "Message GHchat…"}
+          placeholder={isStreaming ? "Draft next message…" : "Message GHchat…"}
           className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40"
           rows={1}
           style={{ maxHeight: MAX_HEIGHT }}

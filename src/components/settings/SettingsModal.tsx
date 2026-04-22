@@ -88,7 +88,7 @@ export function SettingsModal() {
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"apikey" | "model">("apikey");
-  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("auto");
+  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<HuggingFaceDiagnostics | null>(null);
   const { data: models = [] } = useModels(validatedToken ?? undefined);

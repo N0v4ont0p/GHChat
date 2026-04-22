@@ -87,7 +87,7 @@ const BASE_MODELS: ModelPreset[] = [
     speed: "medium",
     contextWindow: "32k",
     supportsStreaming: true,
-    costTier: "standard",
+    costTier: "free",
     freeTierFriendly: false,
     healthTags: ["fallback-ready"],
     fallbackModel: "Qwen/Qwen2.5-1.5B-Instruct",
@@ -807,6 +807,8 @@ function rankWorkingModels(models: ModelPreset[]): ModelPreset[] {
     slow: SCORE_LOW,
   };
   return [...models].sort((a, b) => {
+    // Ranking prioritizes: verified status > free-tier affordability > speed.
+    // Minor nudges then de-prioritize experimental/slow models for safer defaults.
     const scoreA =
       verificationScore[a.verifiedStatus] * 100 +
       costScore[a.costTier] * 10 +
@@ -950,7 +952,7 @@ function statusFromHttp(status?: number): ModelVerificationStatus {
   if (status === 403) return "gated";
   if (status === 404) return "unavailable";
   if (status === 429) return "rate-limited";
-  if (status === 503) return "unknown";
+  if (status === 503) return "unavailable";
   return "unavailable";
 }
 
