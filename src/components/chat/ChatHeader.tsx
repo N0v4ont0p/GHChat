@@ -6,7 +6,7 @@ import { getPreset, CATEGORY_META, AUTO_MODEL_ID } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { useModels } from "@/hooks/useModels";
-import type { ModelVerificationStatus } from "@/types";
+import type { ModelVerificationStatus, ModelPreset } from "@/types";
 
 const CATEGORY_COLORS: Record<string, string> = {
   auto: "bg-cyan-500/15 text-cyan-400",
@@ -15,6 +15,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   fast: "bg-amber-500/15 text-amber-400",
   reasoning: "bg-violet-500/15 text-violet-400",
   longContext: "bg-fuchsia-500/15 text-fuchsia-400",
+  creative: "bg-pink-500/15 text-pink-400",
 };
 
 /** Dot color + icon + tooltip for each verification status */
@@ -45,15 +46,39 @@ function HealthIndicator({ status, modelId }: { status: ModelVerificationStatus;
 }
 
 function healthTooltip(status: ModelVerificationStatus, modelId: string): string {
-  if (modelId === AUTO_MODEL_ID) return "Auto mode — routes to the best verified model";
+  if (modelId === AUTO_MODEL_ID) return "Auto mode — routes to the best free model via OpenRouter";
   switch (status) {
-    case "verified": return "Model verified and working for your account";
-    case "gated": return "Requires model access approval on Hugging Face";
+    case "verified": return "Model verified and working";
+    case "gated": return "Requires model access approval";
     case "rate-limited": return "Rate limited recently — may retry automatically";
-    case "billing-blocked": return "Token valid, but billing/credits currently block inference";
+    case "billing-blocked": return "API key valid, but billing currently blocks inference";
     case "unavailable": return "Model currently unavailable — Auto mode will reroute";
     default: return "Model not yet probed for your account";
   }
+}
+
+function CapabilityBadges({ preset }: { preset: ModelPreset | undefined }) {
+  if (!preset?.capabilities) return null;
+  const cap = preset.capabilities;
+  const badges: Array<{ label: string; icon: string }> = [];
+  if (cap.coding) badges.push({ label: "coding", icon: "🧑‍💻" });
+  if (cap.reasoning) badges.push({ label: "reasoning", icon: "🧠" });
+  if (cap.creative) badges.push({ label: "creative", icon: "✨" });
+  if (cap.fast) badges.push({ label: "fast", icon: "⚡" });
+  if (cap.longContext) badges.push({ label: "long ctx", icon: "📚" });
+  if (badges.length === 0) return null;
+  return (
+    <span className="flex items-center gap-1">
+      {badges.slice(0, 2).map((b) => (
+        <span
+          key={b.label}
+          className="rounded px-1 py-0.5 text-[9px] font-medium bg-muted/60 text-muted-foreground/70"
+        >
+          {b.icon} {b.label}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 export function ChatHeader() {
@@ -91,6 +116,7 @@ export function ChatHeader() {
               <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
                 {categoryMeta.emoji} {categoryMeta.label}
               </span>
+              {!isStreaming && <CapabilityBadges preset={preset} />}
             </button>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="space-y-0.5 max-w-[220px]">

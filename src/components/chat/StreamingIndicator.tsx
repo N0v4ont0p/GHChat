@@ -4,9 +4,9 @@ export function StreamingIndicator() {
   const { routingInfo, streamState } = useChatStore();
   const label =
     streamState === "validating"
-      ? "Validating token and readiness…"
+      ? "Validating connection…"
       : streamState === "routing"
-        ? "Routing to the best verified model…"
+        ? "Routing to best free model…"
         : streamState === "fallback-switching"
           ? "Switching to fallback model…"
           : streamState === "stopping"

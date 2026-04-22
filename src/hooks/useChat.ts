@@ -69,7 +69,7 @@ export function useChat(conversationId: string | null) {
   // ── IPC listeners ──────────────────────────────────────────────────────────
   useEffect(() => {
     const offToken = window.ghchat.on(
-      IPC.HF_CHAT_TOKEN,
+      IPC.OR_CHAT_TOKEN,
       (_e: IpcRendererEvent, payload: unknown) => {
         const { requestId, token } = payload as TokenPayload;
         if (requestId === activeRequestId.current) {
@@ -79,7 +79,7 @@ export function useChat(conversationId: string | null) {
     );
 
     const offRouting = window.ghchat.on(
-      IPC.HF_CHAT_ROUTING,
+      IPC.OR_CHAT_ROUTING,
       (_e: IpcRendererEvent, payload: unknown) => {
         const p = payload as RoutingPayload;
         if (p.requestId === activeRequestId.current) {
@@ -96,7 +96,7 @@ export function useChat(conversationId: string | null) {
     );
 
     const offEnd = window.ghchat.on(
-      IPC.HF_CHAT_END,
+      IPC.OR_CHAT_END,
       (_e: IpcRendererEvent, payload: unknown) => {
         const { requestId } = payload as EndPayload;
         if (requestId !== activeRequestId.current || !conversationId) return;
@@ -125,7 +125,7 @@ export function useChat(conversationId: string | null) {
     );
 
     const offError = window.ghchat.on(
-      IPC.HF_CHAT_ERROR,
+      IPC.OR_CHAT_ERROR,
       (_e: IpcRendererEvent, payload: unknown) => {
         const p = payload as ErrorPayload;
         if (p.requestId !== activeRequestId.current) return;
@@ -162,7 +162,7 @@ export function useChat(conversationId: string | null) {
       setStreamState("validating");
       const apiKey = await ipc.getApiKey();
       if (!apiKey) {
-        toast.error("No API key set. Open Settings to add your Hugging Face API key.", {
+        toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
           duration: 5000,
         });
         setStreamState("failed");
@@ -174,7 +174,7 @@ export function useChat(conversationId: string | null) {
       setStreamState("routing");
       setLastStreamError(null);
       setRoutingInfo(null);
-      window.ghchat.send(IPC.HF_CHAT_STREAM, { requestId, model: modelId, messages, apiKey });
+      window.ghchat.send(IPC.OR_CHAT_STREAM, { requestId, model: modelId, messages, apiKey });
       setStreamState("streaming");
     },
     [setStreaming, setStreamState, setLastStreamError, setRoutingInfo],
@@ -187,7 +187,7 @@ export function useChat(conversationId: string | null) {
 
       const apiKey = await ipc.getApiKey();
       if (!apiKey) {
-        toast.error("No API key set. Open Settings to add your Hugging Face API key.", {
+        toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
           duration: 5000,
           action: { label: "Open Settings", onClick: () => {} },
         });
@@ -223,7 +223,7 @@ export function useChat(conversationId: string | null) {
     if (!id) return;
     setStreamState("stopping");
     ipc.stopStream(id);
-    // The main process sends HF_CHAT_END after aborting, which cleans up state
+    // The main process sends OR_CHAT_END after aborting, which cleans up state
   }, [setStreamState]);
 
   // ── Regenerate the last assistant reply ────────────────────────────────────
@@ -266,7 +266,7 @@ export function useChat(conversationId: string | null) {
   }, [setSelectedModel, retryStream]);
 
   const refreshModelAvailability = useCallback(async () => {
-    await ipc.refreshHfDiagnostics();
+    await ipc.refreshDiagnostics();
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["models"] }),
       qc.invalidateQueries({ queryKey: ["models", "__stored__"] }),
