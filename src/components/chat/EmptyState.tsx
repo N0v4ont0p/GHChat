@@ -5,6 +5,7 @@ import { useCreateConversation } from "@/hooks/useConversations";
 import { getPreset, CATEGORY_META } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 
 const PROMPTS = [
@@ -42,7 +43,8 @@ export function EmptyState() {
   const createConversation = useCreateConversation();
   const selectedModel = useSettingsStore((s) => s.selectedModel);
   const setDraft = useChatStore((s) => s.setDraft);
-  const preset = getPreset(selectedModel);
+  const { data: models = [] } = useModels();
+  const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
 

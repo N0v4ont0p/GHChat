@@ -4,12 +4,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { MessageBubble } from "./MessageBubble";
 import { StreamingIndicator } from "./StreamingIndicator";
+import { ChatErrorPanel } from "./ChatErrorPanel";
 import { useChatStore } from "@/stores/chat-store";
-import type { Message } from "@/types";
+import type { Message, StructuredChatError } from "@/types";
 
 interface Props {
   messages: Message[];
   onRegenerate: () => void;
+  onRetry: () => void;
+  onSwitchFallback: (modelId: string) => void;
+  onUseAuto: () => void;
+  onOpenSettings: () => void;
 }
 
 const SCROLL_BOTTOM_THRESHOLD = 32;
@@ -38,8 +43,8 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-export function MessageList({ messages, onRegenerate }: Props) {
-  const { isStreaming, streamingText } = useChatStore();
+export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback, onUseAuto, onOpenSettings }: Props) {
+  const { isStreaming, streamingText, lastStreamError } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -155,6 +160,17 @@ export function MessageList({ messages, onRegenerate }: Props) {
           )}
 
           {isStreaming && !streamingText && <StreamingIndicator />}
+
+          {/* Inline error panel — only shown after a failed stream, cleared on next send */}
+          {!isStreaming && lastStreamError && (
+            <ChatErrorPanel
+              error={lastStreamError as StructuredChatError}
+              onRetry={onRetry}
+              onSwitchFallback={onSwitchFallback}
+              onUseAuto={onUseAuto}
+              onOpenSettings={onOpenSettings}
+            />
+          )}
 
           <div ref={bottomRef} />
         </div>

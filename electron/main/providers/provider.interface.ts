@@ -16,6 +16,18 @@ export interface StreamChatOptions {
   apiKey?: string;
   signal?: AbortSignal;
   onToken: (token: string) => void;
+  /**
+   * Called once (or twice if a fallback is triggered) with the resolved model
+   * and a human-readable explanation of why it was chosen.  The UI uses this
+   * to render "Using Qwen 2.5 · code detected" in the streaming indicator.
+   */
+  onRoutingDecision?: (info: {
+    model: string;
+    modelName: string;
+    reason: string;
+    isAuto: boolean;
+    isFallback: boolean;
+  }) => void;
 }
 
 /**

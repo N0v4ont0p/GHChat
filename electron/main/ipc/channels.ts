@@ -11,10 +11,13 @@ export const IPC = {
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
   HF_MODELS_LIST: "hf:models:list",
+  HF_DIAGNOSTICS_GET: "hf:diagnostics:get",
   HF_KEY_VALIDATE: "hf:key:validate",
   HF_CHAT_STREAM: "hf:chat:stream",
   HF_CHAT_STOP: "hf:chat:stop",
   HF_CHAT_TOKEN: "hf:chat:token",
   HF_CHAT_END: "hf:chat:end",
   HF_CHAT_ERROR: "hf:chat:error",
+  /** Emitted before streaming starts; tells the renderer which model was chosen and why */
+  HF_CHAT_ROUTING: "hf:chat:routing",
 } as const;

@@ -1,4 +1,8 @@
+import { useChatStore } from "@/stores/chat-store";
+
 export function StreamingIndicator() {
+  const { routingInfo } = useChatStore();
+
   return (
     <div className="flex items-center gap-2 px-6 py-4">
       <div className="flex items-end gap-[3px] h-4">
@@ -13,9 +17,24 @@ export function StreamingIndicator() {
           />
         ))}
       </div>
-      <span className="text-xs text-muted-foreground/60 animate-pulse-subtle">
-        Generating…
-      </span>
+      <div className="flex flex-col gap-0.5">
+        <span className="text-xs text-muted-foreground/60 animate-pulse-subtle">
+          Generating…
+        </span>
+        {routingInfo && (
+          <span className="text-[10px] text-muted-foreground/40 leading-tight">
+            {routingInfo.modelName}
+            {/* Show the routing reason only in Auto mode — for manual model selection
+                the reason ("Selected by you") is redundant information */}
+            {routingInfo.reason && routingInfo.isAuto
+              ? ` · ${routingInfo.reason}`
+              : ""}
+            {routingInfo.isFallback && (
+              <span className="ml-1 text-amber-400/60">(fallback)</span>
+            )}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

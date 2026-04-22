@@ -5,6 +5,7 @@ import type {
   AppSettings,
   ModelPreset,
   KeyValidationResult,
+  HuggingFaceDiagnostics,
 } from "@/types";
 
 const api = () => window.ghchat;
@@ -36,8 +37,10 @@ export const ipc = {
   setApiKey: (key: string) => api().invoke<void>(IPC.KEYCHAIN_SET, key),
 
   // HF
-  listModels: () => api().invoke<ModelPreset[]>(IPC.HF_MODELS_LIST),
+  listModels: (apiKey?: string) => api().invoke<ModelPreset[]>(IPC.HF_MODELS_LIST, apiKey),
   validateApiKey: (key: string) => api().invoke<KeyValidationResult>(IPC.HF_KEY_VALIDATE, key),
+  getHfDiagnostics: (apiKey?: string) =>
+    api().invoke<HuggingFaceDiagnostics>(IPC.HF_DIAGNOSTICS_GET, apiKey),
 
   // Streaming
   stopStream: (requestId: string) =>

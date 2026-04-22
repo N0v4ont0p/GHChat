@@ -1,6 +1,7 @@
 import type { IpcMain, IpcMainEvent } from "electron";
 import { huggingFaceProvider } from "../providers";
 import { IPC } from "./channels";
+import { getApiKey } from "../services/keychain";
 
 // Active abort controllers keyed by requestId — used to stop streaming
 const activeStreams = new Map<string, AbortController>();
@@ -12,14 +13,47 @@ interface StreamRequest {
   apiKey: string;
 }
 
+/**
+ * Map recovery actions appropriate for the given HTTP status so the renderer
+ * can render targeted one-click recovery buttons.
+ */
+function actionsForStatus(
+  status: number | undefined,
+  fallbackModel: string | undefined,
+): string[] {
+  if (status === 401) return ["verify-token", "settings"];
+  if (status === 403) return fallbackModel ? ["fallback", "auto", "settings"] : ["auto", "settings"];
+  if (status === 404) return fallbackModel ? ["fallback", "auto", "settings"] : ["auto", "settings"];
+  if (status === 429) return fallbackModel ? ["retry", "fallback", "auto"] : ["retry", "auto"];
+  if (status === 503) return fallbackModel ? ["retry", "fallback", "auto"] : ["retry", "auto"];
+  return ["retry", "auto", "settings"];
+}
+
 export function registerHfHandlers(ipcMain: IpcMain): void {
   // ── List recommended models ──────────────────────────────────────────────
-  ipcMain.handle(IPC.HF_MODELS_LIST, () => huggingFaceProvider.getRecommendedModels());
+  ipcMain.handle(IPC.HF_MODELS_LIST, async (_e, apiKey?: string) => {
+    const key = (apiKey ?? getApiKey()).trim();
+    if (!key) return huggingFaceProvider.getRecommendedModels();
+    return huggingFaceProvider.listModelPresets(key);
+  });
+
+  ipcMain.handle(IPC.HF_DIAGNOSTICS_GET, async (_e, apiKey?: string) => {
+    const key = (apiKey ?? getApiKey()).trim();
+    if (!key) {
+      return {
+        tokenValid: false,
+        tokenMessage: "No key set.",
+        checkedAt: Date.now(),
+        models: huggingFaceProvider.getRecommendedModels(),
+        bestWorkingModels: [],
+        recommendedFallback: "Qwen/Qwen2.5-1.5B-Instruct",
+      };
+    }
+    return huggingFaceProvider.getDiagnostics(key, { forceProbe: true });
+  });
 
   // ── Validate API key ─────────────────────────────────────────────────────
-  ipcMain.handle(IPC.HF_KEY_VALIDATE, async (_e, key: string) =>
-    huggingFaceProvider.validateApiKey(key),
-  );
+  ipcMain.handle(IPC.HF_KEY_VALIDATE, async (_e, key: string) => huggingFaceProvider.validateApiKey(key));
 
   // ── Start streaming chat ─────────────────────────────────────────────────
   ipcMain.on(
@@ -49,6 +83,11 @@ export function registerHfHandlers(ipcMain: IpcMain): void {
           onToken: (token) => {
             send(IPC.HF_CHAT_TOKEN, { requestId, token });
           },
+          onRoutingDecision: (info) => {
+            // Tell the renderer exactly which model is being used and why,
+            // so the streaming indicator and post-response caption are accurate.
+            send(IPC.HF_CHAT_ROUTING, { requestId, ...info });
+          },
         });
 
         send(IPC.HF_CHAT_END, { requestId });
@@ -57,9 +96,15 @@ export function registerHfHandlers(ipcMain: IpcMain): void {
           // Renderer already handles stop — send end so UI resets cleanly
           send(IPC.HF_CHAT_END, { requestId });
         } else {
-          const message = err instanceof Error ? err.message : String(err);
-          const userMessage = formatHfError(message);
-          send(IPC.HF_CHAT_ERROR, { requestId, error: userMessage });
+          // The provider already maps errors to human-friendly messages; send
+          // the structured payload so the renderer can render recovery actions.
+          const routerErr = err as { message?: string; status?: number; fallbackModel?: string; model?: string };
+          const message = routerErr.message ?? String(err);
+          const status = routerErr.status;
+          const fallbackModel = routerErr.fallbackModel;
+          const failedModel = routerErr.model;
+          const actions = actionsForStatus(status, fallbackModel);
+          send(IPC.HF_CHAT_ERROR, { requestId, error: message, status, fallbackModel, failedModel, actions });
         }
       } finally {
         activeStreams.delete(requestId);
@@ -72,32 +117,4 @@ export function registerHfHandlers(ipcMain: IpcMain): void {
     activeStreams.get(requestId)?.abort();
     activeStreams.delete(requestId);
   });
-}
-
-/** Translate raw HF API errors into user-friendly messages. */
-function formatHfError(raw: string): string {
-  if (raw.includes("401") || raw.includes("Unauthorized")) {
-    return "Invalid API key — open Settings to update it.";
-  }
-  if (raw.includes("403") || raw.includes("Forbidden")) {
-    return "Access denied — your key may not have permission for this model.";
-  }
-  if (raw.includes("429") || raw.includes("Rate limit")) {
-    return "Rate limit reached — wait a moment and try again.";
-  }
-  if (raw.includes("503") || raw.includes("loading") || raw.includes("currently loading")) {
-    return "Model is loading on Hugging Face — try again in 20–30 seconds.";
-  }
-  if (raw.includes("404") || raw.includes("not found")) {
-    return "Model not found — it may have been removed or the name is incorrect.";
-  }
-  if (
-    raw.includes("ECONNREFUSED") ||
-    raw.includes("ENOTFOUND") ||
-    raw.includes("fetch failed")
-  ) {
-    return "Network error — check your internet connection and try again.";
-  }
-  // Return a truncated version of the original if nothing matched
-  return raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
 }

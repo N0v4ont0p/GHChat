@@ -1,8 +1,30 @@
 export type MessageRole = "user" | "assistant" | "system";
 
-export type ModelCategory = "general" | "coding" | "fast" | "reasoning";
+export type ModelCategory =
+  | "auto"
+  | "general"
+  | "coding"
+  | "fast"
+  | "reasoning"
+  | "longContext";
 
 export type ModelSpeed = "fast" | "medium" | "slow";
+export type ModelCostTier = "free" | "standard" | "premium";
+/**
+ * Per-model probe result returned after a boot-time verification request.
+ *
+ * - verified      – probe request succeeded; model is usable for this token
+ * - unknown       – not yet probed, or probe returned an ambiguous response
+ * - unavailable   – model is missing from the router (404) or down (503)
+ * - gated         – model exists but requires explicit access approval (403)
+ * - rate-limited  – token or account hit a rate limit during the probe (429)
+ */
+export type ModelVerificationStatus =
+  | "unknown"
+  | "verified"
+  | "unavailable"
+  | "gated"
+  | "rate-limited";
 
 export interface AppSettings {
   defaultModel: string;
@@ -25,6 +47,70 @@ export interface ModelPreset {
   isPopular?: boolean;
   speed?: ModelSpeed;
   contextWindow?: string;
+  supportsStreaming: boolean;
+  costTier: ModelCostTier;
+  fallbackModel?: string;
+  verifiedStatus: ModelVerificationStatus;
+  verifiedMessage?: string;
+  lastCheckedAt?: number;
+}
+
+export interface HuggingFaceDiagnostics {
+  tokenValid: boolean;
+  tokenMessage: string;
+  checkedAt: number;
+  models: ModelPreset[];
+  bestWorkingModels: string[];
+  lastProviderError?: string;
+  recommendedFallback?: string;
+}
+
+/**
+ * Recovery action types surfaced by the inline ChatErrorPanel.
+ * Each value maps to a specific one-click handler in the UI.
+ */
+export type ChatErrorRecoveryAction =
+  | "retry"          // Re-send the same conversation to the same model
+  | "fallback"       // Switch to the recommended fallback model and retry
+  | "auto"           // Switch to Auto mode and retry
+  | "settings"       // Open the Settings modal
+  | "verify-token";  // Re-open onboarding / Settings to re-enter the API key
+
+/**
+ * Structured chat error stored in the UI layer after a streaming failure.
+ * Contains everything needed to render an actionable error panel.
+ */
+export interface StructuredChatError {
+  /** Human-friendly message already mapped from the provider error */
+  message: string;
+  /** HTTP status code from the provider, if available */
+  status?: number;
+  /** Model ID that actually failed */
+  failedModel?: string;
+  /** Recommended fallback model ID from the provider */
+  fallbackModel?: string;
+  /** Friendly display name for the fallback model */
+  fallbackModelName?: string;
+  /** Ordered list of recovery actions to offer the user */
+  actions: ChatErrorRecoveryAction[];
+}
+
+/**
+ * Routing decision info emitted by the provider before streaming begins.
+ * Drives the "Chosen because…" caption in the streaming indicator and
+ * the model-used annotation after a successful response.
+ */
+export interface ChatRoutingInfo {
+  /** Resolved model ID that will be used for the request */
+  model: string;
+  /** Display name for the resolved model */
+  modelName: string;
+  /** Human-friendly explanation of why this model was chosen */
+  reason: string;
+  /** True when the routing came from Auto mode prompt classification */
+  isAuto: boolean;
+  /** True when this is a fallback choice (previous model failed) */
+  isFallback: boolean;
 }
 
 export interface ProviderHealthResult {
@@ -35,6 +121,7 @@ export interface ProviderHealthResult {
 export interface KeyValidationResult {
   valid: boolean;
   message: string;
+  diagnostics?: HuggingFaceDiagnostics;
 }
 
 export interface Conversation {
@@ -65,10 +152,13 @@ export const IPC = {
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
   HF_MODELS_LIST: "hf:models:list",
+  HF_DIAGNOSTICS_GET: "hf:diagnostics:get",
   HF_KEY_VALIDATE: "hf:key:validate",
   HF_CHAT_STREAM: "hf:chat:stream",
   HF_CHAT_STOP: "hf:chat:stop",
   HF_CHAT_TOKEN: "hf:chat:token",
   HF_CHAT_END: "hf:chat:end",
   HF_CHAT_ERROR: "hf:chat:error",
+  /** Emitted before streaming starts; tells the renderer which model was chosen and why */
+  HF_CHAT_ROUTING: "hf:chat:routing",
 } as const;
