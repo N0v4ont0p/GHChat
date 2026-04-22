@@ -306,7 +306,7 @@ export function SettingsModal() {
               {/* Model cards */}
               <div className="space-y-2">
                 {availableModels.filter((m) => m.category === selectedCategory).map((m) => {
-                  const isUnavailable = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
+                  const isLimitedAccess = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
                   return (
                     <button
                       key={m.id}
@@ -315,7 +315,7 @@ export function SettingsModal() {
                         "w-full rounded-xl border p-3 text-left transition-all",
                         selectedModel === m.id
                           ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
-                          : isUnavailable
+                          : isLimitedAccess
                             ? "border-border/40 bg-card/20 opacity-60"
                             : "border-border/60 bg-card/30 hover:border-border hover:bg-card/60",
                       )}

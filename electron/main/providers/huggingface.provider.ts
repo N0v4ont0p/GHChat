@@ -18,8 +18,11 @@ const DIAGNOSTIC_CACHE_TTL_MS = 3 * 60 * 1000;
 const LONG_CONTEXT_THRESHOLD = 2800;
 const MAX_ERROR_MESSAGE_LENGTH = 180;
 const LONG_CONTEXT_REGEX = /\b(transcript|contract|full\s+document|long\s+context|large\s+file)\b/;
-const SCORE_HIGH = 3;
-const SCORE_MEDIUM = 2;
+const SCORE_HIGH = 4;
+const SCORE_MEDIUM = 3;
+// Rate-limited models are scored slightly above gated/unavailable: they may recover on retry,
+// whereas gated models require manual action and unavailable ones are definitely broken.
+const SCORE_RATE_LIMITED = 2;
 const SCORE_LOW = 1;
 
 type Role = "user" | "assistant" | "system";
@@ -479,7 +482,7 @@ export class HuggingFaceProvider implements LLMProvider {
     if (!res.ok) throw await createRouterErrorFromResponse(res, model);
     // Consume and minimally validate the payload so probing confirms a real completion shape.
     const parsed = (await res.json().catch(() => ({} as RouterCompletionResponse))) as RouterCompletionResponse;
-    if (!Array.isArray(parsed.choices)) {
+    if (!Array.isArray(parsed.choices) || parsed.choices.length === 0) {
       const err = new Error("Probe response did not include completion choices.") as RouterError;
       err.status = 503;
       err.model = model;
@@ -680,9 +683,10 @@ function rankWorkingModels(models: ModelPreset[]): ModelPreset[] {
   const verificationScore: Record<ModelVerificationStatus, number> = {
     verified: SCORE_HIGH,
     unknown: SCORE_MEDIUM,
-    // These three statuses should all be ranked below "unknown" so Auto routing
-    // avoids them until a verified alternative exists.
-    "rate-limited": SCORE_LOW,
+    // Rate-limited models may recover on retry; score them above gated/unavailable so
+    // they're preferred when Auto mode has no verified alternative.
+    "rate-limited": SCORE_RATE_LIMITED,
+    // Gated and unavailable both require manual action to resolve.
     gated: SCORE_LOW,
     unavailable: SCORE_LOW,
   };

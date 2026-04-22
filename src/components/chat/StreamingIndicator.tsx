@@ -24,6 +24,8 @@ export function StreamingIndicator() {
         {routingInfo && (
           <span className="text-[10px] text-muted-foreground/40 leading-tight">
             {routingInfo.modelName}
+            {/* Show the routing reason only in Auto mode — for manual model selection
+                the reason ("Selected by you") is redundant information */}
             {routingInfo.reason && routingInfo.isAuto
               ? ` · ${routingInfo.reason}`
               : ""}
