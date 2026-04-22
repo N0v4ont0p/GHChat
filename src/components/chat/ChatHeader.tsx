@@ -1,11 +1,12 @@
-import { Settings } from "lucide-react";
+import { Settings, AlertTriangle, CheckCircle2, HelpCircle, ShieldAlert, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettingsStore } from "@/stores/settings-store";
-import { getPreset, CATEGORY_META } from "@/lib/models";
+import { getPreset, CATEGORY_META, AUTO_MODEL_ID } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { useModels } from "@/hooks/useModels";
+import type { ModelVerificationStatus } from "@/types";
 
 const CATEGORY_COLORS: Record<string, string> = {
   auto: "bg-cyan-500/15 text-cyan-400",
@@ -16,6 +17,42 @@ const CATEGORY_COLORS: Record<string, string> = {
   longContext: "bg-fuchsia-500/15 text-fuchsia-400",
 };
 
+/** Dot color + icon + tooltip for each verification status */
+function HealthIndicator({ status, modelId }: { status: ModelVerificationStatus; modelId: string }) {
+  const isAuto = modelId === AUTO_MODEL_ID;
+
+  if (isAuto) {
+    // Auto mode is always "healthy" from the user's perspective
+    return (
+      <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-cyan-400/80" />
+    );
+  }
+
+  switch (status) {
+    case "verified":
+      return <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-green-400/80" />;
+    case "gated":
+      return <ShieldAlert className="h-3 w-3 flex-shrink-0 text-amber-400/80" />;
+    case "rate-limited":
+      return <Clock className="h-3 w-3 flex-shrink-0 text-amber-400/80" />;
+    case "unavailable":
+      return <AlertTriangle className="h-3 w-3 flex-shrink-0 text-red-400/70" />;
+    default:
+      return <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-muted-foreground/40" />;
+  }
+}
+
+function healthTooltip(status: ModelVerificationStatus, modelId: string): string {
+  if (modelId === AUTO_MODEL_ID) return "Auto mode — routes to the best verified model";
+  switch (status) {
+    case "verified": return "Model verified and working for your account";
+    case "gated": return "Requires model access approval on Hugging Face";
+    case "rate-limited": return "Rate limited recently — may retry automatically";
+    case "unavailable": return "Model currently unavailable — Auto mode will reroute";
+    default: return "Model not yet probed for your account";
+  }
+}
+
 export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount } = useChatStore();
@@ -24,6 +61,7 @@ export function ChatHeader() {
   const preset = getPreset(models, selectedModel);
   const displayName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
+  const verifiedStatus = preset?.verifiedStatus ?? "unknown";
   const categoryMeta = CATEGORY_META[category];
   const categoryColorClass = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.general;
 
@@ -40,20 +78,22 @@ export function ChatHeader() {
                 "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
               )}
             >
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full flex-shrink-0",
-                  isStreaming ? "bg-primary animate-glow-pulse" : "bg-green-400/80",
-                )}
-              />
+              {isStreaming ? (
+                <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-primary animate-glow-pulse" />
+              ) : (
+                <HealthIndicator status={verifiedStatus} modelId={selectedModel} />
+              )}
               <span className="font-medium">{displayName}</span>
               <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
                 {categoryMeta.emoji} {categoryMeta.label}
               </span>
             </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="space-y-0.5">
+          <TooltipContent side="bottom" className="space-y-0.5 max-w-[220px]">
             <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
+            {!isStreaming && (
+              <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
+            )}
             <p className="font-mono text-[11px] text-muted-foreground">{selectedModel}</p>
           </TooltipContent>
         </Tooltip>

@@ -1,16 +1,16 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ExternalLink, ArrowRight, CheckCircle2, Loader2 } from "lucide-react";
+import { ExternalLink, ArrowRight, CheckCircle2, Loader2, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ipc } from "@/lib/ipc";
-import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
+import { CATEGORY_META, ALL_CATEGORIES, AUTO_MODEL_ID } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
-import type { ModelCategory, HuggingFaceDiagnostics } from "@/types";
+import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus } from "@/types";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -25,6 +25,42 @@ const SLIDE = {
   transition: { duration: 0.25, ease: "easeOut" },
 };
 
+/** Badge shown on model cards based on verification status */
+function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
+  switch (status) {
+    case "verified":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-green-300 gap-0.5">
+          <CheckCircle2 className="h-2.5 w-2.5" />
+          Working
+        </Badge>
+      );
+    case "gated":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-amber-300 gap-0.5">
+          <ShieldAlert className="h-2.5 w-2.5" />
+          Gated
+        </Badge>
+      );
+    case "rate-limited":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-amber-300 gap-0.5">
+          <Clock className="h-2.5 w-2.5" />
+          Rate limited
+        </Badge>
+      );
+    case "unavailable":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-muted-foreground gap-0.5">
+          <AlertTriangle className="h-2.5 w-2.5" />
+          Unavailable
+        </Badge>
+      );
+    default:
+      return null;
+  }
+}
+
 export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [step, setStep] = useState<Step>("welcome");
   const [apiKey, setApiKey] = useState("");
@@ -32,7 +68,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [keyStatus, setKeyStatus] = useState<"idle" | "valid" | "invalid">("idle");
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
+  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("auto");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<HuggingFaceDiagnostics | null>(null);
   const { selectedModel, setSelectedModel } = useSettingsStore();
@@ -50,7 +86,15 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       setKeyStatus(result.valid ? "valid" : "invalid");
       setKeyMessage(result.message);
       setValidatedToken(result.valid ? trimmed : null);
-      setDiagnostics(result.diagnostics ?? null);
+      if (result.valid && result.diagnostics) {
+        setDiagnostics(result.diagnostics);
+        // Pre-select the best working model, or fall back to Auto
+        const best = result.diagnostics.bestWorkingModels[0] ?? AUTO_MODEL_ID;
+        setSelectedModel(best);
+        setSelectedCategory("auto");
+        // Auto-advance to model step — the user has validated and we have results
+        setStep("model");
+      }
     } finally {
       setValidating(false);
     }
@@ -115,16 +159,16 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               <div className="space-y-3">
                 <h1 className="text-3xl font-bold tracking-tight">Welcome to GHchat</h1>
                 <p className="mx-auto max-w-sm text-base text-muted-foreground leading-relaxed">
-                  A premium AI chat experience on macOS, powered by open-source models via
-                  Hugging Face. Private, fast, and beautiful.
+                  A reliable AI chat app for Hugging Face — smart model routing,
+                  free-tier friendly, and built to stay out of your way.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3 text-left text-sm">
                 {[
-                  ["🔒", "API key stored securely", "OS-level encryption, never in plain text"],
+                  ["🔒", "Secure key storage", "OS-level encryption, never in plain text"],
                   ["💬", "Persistent conversations", "All chats saved locally in SQLite"],
                   ["⚡", "Streaming responses", "Token-by-token, real-time output"],
-                  ["🎯", "Curated model picks", "Recommended models, no guesswork"],
+                  ["🤖", "Verified model routing", "GHchat checks which models actually work for your account"],
                 ].map(([icon, title, desc]) => (
                   <div key={title} className="rounded-xl border border-border bg-card/50 p-3">
                     <div className="mb-1 text-lg">{icon}</div>
@@ -145,8 +189,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold tracking-tight">Add your API key</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  GHchat uses the Hugging Face Inference API to run AI models. A free account
-                  gives you access to hundreds of open-source models.
+                  GHchat uses the Hugging Face Inference API to run AI models. After
+                  verifying your key, GHchat will probe a set of models to find which
+                  ones are available for your account right now.
                 </p>
               </div>
 
@@ -209,7 +254,13 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   </Button>
                 </div>
 
-                {keyMessage && (
+                {validating && (
+                  <p className="text-xs text-muted-foreground animate-pulse">
+                    Verifying key and checking which models work for your account…
+                  </p>
+                )}
+
+                {keyMessage && !validating && (
                   <p
                     className={cn(
                       "text-xs",
@@ -228,13 +279,18 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   <span className="text-foreground">Electron safeStorage</span>. Never written
                   in plain text.
                 </p>
+
                 {diagnostics?.tokenValid && diagnostics.bestWorkingModels.length > 0 && (
-                  <p className="text-xs text-green-400/90">
-                    Best working models for your account right now:{" "}
-                    {diagnostics.bestWorkingModels
-                      .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
-                      .join(", ")}
-                  </p>
+                  <div className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2 space-y-0.5">
+                    <p className="text-xs font-medium text-green-400">
+                      ✓ Found {diagnostics.bestWorkingModels.length} working model{diagnostics.bestWorkingModels.length !== 1 ? "s" : ""} for your account
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {diagnostics.bestWorkingModels
+                        .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
+                        .join(", ")}
+                    </p>
+                  </div>
                 )}
               </div>
 
@@ -262,9 +318,11 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           {step === "model" && (
             <motion.div key="model" {...SLIDE} className="space-y-5">
               <div className="space-y-2">
-                <h2 className="text-2xl font-bold tracking-tight">Pick your AI model</h2>
-                <p className="text-sm text-muted-foreground">
-                  Choose a starting model. You can change this any time in Settings.
+                <h2 className="text-2xl font-bold tracking-tight">Your models are ready</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  GHchat checked which models work for your account.{" "}
+                  <span className="text-foreground font-medium">Auto</span> is selected by
+                  default — it routes each prompt to the best working model automatically.
                 </p>
               </div>
 
@@ -289,71 +347,82 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {availableModels.filter((m) => m.category === selectedCategory).map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setSelectedModel(m.id)}
-                    className={cn(
-                      "w-full rounded-xl border p-3.5 text-left transition-all",
-                      selectedModel === m.id
-                        ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
-                        : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="font-semibold text-sm">{m.name}</span>
-                          {m.isDefault && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                              Recommended
-                            </Badge>
+                {availableModels.filter((m) => m.category === selectedCategory).map((m) => {
+                  const isUnavailable = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setSelectedModel(m.id)}
+                      className={cn(
+                        "w-full rounded-xl border p-3.5 text-left transition-all",
+                        selectedModel === m.id
+                          ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
+                          : isUnavailable
+                            ? "border-border/40 bg-card/20 opacity-60"
+                            : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="font-semibold text-sm">{m.name}</span>
+                            {m.isDefault && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                Recommended
+                              </Badge>
+                            )}
+                            {m.isPopular && !m.isDefault && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                Popular
+                              </Badge>
+                            )}
+                            <VerificationBadge status={m.verifiedStatus} />
+                          </div>
+                          <p className="text-xs text-muted-foreground">{m.description}</p>
+                          <p className="mt-1.5 text-xs text-muted-foreground/70 leading-relaxed">
+                            {m.whyChoose}
+                          </p>
+                          {m.verifiedStatus === "gated" && (
+                            <p className="mt-1 text-[10px] text-amber-400/80">
+                              Requires model access approval on Hugging Face
+                            </p>
                           )}
-                          {m.isPopular && !m.isDefault && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                              Popular
-                            </Badge>
-                          )}
-                          {m.verifiedStatus === "verified" && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-green-300">
-                              Verified
-                            </Badge>
+                          {m.verifiedStatus === "rate-limited" && (
+                            <p className="mt-1 text-[10px] text-amber-400/80">
+                              Rate limited during check — may work in a few minutes
+                            </p>
                           )}
                         </div>
-                        <p className="text-xs text-muted-foreground">{m.description}</p>
-                        <p className="mt-1.5 text-xs text-muted-foreground/70 leading-relaxed">
-                          {m.whyChoose}
-                        </p>
+                        <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
+                          {m.speed && (
+                            <span
+                              className={cn(
+                                "rounded px-1.5 py-0.5 font-medium",
+                                m.speed === "fast"
+                                  ? "bg-green-500/10 text-green-400"
+                                  : m.speed === "medium"
+                                    ? "bg-yellow-500/10 text-yellow-400"
+                                    : "bg-orange-500/10 text-orange-400",
+                              )}
+                            >
+                              {m.speed}
+                            </span>
+                          )}
+                          {m.contextWindow && (
+                            <span className="text-muted-foreground/60">{m.contextWindow}</span>
+                          )}
+                          <span className="text-muted-foreground/60">{m.costTier}</span>
+                        </div>
                       </div>
-                      <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
-                        {m.speed && (
-                          <span
-                            className={cn(
-                              "rounded px-1.5 py-0.5 font-medium",
-                              m.speed === "fast"
-                                ? "bg-green-500/10 text-green-400"
-                                : m.speed === "medium"
-                                  ? "bg-yellow-500/10 text-yellow-400"
-                                  : "bg-orange-500/10 text-orange-400",
-                            )}
-                          >
-                            {m.speed}
-                          </span>
-                        )}
-                        {m.contextWindow && (
-                          <span className="text-muted-foreground/60">{m.contextWindow}</span>
-                        )}
-                        <span className="text-muted-foreground/60">{m.costTier}</span>
-                      </div>
-                    </div>
-                    {selectedModel === m.id && (
-                      <div className="mt-2 flex items-center gap-1 text-[11px] text-primary">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Selected
-                      </div>
-                    )}
-                  </button>
-                ))}
+                      {selectedModel === m.id && (
+                        <div className="mt-2 flex items-center gap-1 text-[11px] text-primary">
+                          <CheckCircle2 className="h-3 w-3" />
+                          Selected
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="flex gap-3">

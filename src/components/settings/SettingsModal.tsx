@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu } from "lucide-react";
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +17,43 @@ import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { ModelCategory, HuggingFaceDiagnostics } from "@/types";
+import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus } from "@/types";
+
+/** Compact verification badge used inside model cards */
+function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
+  switch (status) {
+    case "verified":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-green-300 gap-0.5">
+          <CheckCircle2 className="h-2.5 w-2.5" />
+          Working
+        </Badge>
+      );
+    case "gated":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-amber-300 gap-0.5">
+          <ShieldAlert className="h-2.5 w-2.5" />
+          Gated
+        </Badge>
+      );
+    case "rate-limited":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-amber-300 gap-0.5">
+          <Clock className="h-2.5 w-2.5" />
+          Rate limited
+        </Badge>
+      );
+    case "unavailable":
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-muted-foreground gap-0.5">
+          <AlertTriangle className="h-2.5 w-2.5" />
+          Unavailable
+        </Badge>
+      );
+    default:
+      return null;
+  }
+}
 
 export function SettingsModal() {
   const { settingsOpen, setSettingsOpen, selectedModel, setSelectedModel } =
@@ -179,16 +215,41 @@ export function SettingsModal() {
                     <p className={cn(diagnostics.tokenValid ? "text-green-400/90" : "text-red-400/90")}>
                       Token: {diagnostics.tokenMessage}
                     </p>
-                    <p>
-                      Best working models now:{" "}
-                      {diagnostics.bestWorkingModels.length > 0
-                        ? diagnostics.bestWorkingModels
+                    {diagnostics.tokenValid && (
+                      <p className="text-muted-foreground">
+                        Models:{" "}
+                        <span className="text-green-400/90">
+                          {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "verified").length} working
+                        </span>
+                        {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "gated").length > 0 && (
+                          <span className="text-amber-400/90 ml-1.5">
+                            · {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "gated").length} gated
+                          </span>
+                        )}
+                        {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "rate-limited").length > 0 && (
+                          <span className="text-amber-400/90 ml-1.5">
+                            · {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "rate-limited").length} rate-limited
+                          </span>
+                        )}
+                        {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "unavailable").length > 0 && (
+                          <span className="text-muted-foreground/60 ml-1.5">
+                            · {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "unavailable").length} unavailable
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    {diagnostics.bestWorkingModels.length > 0 && (
+                      <p>
+                        Best working:{" "}
+                        <span className="text-green-400/90">
+                          {diagnostics.bestWorkingModels
                             .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
-                            .join(", ")
-                        : "None verified yet"}
-                    </p>
+                            .join(", ")}
+                        </span>
+                      </p>
+                    )}
                     {diagnostics.lastProviderError && (
-                      <p className="text-red-400/90">Last provider error: {diagnostics.lastProviderError}</p>
+                      <p className="text-red-400/90">Last error: {diagnostics.lastProviderError}</p>
                     )}
                     {diagnostics.recommendedFallback && (
                       <p className="text-amber-400/90">
@@ -197,12 +258,6 @@ export function SettingsModal() {
                           diagnostics.recommendedFallback}
                       </p>
                     )}
-                    <p>
-                      Model validity:{" "}
-                      {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "verified").length} verified
-                      {" · "}
-                      {diagnostics.models.filter((m) => m.id !== "__auto__" && m.verifiedStatus === "unavailable").length} unavailable
-                    </p>
                   </div>
                 )}
                 {apiKey && (
@@ -250,73 +305,84 @@ export function SettingsModal() {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {availableModels.filter((m) => m.category === selectedCategory).map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setSelectedModel(m.id)}
-                    className={cn(
-                      "w-full rounded-xl border p-3 text-left transition-all",
-                      selectedModel === m.id
-                        ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
-                        : "border-border/60 bg-card/30 hover:border-border hover:bg-card/60",
-                    )}
-                  >
-                    <div className="flex items-start gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-                          <span className="font-medium text-sm">{m.name}</span>
-                          {m.isDefault && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                              Recommended
-                            </Badge>
+                {availableModels.filter((m) => m.category === selectedCategory).map((m) => {
+                  const isUnavailable = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setSelectedModel(m.id)}
+                      className={cn(
+                        "w-full rounded-xl border p-3 text-left transition-all",
+                        selectedModel === m.id
+                          ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
+                          : isUnavailable
+                            ? "border-border/40 bg-card/20 opacity-60"
+                            : "border-border/60 bg-card/30 hover:border-border hover:bg-card/60",
+                      )}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                            <span className="font-medium text-sm">{m.name}</span>
+                            {m.isDefault && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
+                                Recommended
+                              </Badge>
+                            )}
+                            {m.isPopular && !m.isDefault && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
+                                Popular
+                              </Badge>
+                            )}
+                            <VerificationBadge status={m.verifiedStatus} />
+                          </div>
+                          <p className="text-xs text-muted-foreground">{m.description}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground/60 leading-relaxed">
+                            {m.whyChoose}
+                          </p>
+                          {m.verifiedStatus === "gated" && (
+                            <p className="mt-1 text-[10px] text-amber-400/80">
+                              Requires model access approval on Hugging Face
+                            </p>
                           )}
-                          {m.isPopular && !m.isDefault && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                              Popular
-                            </Badge>
-                          )}
-                          {m.verifiedStatus === "verified" && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 text-green-300">
-                              Verified
-                            </Badge>
+                          {m.verifiedStatus === "rate-limited" && (
+                            <p className="mt-1 text-[10px] text-amber-400/80">
+                              Rate limited — may work again shortly
+                            </p>
                           )}
                         </div>
-                        <p className="text-xs text-muted-foreground">{m.description}</p>
-                        <p className="mt-1 text-[11px] text-muted-foreground/60 leading-relaxed">
-                          {m.whyChoose}
-                        </p>
-                      </div>
 
-                      <div className="flex shrink-0 flex-col items-end gap-1">
-                        {selectedModel === m.id && (
-                          <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary">
-                            <Check className="h-3 w-3 text-primary-foreground" />
-                          </div>
-                        )}
-                        {m.speed && (
-                          <span
-                            className={cn(
-                              "rounded px-1.5 py-0.5 text-[10px] font-medium",
-                              m.speed === "fast"
-                                ? "bg-green-500/10 text-green-400"
-                                : m.speed === "medium"
-                                  ? "bg-yellow-500/10 text-yellow-400"
-                                  : "bg-orange-500/10 text-orange-400",
-                            )}
-                          >
-                            {m.speed}
-                          </span>
-                        )}
-                        {m.contextWindow && (
-                          <span className="text-[10px] text-muted-foreground/50">
-                            {m.contextWindow}
-                          </span>
-                        )}
-                        <span className="text-[10px] text-muted-foreground/50">{m.costTier}</span>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          {selectedModel === m.id && (
+                            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary">
+                              <Check className="h-3 w-3 text-primary-foreground" />
+                            </div>
+                          )}
+                          {m.speed && (
+                            <span
+                              className={cn(
+                                "rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                m.speed === "fast"
+                                  ? "bg-green-500/10 text-green-400"
+                                  : m.speed === "medium"
+                                    ? "bg-yellow-500/10 text-yellow-400"
+                                    : "bg-orange-500/10 text-orange-400",
+                              )}
+                            >
+                              {m.speed}
+                            </span>
+                          )}
+                          {m.contextWindow && (
+                            <span className="text-[10px] text-muted-foreground/50">
+                              {m.contextWindow}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-muted-foreground/50">{m.costTier}</span>
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

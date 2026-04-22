@@ -18,4 +18,6 @@ export const IPC = {
   HF_CHAT_TOKEN: "hf:chat:token",
   HF_CHAT_END: "hf:chat:end",
   HF_CHAT_ERROR: "hf:chat:error",
+  /** Emitted before streaming starts; tells the renderer which model was chosen and why */
+  HF_CHAT_ROUTING: "hf:chat:routing",
 } as const;

@@ -3,9 +3,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { IPC } from "@/types";
+import { AUTO_MODEL_ID } from "@/lib/models";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { IpcRendererEvent } from "electron";
+import type { ChatErrorRecoveryAction, StructuredChatError } from "@/types";
 
 interface TokenPayload {
   requestId: string;
@@ -19,6 +21,20 @@ interface EndPayload {
 interface ErrorPayload {
   requestId: string;
   error: string;
+  status?: number;
+  fallbackModel?: string;
+  fallbackModelName?: string;
+  failedModel?: string;
+  actions?: ChatErrorRecoveryAction[];
+}
+
+interface RoutingPayload {
+  requestId: string;
+  model: string;
+  modelName: string;
+  reason: string;
+  isAuto: boolean;
+  isFallback: boolean;
 }
 
 /** Derive a short conversation title from the first user message */
@@ -32,9 +48,16 @@ function deriveTitleFromMessage(content: string): string {
 
 export function useChat(conversationId: string | null) {
   const qc = useQueryClient();
-  const { isStreaming, streamingText, setStreaming, appendStreamingToken, resetStreaming } =
-    useChatStore();
-  const { selectedModel } = useSettingsStore();
+  const {
+    isStreaming,
+    streamingText,
+    setStreaming,
+    appendStreamingToken,
+    resetStreaming,
+    setLastStreamError,
+    setRoutingInfo,
+  } = useChatStore();
+  const { selectedModel, setSelectedModel } = useSettingsStore();
 
   const activeRequestId = useRef<string | null>(null);
   // Mirror of streamingText in a ref so event callbacks see the latest value
@@ -49,6 +72,22 @@ export function useChat(conversationId: string | null) {
         const { requestId, token } = payload as TokenPayload;
         if (requestId === activeRequestId.current) {
           appendStreamingToken(token);
+        }
+      },
+    );
+
+    const offRouting = window.ghchat.on(
+      IPC.HF_CHAT_ROUTING,
+      (_e: IpcRendererEvent, payload: unknown) => {
+        const p = payload as RoutingPayload;
+        if (p.requestId === activeRequestId.current) {
+          setRoutingInfo({
+            model: p.model,
+            modelName: p.modelName,
+            reason: p.reason,
+            isAuto: p.isAuto,
+            isFallback: p.isFallback,
+          });
         }
       },
     );
@@ -80,20 +119,52 @@ export function useChat(conversationId: string | null) {
     const offError = window.ghchat.on(
       IPC.HF_CHAT_ERROR,
       (_e: IpcRendererEvent, payload: unknown) => {
-        const { requestId, error } = payload as ErrorPayload;
-        if (requestId !== activeRequestId.current) return;
+        const p = payload as ErrorPayload;
+        if (p.requestId !== activeRequestId.current) return;
         activeRequestId.current = null;
         resetStreaming();
-        toast.error(error, { duration: 6000 });
+
+        const structuredError: StructuredChatError = {
+          message: p.error,
+          status: p.status,
+          failedModel: p.failedModel,
+          fallbackModel: p.fallbackModel,
+          fallbackModelName: p.fallbackModelName,
+          actions: p.actions ?? ["retry", "auto", "settings"],
+        };
+        setLastStreamError(structuredError);
+        // Also show a brief toast for accessibility / notification
+        toast.error(p.error, { duration: 4000 });
       },
     );
 
     return () => {
       offToken();
+      offRouting();
       offEnd();
       offError();
     };
-  }, [conversationId, appendStreamingToken, resetStreaming, qc]);
+  }, [conversationId, appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc]);
+
+  // ── Internal helper: dispatch a chat stream request ────────────────────────
+  const dispatchStream = useCallback(
+    async (modelId: string, messages: Array<{ role: string; content: string }>) => {
+      const apiKey = await ipc.getApiKey();
+      if (!apiKey) {
+        toast.error("No API key set. Open Settings to add your Hugging Face API key.", {
+          duration: 5000,
+        });
+        return;
+      }
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      activeRequestId.current = requestId;
+      setStreaming(true);
+      setLastStreamError(null);
+      setRoutingInfo(null);
+      window.ghchat.send(IPC.HF_CHAT_STREAM, { requestId, model: modelId, messages, apiKey });
+    },
+    [setStreaming, setLastStreamError, setRoutingInfo],
+  );
 
   // ── Send a new message ─────────────────────────────────────────────────────
   const sendMessage = useCallback(
@@ -126,18 +197,9 @@ export function useChat(conversationId: string | null) {
       }
 
       const messages = await ipc.listMessages(conversationId);
-      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      activeRequestId.current = requestId;
-      setStreaming(true);
-
-      window.ghchat.send(IPC.HF_CHAT_STREAM, {
-        requestId,
-        model: selectedModel,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
-        apiKey,
-      });
+      await dispatchStream(selectedModel, messages.map((m) => ({ role: m.role, content: m.content })));
     },
-    [conversationId, isStreaming, selectedModel, setStreaming, qc],
+    [conversationId, isStreaming, selectedModel, dispatchStream, qc],
   );
 
   // ── Stop the active stream ─────────────────────────────────────────────────
@@ -162,24 +224,30 @@ export function useChat(conversationId: string | null) {
     await ipc.deleteMessage(lastMsg.id);
     qc.invalidateQueries({ queryKey: ["messages", conversationId] });
 
-    const apiKey = await ipc.getApiKey();
-    if (!apiKey) {
-      toast.error("No API key set. Open Settings to add your Hugging Face API key.");
-      return;
-    }
-
     const remaining = messages.slice(0, -1);
-    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    activeRequestId.current = requestId;
-    setStreaming(true);
+    await dispatchStream(selectedModel, remaining.map((m) => ({ role: m.role, content: m.content })));
+  }, [conversationId, isStreaming, selectedModel, dispatchStream, qc]);
 
-    window.ghchat.send(IPC.HF_CHAT_STREAM, {
-      requestId,
-      model: selectedModel,
-      messages: remaining.map((m) => ({ role: m.role, content: m.content })),
-      apiKey,
-    });
-  }, [conversationId, isStreaming, selectedModel, setStreaming, qc]);
+  // ── Retry after failure (no message deletion needed — stream never saved) ──
+  const retryStream = useCallback(
+    async (overrideModel?: string) => {
+      if (!conversationId || isStreaming) return;
+      const messages = await ipc.listMessages(conversationId);
+      if (messages.length === 0) return;
+      const modelToUse = overrideModel ?? selectedModel;
+      if (overrideModel && overrideModel !== selectedModel) {
+        setSelectedModel(overrideModel);
+      }
+      await dispatchStream(modelToUse, messages.map((m) => ({ role: m.role, content: m.content })));
+    },
+    [conversationId, isStreaming, selectedModel, setSelectedModel, dispatchStream],
+  );
 
-  return { sendMessage, stopStream, regenerate, isStreaming, streamingText };
+  // ── Switch to Auto mode and retry ─────────────────────────────────────────
+  const switchToAutoMode = useCallback(async () => {
+    setSelectedModel(AUTO_MODEL_ID);
+    await retryStream(AUTO_MODEL_ID);
+  }, [setSelectedModel, retryStream]);
+
+  return { sendMessage, stopStream, regenerate, retryStream, switchToAutoMode, isStreaming, streamingText };
 }

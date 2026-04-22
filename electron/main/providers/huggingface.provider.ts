@@ -340,6 +340,20 @@ export class HuggingFaceProvider implements LLMProvider {
     let activeModel = route.primaryModel;
     let lastError: RouterError | null = null;
 
+    // Notify the renderer of the initial routing decision.
+    const modelName = (id: string) =>
+      diagnostics.models.find((m) => m.id === id)?.name ??
+      id.split("/").pop() ??
+      id;
+
+    options.onRoutingDecision?.({
+      model: route.primaryModel,
+      modelName: modelName(route.primaryModel),
+      reason: route.reason,
+      isAuto: route.isAuto,
+      isFallback: false,
+    });
+
     while (activeModel && !attempted.has(activeModel)) {
       attempted.add(activeModel);
       try {
@@ -368,6 +382,14 @@ export class HuggingFaceProvider implements LLMProvider {
         });
 
         if (fallback) {
+          // Notify the renderer that routing has switched to a fallback model.
+          options.onRoutingDecision?.({
+            model: fallback,
+            modelName: modelName(fallback),
+            reason: `Switched from ${modelName(activeModel)} — it wasn't available`,
+            isAuto: route.isAuto,
+            isFallback: true,
+          });
           activeModel = fallback;
           continue;
         }
@@ -422,16 +444,16 @@ export class HuggingFaceProvider implements LLMProvider {
     } catch (error) {
       const routerError = toRouterError(error, model);
       if (routerError.status === 403) {
-        return { status: "unavailable", message: "Forbidden for current account (403)" };
+        return { status: "gated", message: "Requires model access on Hugging Face (403)" };
       }
       if (routerError.status === 404) {
-        return { status: "unavailable", message: "Model unavailable on router (404)" };
+        return { status: "unavailable", message: "Model not found on router (404)" };
       }
       if (routerError.status === 429) {
-        return { status: "unknown", message: "Rate-limited during probe (429)" };
+        return { status: "rate-limited", message: "Rate limited during probe — try again later (429)" };
       }
       if (routerError.status === 503) {
-        return { status: "unknown", message: "Temporarily unavailable (503)" };
+        return { status: "unknown", message: "Temporarily unavailable during probe (503)" };
       }
       return { status: "unknown", message: formatProviderError(routerError) };
     }
@@ -469,11 +491,16 @@ export class HuggingFaceProvider implements LLMProvider {
     selectedModel: string,
     messages: StreamChatOptions["messages"],
     models: ModelPreset[],
-  ): { primaryModel: string; fallbackModel?: string } {
+  ): { primaryModel: string; fallbackModel?: string; reason: string; isAuto: boolean } {
     if (selectedModel && selectedModel !== AUTO_MODEL_ID) {
       const selected = models.find((m) => m.id === selectedModel);
       if (selected) {
-        return { primaryModel: selected.id, fallbackModel: selected.fallbackModel };
+        return {
+          primaryModel: selected.id,
+          fallbackModel: selected.fallbackModel,
+          reason: "Selected by you",
+          isAuto: false,
+        };
       }
     }
 
@@ -487,7 +514,8 @@ export class HuggingFaceProvider implements LLMProvider {
       rankWorkingModels(models).find((m) => m.id !== AUTO_MODEL_ID)?.id ??
       "Qwen/Qwen2.5-1.5B-Instruct";
     const fallback = models.find((m) => m.id === primary)?.fallbackModel;
-    return { primaryModel: primary, fallbackModel: fallback };
+    const reason = buildAutoReason(category);
+    return { primaryModel: primary, fallbackModel: fallback, reason, isAuto: true };
   }
 
   private pickFallbackModel(options: {
@@ -609,6 +637,21 @@ export class HuggingFaceProvider implements LLMProvider {
   }
 }
 
+function buildAutoReason(category: ModelCategory): string {
+  switch (category) {
+    case "coding":
+      return "Chosen because your prompt looks code-related";
+    case "reasoning":
+      return "Chosen because your prompt looks analytical";
+    case "fast":
+      return "Using a faster model to reduce wait time";
+    case "longContext":
+      return "Chosen for your long prompt or document";
+    default:
+      return "Best verified model for general chat";
+  }
+}
+
 function classifyPromptCategory(prompt: string): ModelCategory {
   const lower = prompt.toLowerCase();
   if (/\b(code|bug|debug|typescript|javascript|python|rust|go|sql|refactor|compile|stack\s+trace)\b/.test(lower)) {
@@ -637,6 +680,10 @@ function rankWorkingModels(models: ModelPreset[]): ModelPreset[] {
   const verificationScore: Record<ModelVerificationStatus, number> = {
     verified: SCORE_HIGH,
     unknown: SCORE_MEDIUM,
+    // These three statuses should all be ranked below "unknown" so Auto routing
+    // avoids them until a verified alternative exists.
+    "rate-limited": SCORE_LOW,
+    gated: SCORE_LOW,
     unavailable: SCORE_LOW,
   };
   const costScore: Record<ModelPreset["costTier"], number> = {
@@ -719,13 +766,13 @@ function mapRouterErrorToUserMessage(
   const fallbackHint = fallbackModel ? ` Try fallback model: ${fallbackModel}.` : "";
   if (status === 401) return "Invalid API key — open Settings to update it.";
   if (status === 403)
-    return `Access denied for the selected model (403).${fallbackHint || " Try another verified model."}`;
+    return `Access denied for the selected model.${fallbackHint || " The model may require special access approval on Hugging Face — try another verified model."}`;
   if (status === 404)
-    return `Model not found on Hugging Face router (404).${fallbackHint || " Select another model."}`;
+    return `Model not found on the Hugging Face router.${fallbackHint || " Select another model."}`;
   if (status === 429)
-    return `Rate limit reached (429).${fallbackHint || " Wait briefly and retry."}`;
+    return `Rate limit reached.${fallbackHint || " Wait a moment and try again."}`;
   if (status === 503)
-    return `Model/provider temporarily unavailable (503).${fallbackHint || " Retry in a moment."}`;
+    return `Model temporarily unavailable.${fallbackHint || " Retry in a moment."}`;
   if (/network|fetch|ENOTFOUND|ECONNREFUSED/i.test(message)) {
     return "Network error — check your internet connection and try again.";
   }

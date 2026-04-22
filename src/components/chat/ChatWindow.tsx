@@ -1,4 +1,5 @@
 import { useChatStore } from "@/stores/chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { useMessages } from "@/hooks/useMessages";
 import { useChat } from "@/hooks/useChat";
 import { EmptyState } from "./EmptyState";
@@ -8,8 +9,10 @@ import { ChatHeader } from "./ChatHeader";
 
 export function ChatWindow() {
   const { selectedConversationId } = useChatStore();
+  const { setSettingsOpen } = useSettingsStore();
   const { data: messages = [] } = useMessages(selectedConversationId);
-  const { sendMessage, stopStream, regenerate, isStreaming } = useChat(selectedConversationId);
+  const { sendMessage, stopStream, regenerate, retryStream, switchToAutoMode, isStreaming } =
+    useChat(selectedConversationId);
 
   if (!selectedConversationId) {
     return (
@@ -22,7 +25,14 @@ export function ChatWindow() {
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden">
       <ChatHeader />
-      <MessageList messages={messages} onRegenerate={regenerate} />
+      <MessageList
+        messages={messages}
+        onRegenerate={regenerate}
+        onRetry={() => void retryStream()}
+        onSwitchFallback={(modelId) => void retryStream(modelId)}
+        onUseAuto={() => void switchToAutoMode()}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
       <Composer onSend={sendMessage} onStop={stopStream} isStreaming={isStreaming} />
     </div>
   );
