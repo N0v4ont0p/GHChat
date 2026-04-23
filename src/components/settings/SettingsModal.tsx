@@ -87,8 +87,9 @@ export function SettingsModal() {
   const [keyStatus, setKeyStatus] = useState<"idle" | "ready" | "warning" | "invalid">("idle");
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"apikey" | "model">("apikey");
+  const [activeTab, setActiveTab] = useState<"apikey" | "model">("model");
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
+  const [modelSearch, setModelSearch] = useState("");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { data: models = [] } = useModels(validatedToken ?? undefined);
@@ -325,6 +326,25 @@ export function SettingsModal() {
 
           {activeTab === "model" && (
             <div className="space-y-4">
+              {/* Search input */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={modelSearch}
+                  onChange={(e) => setModelSearch(e.target.value)}
+                  placeholder="Search models…"
+                  className="w-full rounded-lg border border-border/60 bg-secondary/50 px-3 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+                {modelSearch && (
+                  <button
+                    onClick={() => setModelSearch("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
               {/* Category filter */}
               <div className="flex gap-1.5 flex-wrap">
                 {ALL_CATEGORIES.map((cat) => (
@@ -350,7 +370,19 @@ export function SettingsModal() {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {availableModels.filter((m) => m.category === selectedCategory).map((m) => {
+                {availableModels
+                  .filter((m) => {
+                    const matchesCategory = selectedCategory === "all" || m.category === selectedCategory;
+                    if (!matchesCategory) return false;
+                    if (!modelSearch.trim()) return true;
+                    const q = modelSearch.toLowerCase();
+                    return (
+                      m.name.toLowerCase().includes(q) ||
+                      m.id.toLowerCase().includes(q) ||
+                      (m.description ?? "").toLowerCase().includes(q)
+                    );
+                  })
+                  .map((m) => {
                   const isLimitedAccess = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
                   return (
                     <button
@@ -381,6 +413,8 @@ export function SettingsModal() {
                             )}
                             <VerificationBadge status={m.verifiedStatus} />
                           </div>
+                          {/* Raw model ID — always shown in small muted text */}
+                          <p className="font-mono text-[9px] text-muted-foreground/40 mb-0.5 truncate">{m.id}</p>
                           <p className="text-xs text-muted-foreground">{m.description}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground/60 leading-relaxed">
                             {m.whyChoose}
@@ -437,6 +471,17 @@ export function SettingsModal() {
                     </button>
                   );
                 })}
+                {availableModels.filter((m) => {
+                  const matchesCategory = selectedCategory === "all" || m.category === selectedCategory;
+                  if (!matchesCategory) return false;
+                  if (!modelSearch.trim()) return true;
+                  const q = modelSearch.toLowerCase();
+                  return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || (m.description ?? "").toLowerCase().includes(q);
+                }).length === 0 && (
+                  <p className="py-4 text-center text-sm text-muted-foreground/50">
+                    {modelSearch ? `No models match "${modelSearch}"` : "No models in this category yet."}
+                  </p>
+                )}
               </div>
             </div>
           )}

@@ -17,6 +17,7 @@ const OR_FREE_ROUTER_ID = "openrouter/free";
 const AUTO_MODEL_ID = "__auto__";
 const CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 const HEALTH_CACHE_TTL_MS = 3 * 60 * 1000;
+const DEFAULT_MAX_TOKENS = 2048;
 
 type Role = "user" | "assistant" | "system";
 
@@ -76,7 +77,7 @@ const KNOWN_FREE_IDS = [
 
 const LARGE_MODEL_REGEX = /\b(70b|65b|40b|34b|33b|30b|27b|26b)\b/i;
 
-function detectCapabilities(id: string, name: string, contextLength: number): ModelCapabilities {
+function detectCapabilities(id: string, name: string, contextLength: number, modality?: string): ModelCapabilities {
   const combined = id + " " + name;
   const isLargeModel = LARGE_MODEL_REGEX.test(combined);
   const coding = /coder|code|coding/i.test(combined);
@@ -87,7 +88,17 @@ function detectCapabilities(id: string, name: string, contextLength: number): Mo
   const fastBySize = /nano|mini|tiny|small|1\.5b|1b|2b|flash/i.test(combined);
   const fast = !isLargeModel && (contextLength <= 8192 || fastBySize);
   const specialReasoning = reasoning;
-  return { coding, reasoning, fast, creative, longContext, toolUse, specialReasoning, streaming: true };
+  // Extended capabilities from metadata
+  const webSearch = /perplexity|search/i.test(combined) ||
+    (modality !== undefined && /search/i.test(modality));
+  const imageOutput = modality !== undefined && /image/i.test(modality) && /output/i.test(modality);
+  const functionCalling = /tool|function/i.test(combined);
+  const reasoningMode = reasoning || /think/i.test(combined);
+  const browsing = webSearch || /browse|browsing/i.test(combined);
+  return {
+    coding, reasoning, fast, creative, longContext, toolUse, specialReasoning, streaming: true,
+    webSearch, imageOutput, functionCalling, reasoningMode, browsing,
+  };
 }
 
 function formatContextWindow(length: number): string {
@@ -105,7 +116,7 @@ function deriveFriendlyName(id: string): string {
 }
 
 function normalizeToPreset(raw: RawOrModel): ModelPreset {
-  const capabilities = detectCapabilities(raw.id, raw.name, raw.context_length);
+  const capabilities = detectCapabilities(raw.id, raw.name, raw.context_length, raw.architecture?.modality);
   let category: ModelCategory = "general";
   if (capabilities.coding) category = "coding";
   else if (capabilities.reasoning) category = "reasoning";
@@ -204,7 +215,11 @@ function classifyPrompt(messages: Array<{ role: string; content: string }>): Pro
   return "general";
 }
 
-function scoreModel(preset: ModelPreset, intent: PromptIntent): number {
+function scoreModel(
+  preset: ModelPreset,
+  intent: PromptIntent,
+  preferences?: { webSearch?: boolean; reasoningOn?: boolean },
+): number {
   const health = preset.runtimeHealth ?? "available";
   let score = 0;
   if (health === "available") score += 4;
@@ -221,6 +236,10 @@ function scoreModel(preset: ModelPreset, intent: PromptIntent): number {
   if (intent === "fast" && cap.fast) score += 3;
   if (intent === "longContext" && cap.longContext) score += 3;
   if (intent === "fast" && preset.speed === "fast") score += 2;
+
+  // Preference boosts
+  if (preferences?.webSearch && cap.webSearch) score += 3;
+  if (preferences?.reasoningOn && (cap.reasoningMode ?? cap.reasoning)) score += 3;
 
   return score;
 }
@@ -469,6 +488,7 @@ export class OpenRouterProvider implements LLMProvider {
     selectedModel: string,
     messages: Array<{ role: string; content: string }>,
     models: ModelPreset[],
+    preferences?: { webSearch?: boolean; reasoningOn?: boolean },
   ): RouteDecision {
     const isAuto = selectedModel === AUTO_MODEL_ID || selectedModel === OR_FREE_ROUTER_ID;
 
@@ -486,7 +506,7 @@ export class OpenRouterProvider implements LLMProvider {
     const candidates = models.filter((m) => m.id !== AUTO_MODEL_ID);
 
     const scored = candidates
-      .map((m) => ({ model: m, score: scoreModel(m, intent) }))
+      .map((m) => ({ model: m, score: scoreModel(m, intent, preferences) }))
       .sort((a, b) => b.score - a.score);
 
     const best = scored[0]?.model;
@@ -522,7 +542,21 @@ export class OpenRouterProvider implements LLMProvider {
     messages: RouterChatMessage[];
     signal?: AbortSignal;
     onToken: (t: string) => void;
+    webSearch?: boolean;
+    reasoningOn?: boolean;
+    maxTokens?: number | null;
   }): Promise<void> {
+    const maxTok = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const body: Record<string, unknown> = {
+      model: opts.model,
+      stream: true,
+      max_tokens: maxTok,
+      temperature: 0.7,
+      messages: opts.messages,
+    };
+    if (opts.webSearch) body["plugins"] = [{ id: "web" }];
+    if (opts.reasoningOn) body["reasoning"] = { effort: "high" };
+
     const res = await fetch(`${OR_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -531,13 +565,7 @@ export class OpenRouterProvider implements LLMProvider {
         "HTTP-Referer": "https://github.com/N0v4ont0p/GHChat",
         "X-Title": "GHchat",
       },
-      body: JSON.stringify({
-        model: opts.model,
-        stream: true,
-        max_tokens: 2048,
-        temperature: 0.7,
-        messages: opts.messages,
-      }),
+      body: JSON.stringify(body),
       signal: opts.signal,
     });
 
@@ -594,7 +622,7 @@ export class OpenRouterProvider implements LLMProvider {
     const diagnostics = await this.getDiagnostics(token);
     const models = diagnostics.models;
 
-    const route = this.resolveRoute(options.model, options.messages, models);
+    const route = this.resolveRoute(options.model, options.messages, models, options.preferences);
     const modelName = (id: string) =>
       models.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id;
 
@@ -619,6 +647,9 @@ export class OpenRouterProvider implements LLMProvider {
           messages: options.messages as RouterChatMessage[],
           signal: options.signal,
           onToken: options.onToken,
+          webSearch: options.webSearch,
+          reasoningOn: options.reasoningOn,
+          maxTokens: options.maxTokens,
         });
         this.runtimeHealthMap.set(activeModel, "available");
         if (usedFallback) {

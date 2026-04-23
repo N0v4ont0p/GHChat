@@ -10,6 +10,9 @@ interface StreamRequest {
   model: string;
   messages: Array<{ role: string; content: string }>;
   apiKey: string;
+  webSearch?: boolean;
+  reasoningOn?: boolean;
+  maxTokens?: number | null;
 }
 
 function actionsForStatus(
@@ -84,7 +87,7 @@ export function registerOrHandlers(ipcMain: IpcMain): void {
     IPC.OR_CHAT_STREAM,
     async (
       event: IpcMainEvent,
-      { requestId, model, messages, apiKey }: StreamRequest,
+      { requestId, model, messages, apiKey, webSearch, reasoningOn, maxTokens }: StreamRequest,
     ) => {
       const controller = new AbortController();
       activeStreams.set(requestId, controller);
@@ -101,6 +104,10 @@ export function registerOrHandlers(ipcMain: IpcMain): void {
           messages: messages as Array<{ role: "user" | "assistant" | "system"; content: string }>,
           apiKey,
           signal: controller.signal,
+          webSearch,
+          reasoningOn,
+          maxTokens,
+          preferences: { webSearch, reasoningOn },
           onToken: (token) => {
             send(IPC.OR_CHAT_TOKEN, { requestId, token });
           },

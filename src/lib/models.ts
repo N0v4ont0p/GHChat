@@ -7,6 +7,11 @@ export const CATEGORY_META: Record<
   ModelCategory,
   { label: string; description: string; emoji: string }
 > = {
+  all: {
+    label: "All Models",
+    description: "Every free model available via OpenRouter",
+    emoji: "🌐",
+  },
   auto: {
     label: "Auto",
     description: "Automatically chooses the best free model for your prompt",
@@ -52,6 +57,7 @@ export const ALL_CATEGORIES: ModelCategory[] = [
   "reasoning",
   "longContext",
   "creative",
+  "all",
 ];
 
 export function getPreset(models: ModelPreset[], id: string): ModelPreset | undefined {

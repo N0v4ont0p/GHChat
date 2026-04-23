@@ -1,4 +1,4 @@
-import { Settings, AlertTriangle, CheckCircle2, HelpCircle, ShieldAlert, Clock } from "lucide-react";
+import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -16,6 +16,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   reasoning: "bg-violet-500/15 text-violet-400",
   longContext: "bg-fuchsia-500/15 text-fuchsia-400",
   creative: "bg-pink-500/15 text-pink-400",
+  all: "bg-slate-500/15 text-slate-400",
 };
 
 /** Dot color + icon + tooltip for each verification status */
@@ -66,6 +67,7 @@ function CapabilityBadges({ preset }: { preset: ModelPreset | undefined }) {
   if (cap.creative) badges.push({ label: "creative", icon: "✨" });
   if (cap.fast) badges.push({ label: "fast", icon: "⚡" });
   if (cap.longContext) badges.push({ label: "long ctx", icon: "📚" });
+  if (cap.webSearch) badges.push({ label: "search", icon: "🔍" });
   if (badges.length === 0) return null;
   return (
     <span className="flex items-center gap-1">
@@ -83,7 +85,7 @@ function CapabilityBadges({ preset }: { preset: ModelPreset | undefined }) {
 
 export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
-  const { isStreaming, streamingTokenCount } = useChatStore();
+  const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
 
   const preset = getPreset(models, selectedModel);
@@ -91,49 +93,64 @@ export function ChatHeader() {
   const category = preset?.category ?? "general";
   const verifiedStatus = preset?.verifiedStatus ?? "unknown";
   const healthTags = preset?.healthTags ?? [];
-  const categoryMeta = CATEGORY_META[category];
+  const categoryMeta = CATEGORY_META[category] ?? CATEGORY_META.general;
   const categoryColorClass = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.general;
 
   return (
     <TooltipProvider delayDuration={400}>
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/40 bg-card/20 px-4 backdrop-blur-sm">
+      <div
+        className={cn(
+          "flex h-12 shrink-0 items-center justify-between border-b px-4 backdrop-blur-sm transition-colors",
+          incognitoMode
+            ? "border-amber-500/30 bg-amber-950/20"
+            : "border-border/40 bg-card/20",
+        )}
+      >
         {/* Model indicator */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => setSettingsOpen(true)}
-              className={cn(
-                "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-all",
-                "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
-              )}
-            >
-              {isStreaming ? (
-                <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-primary animate-glow-pulse" />
-              ) : (
-                <HealthIndicator status={verifiedStatus} modelId={selectedModel} />
-              )}
-              <span className="font-medium">{displayName}</span>
-              <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
-                {categoryMeta.emoji} {categoryMeta.label}
-              </span>
-              {!isStreaming && <CapabilityBadges preset={preset} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="space-y-0.5 max-w-[220px]">
-            <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
-            {!isStreaming && (
-              <>
-                <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
-                {healthTags.length > 0 && (
-                  <p className="text-[11px] text-muted-foreground">
-                    {healthTags.join(" · ")}
-                  </p>
+        <div className="flex items-center gap-2">
+          {incognitoMode && (
+            <span className="flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+              <EyeOff className="h-2.5 w-2.5" />
+              Incognito
+            </span>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-all",
+                  "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
                 )}
-              </>
-            )}
-            <p className="font-mono text-[11px] text-muted-foreground">{selectedModel}</p>
-          </TooltipContent>
-        </Tooltip>
+              >
+                {isStreaming ? (
+                  <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-primary animate-glow-pulse" />
+                ) : (
+                  <HealthIndicator status={verifiedStatus} modelId={selectedModel} />
+                )}
+                <span className="font-medium">{displayName}</span>
+                <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
+                  {categoryMeta.emoji} {categoryMeta.label}
+                </span>
+                {!isStreaming && <CapabilityBadges preset={preset} />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="space-y-0.5 max-w-[220px]">
+              <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
+              {!isStreaming && (
+                <>
+                  <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
+                  {healthTags.length > 0 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      {healthTags.join(" · ")}
+                    </p>
+                  )}
+                </>
+              )}
+              <p className="font-mono text-[11px] text-muted-foreground">{selectedModel}</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
 
         <div className="flex items-center gap-2">
           {/* Live token counter */}
@@ -142,6 +159,28 @@ export function ChatHeader() {
               {streamingTokenCount} tok
             </span>
           )}
+
+          {/* Incognito toggle */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  "h-7 w-7 transition-colors",
+                  incognitoMode
+                    ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setIncognitoMode(!incognitoMode)}
+              >
+                {incognitoMode ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {incognitoMode ? "Incognito on — click to disable" : "Enable incognito mode"}
+            </TooltipContent>
+          </Tooltip>
 
           {/* Settings shortcut */}
           <Tooltip>
