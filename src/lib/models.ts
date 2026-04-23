@@ -9,7 +9,7 @@ export const CATEGORY_META: Record<
 > = {
   auto: {
     label: "Auto",
-    description: "Automatically chooses the best verified model for your prompt",
+    description: "Automatically chooses the best free model for your prompt",
     emoji: "🤖",
   },
   general: {
@@ -37,6 +37,11 @@ export const CATEGORY_META: Record<
     description: "Better for long documents and larger context windows",
     emoji: "📚",
   },
+  creative: {
+    label: "Creative",
+    description: "Open-ended, imaginative, and story-oriented conversations",
+    emoji: "✨",
+  },
 };
 
 export const ALL_CATEGORIES: ModelCategory[] = [
@@ -46,6 +51,7 @@ export const ALL_CATEGORIES: ModelCategory[] = [
   "fast",
   "reasoning",
   "longContext",
+  "creative",
 ];
 
 export function getPreset(models: ModelPreset[], id: string): ModelPreset | undefined {

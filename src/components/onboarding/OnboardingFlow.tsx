@@ -10,7 +10,7 @@ import { CATEGORY_META, ALL_CATEGORIES, AUTO_MODEL_ID } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
-import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
+import type { ModelCategory, OpenRouterDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
 
 interface OnboardingFlowProps {
   onComplete: () => void;
@@ -93,7 +93,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [saving, setSaving] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("auto");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<HuggingFaceDiagnostics | null>(null);
+  const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { selectedModel, setSelectedModel } = useSettingsStore();
   const { data: models = [] } = useModels(validatedToken ?? undefined);
   const availableModels = models.length > 0 ? models : (diagnostics?.models ?? []);
@@ -111,7 +111,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         setKeyStatus("invalid");
       } else if (
         diag &&
-        diag.inferenceValidation.status === "success" &&
+        diag.catalogValidation.status === "success" &&
         diag.modelValidation.status === "success" &&
         diag.streamingValidation.status === "success"
       ) {
@@ -194,8 +194,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               <div className="space-y-3">
                 <h1 className="text-3xl font-bold tracking-tight">Welcome to GHchat</h1>
                 <p className="mx-auto max-w-sm text-base text-muted-foreground leading-relaxed">
-                  A reliable AI chat app for Hugging Face — smart model routing,
-                  free-tier friendly, and built to stay out of your way.
+                  Chat with free AI models via OpenRouter — smart routing,
+                  live catalog, and built to stay out of your way.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3 text-left text-sm">
@@ -203,7 +203,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                   ["🔒", "Secure key storage", "OS-level encryption, never in plain text"],
                   ["💬", "Persistent conversations", "All chats saved locally in SQLite"],
                   ["⚡", "Streaming responses", "Token-by-token, real-time output"],
-                  ["🤖", "Verified model routing", "GHchat checks which models actually work for your account"],
+                  ["🤖", "Smart model routing", "Picks the best free OpenRouter model for each prompt"],
                 ].map(([icon, title, desc]) => (
                   <div key={title} className="rounded-xl border border-border bg-card/50 p-3">
                     <div className="mb-1 text-lg">{icon}</div>
@@ -224,9 +224,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold tracking-tight">Add your API key</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  GHchat uses the Hugging Face Inference API to run AI models. After
-                  verifying your key, GHchat will probe a set of models to find which
-                  ones are available for your account right now.
+                  GHchat uses the OpenRouter API to access free AI models.
+                  After verifying your key, GHchat will fetch the live catalog of
+                  available free models.
                 </p>
               </div>
 
@@ -234,24 +234,24 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium">How to get a free key</span>
                   <a
-                    href="https://huggingface.co/settings/tokens"
+                    href="https://openrouter.ai/keys"
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 text-primary hover:underline text-xs"
                   >
-                    Open Hugging Face
+                    Open OpenRouter
                     <ExternalLink className="h-3 w-3" />
                   </a>
                 </div>
                 <ol className="text-xs text-muted-foreground space-y-1 list-decimal pl-4">
-                  <li>Sign up or log in at huggingface.co</li>
+                  <li>Sign up or log in at openrouter.ai</li>
                   <li>
                     Go to{" "}
                     <span className="font-mono bg-muted px-1 rounded text-foreground">
-                      Settings → Access Tokens
+                      Keys
                     </span>
                   </li>
-                  <li>Create a new token with read permissions</li>
+                  <li>Create a new API key</li>
                   <li>Paste it below</li>
                 </ol>
               </div>
@@ -260,7 +260,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 <div className="flex gap-2">
                   <Input
                     type="password"
-                    placeholder="hf_••••••••••••••••••••"
+                    placeholder="sk-or-••••••••••••••••••••"
                     value={apiKey}
                     onChange={(e) => {
                       setApiKey(e.target.value);
@@ -325,13 +325,18 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
                  {diagnostics && (
                    <div className="rounded-lg border border-border/60 bg-card/40 px-3 py-2 space-y-1">
-                     <LayerStatus label="Token" layer={diagnostics.tokenValidation} />
-                     <LayerStatus label="Inference" layer={diagnostics.inferenceValidation} />
+                     <LayerStatus label="API Key" layer={diagnostics.keyValidation} />
+                     <LayerStatus label="Catalog" layer={diagnostics.catalogValidation} />
                      <LayerStatus label="Models" layer={diagnostics.modelValidation} />
                      <LayerStatus label="Streaming" layer={diagnostics.streamingValidation} />
+                     {diagnostics.freeModelCount > 0 && (
+                       <p className="text-xs text-muted-foreground">
+                         Free models available: <span className="text-green-400">{diagnostics.freeModelCount}</span>
+                       </p>
+                     )}
                      {diagnostics.bestWorkingModels.length > 0 && (
                        <p className="text-xs text-muted-foreground">
-                         Best working models right now:{" "}
+                         Best models right now:{" "}
                          <span className="text-foreground">
                            {diagnostics.bestWorkingModels
                              .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
@@ -369,9 +374,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold tracking-tight">Your models are ready</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  GHchat verified token, inference, and model availability for your account.{" "}
+                  GHchat fetched the live catalog of free models from OpenRouter.{" "}
                   <span className="text-foreground font-medium">Auto</span> is selected by
-                  default — it routes each prompt to the best working model automatically.
+                  default — it routes each prompt to the best available free model automatically.
                 </p>
                 {diagnostics && (
                   <div className="flex items-center gap-2">
@@ -380,7 +385,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                       size="sm"
                       className="h-7 text-xs"
                       onClick={async () => {
-                        const next = await ipc.refreshHfDiagnostics(apiKey.trim() || undefined);
+                        const next = await ipc.refreshDiagnostics(apiKey.trim() || undefined);
                         setDiagnostics(next);
                       }}
                     >
@@ -452,7 +457,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                           </p>
                           {m.verifiedStatus === "gated" && (
                             <p className="mt-1 text-[10px] text-amber-400/80">
-                              Requires model access approval on Hugging Face
+                              Requires model access approval
                             </p>
                           )}
                           {m.verifiedStatus === "rate-limited" && (

@@ -3,12 +3,12 @@ import { initDatabase } from "./services/database";
 import { registerAllIpcHandlers } from "./ipc";
 import { createMainWindow } from "./window";
 import { getApiKey } from "./services/keychain";
-import { huggingFaceProvider } from "./providers";
+import { openRouterProvider } from "./providers";
 
 app.whenReady().then(() => {
   initDatabase();
   registerAllIpcHandlers();
-  void huggingFaceProvider.warmupForToken(getApiKey());
+  void openRouterProvider.warmupForToken(getApiKey());
   createMainWindow();
 
   app.on("activate", () => {

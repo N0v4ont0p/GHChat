@@ -6,10 +6,30 @@ export type ModelCategory =
   | "coding"
   | "fast"
   | "reasoning"
-  | "longContext";
+  | "longContext"
+  | "creative";
 
 export type ModelSpeed = "fast" | "medium" | "slow";
 export type ModelCostTier = "free" | "standard" | "premium";
+
+export type ModelRuntimeHealth =
+  | "available"
+  | "degraded"
+  | "unavailable"
+  | "rate-limited"
+  | "overcrowded"
+  | "fallback-only";
+
+export interface ModelCapabilities {
+  coding: boolean;
+  reasoning: boolean;
+  fast: boolean;
+  creative: boolean;
+  longContext: boolean;
+  toolUse: boolean;
+  specialReasoning: boolean;
+  streaming: boolean;
+}
 /**
  * Per-model probe result returned after a boot-time verification request.
  *
@@ -75,21 +95,25 @@ export interface ModelPreset {
   isExperimental?: boolean;
   isSlow?: boolean;
   lastCheckedAt?: number;
+  capabilities?: ModelCapabilities;
+  runtimeHealth?: ModelRuntimeHealth;
 }
 
-export interface HuggingFaceDiagnostics {
-  tokenValid: boolean;
-  tokenMessage: string;
-  tokenValidation: ValidationLayerState;
-  inferenceValidation: ValidationLayerState;
+export interface OpenRouterDiagnostics {
+  apiKeyValid: boolean;
+  apiKeyMessage: string;
+  keyValidation: ValidationLayerState;
+  catalogValidation: ValidationLayerState;
   modelValidation: ValidationLayerState;
   streamingValidation: ValidationLayerState;
   checkedAt: number;
   models: ModelPreset[];
+  freeModelCount: number;
   bestWorkingModels: string[];
   noVerifiedModels?: boolean;
   lastProviderError?: string;
   recommendedFallback?: string;
+  usedFallbackRouter?: boolean;
 }
 
 /**
@@ -172,7 +196,7 @@ export interface ProviderHealthResult {
 export interface KeyValidationResult {
   valid: boolean;
   message: string;
-  diagnostics?: HuggingFaceDiagnostics;
+  diagnostics?: OpenRouterDiagnostics;
 }
 
 export interface Conversation {
@@ -202,15 +226,15 @@ export const IPC = {
   SETTINGS_UPDATE: "settings:update",
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
-  HF_MODELS_LIST: "hf:models:list",
-  HF_DIAGNOSTICS_GET: "hf:diagnostics:get",
-  HF_DIAGNOSTICS_REFRESH: "hf:diagnostics:refresh",
-  HF_KEY_VALIDATE: "hf:key:validate",
-  HF_CHAT_STREAM: "hf:chat:stream",
-  HF_CHAT_STOP: "hf:chat:stop",
-  HF_CHAT_TOKEN: "hf:chat:token",
-  HF_CHAT_END: "hf:chat:end",
-  HF_CHAT_ERROR: "hf:chat:error",
+  OR_MODELS_LIST: "or:models:list",
+  OR_DIAGNOSTICS_GET: "or:diagnostics:get",
+  OR_DIAGNOSTICS_REFRESH: "or:diagnostics:refresh",
+  OR_KEY_VALIDATE: "or:key:validate",
+  OR_CHAT_STREAM: "or:chat:stream",
+  OR_CHAT_STOP: "or:chat:stop",
+  OR_CHAT_TOKEN: "or:chat:token",
+  OR_CHAT_END: "or:chat:end",
+  OR_CHAT_ERROR: "or:chat:error",
   /** Emitted before streaming starts; tells the renderer which model was chosen and why */
-  HF_CHAT_ROUTING: "hf:chat:routing",
+  OR_CHAT_ROUTING: "or:chat:routing",
 } as const;

@@ -17,7 +17,7 @@ import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { ModelCategory, HuggingFaceDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
+import type { ModelCategory, OpenRouterDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
 
 /** Compact verification badge used inside model cards */
 function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
@@ -90,7 +90,7 @@ export function SettingsModal() {
   const [activeTab, setActiveTab] = useState<"apikey" | "model">("apikey");
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<HuggingFaceDiagnostics | null>(null);
+  const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { data: models = [] } = useModels(validatedToken ?? undefined);
   const availableModels = models.length > 0 ? models : (diagnostics?.models ?? []);
 
@@ -102,7 +102,7 @@ export function SettingsModal() {
         setKeyStatus("idle");
         setKeyMessage("");
       }).catch(() => {});
-      ipc.getHfDiagnostics().then(setDiagnostics).catch(() => {});
+      ipc.getDiagnostics().then(setDiagnostics).catch(() => {});
     }
   }, [settingsOpen]);
 
@@ -118,7 +118,7 @@ export function SettingsModal() {
         setKeyStatus("invalid");
       } else if (
         diag &&
-        diag.inferenceValidation.status === "success" &&
+        diag.catalogValidation.status === "success" &&
         diag.modelValidation.status === "success" &&
         diag.streamingValidation.status === "success"
       ) {
@@ -181,11 +181,11 @@ export function SettingsModal() {
           {activeTab === "apikey" && (
             <div className="space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Hugging Face API Key</label>
+                <label className="text-sm font-medium">OpenRouter API Key</label>
                 <div className="flex gap-2">
                   <Input
                     type="password"
-                    placeholder="hf_••••••••••••••••••••"
+                    placeholder="sk-or-••••••••••••••••••••"
                     value={apiKey}
                     onChange={(e) => {
                       setApiKey(e.target.value);
@@ -238,12 +238,12 @@ export function SettingsModal() {
                 <p>
                   Get a free key at{" "}
                   <a
-                    href="https://huggingface.co/settings/tokens"
+                    href="https://openrouter.ai/keys"
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-0.5 text-primary hover:underline"
                   >
-                    hf.co/settings/tokens
+                    openrouter.ai/keys
                     <ExternalLink className="h-2.5 w-2.5" />
                   </a>
                 </p>
@@ -252,12 +252,17 @@ export function SettingsModal() {
                   <span className="text-foreground font-medium">Electron safeStorage</span>.
                   Never written in plain text or uploaded anywhere.
                 </p>
-                {diagnostics && (
+                  {diagnostics && (
                   <div className="space-y-1 pt-1">
-                    <LayerStatus label="Token" layer={diagnostics.tokenValidation} />
-                    <LayerStatus label="Inference" layer={diagnostics.inferenceValidation} />
+                    <LayerStatus label="API Key" layer={diagnostics.keyValidation} />
+                    <LayerStatus label="Catalog" layer={diagnostics.catalogValidation} />
                     <LayerStatus label="Models" layer={diagnostics.modelValidation} />
                     <LayerStatus label="Streaming" layer={diagnostics.streamingValidation} />
+                    {diagnostics.freeModelCount > 0 && (
+                      <p className="text-muted-foreground">
+                        Free models: <span className="text-green-400/90">{diagnostics.freeModelCount}</span>
+                      </p>
+                    )}
                     {diagnostics.bestWorkingModels.length > 0 && (
                       <p>
                         Best working:{" "}
@@ -278,13 +283,16 @@ export function SettingsModal() {
                           diagnostics.recommendedFallback}
                       </p>
                     )}
+                    {diagnostics.usedFallbackRouter && (
+                      <p className="text-amber-400/70">openrouter/free was used as fallback router.</p>
+                    )}
                     <div className="flex items-center gap-2 pt-1">
                       <Button
                         variant="outline"
                         size="sm"
                         className="h-6 text-[10px]"
                         onClick={async () => {
-                          const refreshed = await ipc.refreshHfDiagnostics(apiKey.trim() || undefined);
+                          const refreshed = await ipc.refreshDiagnostics(apiKey.trim() || undefined);
                           setDiagnostics(refreshed);
                         }}
                       >
@@ -379,7 +387,7 @@ export function SettingsModal() {
                           </p>
                           {m.verifiedStatus === "gated" && (
                             <p className="mt-1 text-[10px] text-amber-400/80">
-                              Requires model access approval on Hugging Face
+                              Requires model access approval
                             </p>
                           )}
                           {m.verifiedStatus === "rate-limited" && (

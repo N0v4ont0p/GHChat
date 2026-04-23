@@ -1,13 +1,7 @@
-import { huggingFaceProvider } from "./huggingface.provider";
+import { openRouterProvider } from "./openrouter.provider";
 import type { LLMProvider } from "./provider.interface";
 
-/**
- * Provider registry.
- *
- * Add new providers here as the app grows.
- * Future entries: ollamaProvider, lmStudioProvider, openAiProvider, …
- */
-const providers: LLMProvider[] = [huggingFaceProvider];
+const providers: LLMProvider[] = [openRouterProvider];
 
 export function getProvider(id: string): LLMProvider {
   const provider = providers.find((p) => p.id === id);
@@ -16,8 +10,8 @@ export function getProvider(id: string): LLMProvider {
 }
 
 export function getDefaultProvider(): LLMProvider {
-  return huggingFaceProvider;
+  return openRouterProvider;
 }
 
-export { huggingFaceProvider };
+export { openRouterProvider };
 export type { LLMProvider };

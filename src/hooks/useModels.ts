@@ -5,6 +5,6 @@ export function useModels(apiKey?: string) {
   return useQuery({
     queryKey: ["models", apiKey ?? "__stored__"],
     queryFn: () => ipc.listModels(apiKey),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
   });
 }

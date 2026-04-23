@@ -5,7 +5,7 @@ import type {
   AppSettings,
   ModelPreset,
   KeyValidationResult,
-  HuggingFaceDiagnostics,
+  OpenRouterDiagnostics,
 } from "@/types";
 
 const api = () => window.ghchat;
@@ -36,15 +36,15 @@ export const ipc = {
   getApiKey: () => api().invoke<string>(IPC.KEYCHAIN_GET),
   setApiKey: (key: string) => api().invoke<void>(IPC.KEYCHAIN_SET, key),
 
-  // HF
-  listModels: (apiKey?: string) => api().invoke<ModelPreset[]>(IPC.HF_MODELS_LIST, apiKey),
-  validateApiKey: (key: string) => api().invoke<KeyValidationResult>(IPC.HF_KEY_VALIDATE, key),
-  getHfDiagnostics: (apiKey?: string) =>
-    api().invoke<HuggingFaceDiagnostics>(IPC.HF_DIAGNOSTICS_GET, apiKey),
-  refreshHfDiagnostics: (apiKey?: string) =>
-    api().invoke<HuggingFaceDiagnostics>(IPC.HF_DIAGNOSTICS_REFRESH, apiKey),
+  // OpenRouter
+  listModels: (apiKey?: string) => api().invoke<ModelPreset[]>(IPC.OR_MODELS_LIST, apiKey),
+  validateApiKey: (key: string) => api().invoke<KeyValidationResult>(IPC.OR_KEY_VALIDATE, key),
+  getDiagnostics: (apiKey?: string) =>
+    api().invoke<OpenRouterDiagnostics>(IPC.OR_DIAGNOSTICS_GET, apiKey),
+  refreshDiagnostics: (apiKey?: string) =>
+    api().invoke<OpenRouterDiagnostics>(IPC.OR_DIAGNOSTICS_REFRESH, apiKey),
 
   // Streaming
   stopStream: (requestId: string) =>
-    api().send(IPC.HF_CHAT_STOP, { requestId }),
+    api().send(IPC.OR_CHAT_STOP, { requestId }),
 };

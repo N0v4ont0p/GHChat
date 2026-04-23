@@ -87,7 +87,7 @@ export function EmptyState() {
           <span className={cn("text-[11px] rounded-full px-1.5 py-0.5 font-medium", "bg-secondary text-muted-foreground")}>
             {CATEGORY_META[category].emoji}
           </span>
-          {" "}via Hugging Face. Open-source AI, fully local data.
+          {" "}via OpenRouter. Free models, fully local data.
         </p>
       </motion.div>
 
