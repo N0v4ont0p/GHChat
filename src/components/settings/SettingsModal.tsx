@@ -324,7 +324,20 @@ export function SettingsModal() {
             </div>
           )}
 
-          {activeTab === "model" && (
+          {activeTab === "model" && (() => {
+              const q = modelSearch.trim().toLowerCase();
+              const filteredModels = availableModels.filter((m) => {
+                const matchesCategory = selectedCategory === "all" || m.category === selectedCategory;
+                if (!matchesCategory) return false;
+                if (!q) return true;
+                return (
+                  m.name.toLowerCase().includes(q) ||
+                  m.id.toLowerCase().includes(q) ||
+                  (m.description ?? "").toLowerCase().includes(q)
+                );
+              });
+
+              return (
             <div className="space-y-4">
               {/* Search input */}
               <div className="relative">
@@ -370,19 +383,7 @@ export function SettingsModal() {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {availableModels
-                  .filter((m) => {
-                    const matchesCategory = selectedCategory === "all" || m.category === selectedCategory;
-                    if (!matchesCategory) return false;
-                    if (!modelSearch.trim()) return true;
-                    const q = modelSearch.toLowerCase();
-                    return (
-                      m.name.toLowerCase().includes(q) ||
-                      m.id.toLowerCase().includes(q) ||
-                      (m.description ?? "").toLowerCase().includes(q)
-                    );
-                  })
-                  .map((m) => {
+                {filteredModels.map((m) => {
                   const isLimitedAccess = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
                   return (
                     <button
@@ -471,20 +472,15 @@ export function SettingsModal() {
                     </button>
                   );
                 })}
-                {availableModels.filter((m) => {
-                  const matchesCategory = selectedCategory === "all" || m.category === selectedCategory;
-                  if (!matchesCategory) return false;
-                  if (!modelSearch.trim()) return true;
-                  const q = modelSearch.toLowerCase();
-                  return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || (m.description ?? "").toLowerCase().includes(q);
-                }).length === 0 && (
+                {filteredModels.length === 0 && (
                   <p className="py-4 text-center text-sm text-muted-foreground/50">
                     {modelSearch ? `No models match "${modelSearch}"` : "No models in this category yet."}
                   </p>
                 )}
               </div>
             </div>
-          )}
+              );
+            })()}
         </div>
 
         <DialogFooter className="px-6 py-4 border-t border-border/50">

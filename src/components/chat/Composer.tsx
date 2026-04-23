@@ -32,7 +32,6 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
   const cap = preset?.capabilities;
   const hasWebSearch = Boolean(cap?.webSearch);
   const hasReasoning = Boolean(cap?.reasoningMode ?? cap?.reasoning ?? cap?.specialReasoning);
-  const hasAnyCapabilityControl = hasWebSearch || hasReasoning;
 
   // Auto-resize textarea
   const resize = useCallback(() => {
@@ -87,13 +86,12 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
 
   const placeholder = incognitoMode
     ? (isStreaming ? "Draft next message…" : "Incognito chat — messages not saved…")
-    : (isStreaming ? "Draft next message…" : "Message GHchat…");
+    : (isStreaming ? "Draft next message…" : "Message GHChat…");
 
   return (
     <div className="shrink-0 border-t border-border/30 bg-card/10 px-4 py-3">
-      {/* Capability params bar — only shown when the model supports relevant features */}
-      {(hasAnyCapabilityControl || true) && (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+      {/* Capability params bar — always shown, controls gated by model capabilities */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
           {/* Web Search toggle — only when model supports it */}
           {hasWebSearch && (
             <button
@@ -162,7 +160,6 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
             </div>
           )}
         </div>
-      )}
 
       <div
         className={cn(
