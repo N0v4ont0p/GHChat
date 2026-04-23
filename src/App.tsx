@@ -13,6 +13,11 @@ export default function App() {
   const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
 
   useEffect(() => {
+    // Safety-net: if IPC never responds, fall through to onboarding after 5 s
+    const timeout = setTimeout(() => {
+      setAppState((prev) => (prev === "loading" ? "onboarding" : prev));
+    }, 5000);
+
     async function init() {
       try {
         const [apiKey, settings] = await Promise.all([
@@ -36,9 +41,13 @@ export default function App() {
       } catch {
         // If anything fails on init, show onboarding
         setAppState("onboarding");
+      } finally {
+        clearTimeout(timeout);
       }
     }
     void init();
+
+    return () => clearTimeout(timeout);
   }, [setSelectedModel, setSelectedConversationId]);
 
   if (appState === "loading") {

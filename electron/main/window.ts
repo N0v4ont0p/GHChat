@@ -1,6 +1,30 @@
 import { BrowserWindow, shell } from "electron";
 import { join } from "path";
 
+const FALLBACK_HTML = encodeURIComponent(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GHchat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #09090b; color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { display: flex; align-items: center; justify-content: center; -webkit-app-region: drag; }
+    .box { text-align: center; max-width: 320px; padding: 2rem; -webkit-app-region: no-drag; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
+    p { font-size: 0.875rem; color: #6b7280; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>GHchat failed to start</h1>
+    <p>The renderer could not be loaded.<br/>Please restart the app.</p>
+  </div>
+</body>
+</html>`);
+
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
@@ -9,9 +33,15 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 600,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
-    backgroundColor: "#09090b",
+    // transparent + "#00000000" are required for macOS vibrancy to render
+    // correctly. Without transparent:true the backgroundColor is silently
+    // ignored on some Electron/macOS combinations and the window appears
+    // fully see-through even when content is present.
+    transparent: true,
+    backgroundColor: "#00000000",
     vibrancy: "under-window",
     visualEffectState: "active",
+    hasShadow: true,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -21,9 +51,13 @@ export function createMainWindow(): BrowserWindow {
   });
 
   win.once("ready-to-show", () => win.show());
-  win.webContents.on("did-fail-load", (_e, _code, desc) => {
-    console.error("[window] renderer failed to load:", desc);
-    win.show();
+  win.webContents.on("did-fail-load", (_e, code, desc) => {
+    console.error("[window] renderer failed to load:", code, desc);
+    // Load a visible fallback page so the window is never blank/transparent
+    void win.webContents
+      .loadURL("data:text/html;charset=utf-8," + FALLBACK_HTML)
+      .then(() => win.show())
+      .catch(() => win.show());
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
