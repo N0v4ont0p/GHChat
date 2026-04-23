@@ -8,7 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package:mac": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac",
+    "package:mac": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --arm64 && CXXFLAGS='-std=gnu++20' electron-builder --mac --x64",
     "package:mac:arm64": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --arm64",
     "lint": "eslint src electron --ext .ts,.tsx",
     "format": "prettier --write .",
