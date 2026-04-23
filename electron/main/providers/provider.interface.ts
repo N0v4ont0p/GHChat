@@ -28,6 +28,17 @@ export interface StreamChatOptions {
     isAuto: boolean;
     isFallback: boolean;
   }) => void;
+  /** Enable OpenRouter web-search plugin if the model supports it */
+  webSearch?: boolean;
+  /** Enable explicit reasoning mode (e.g. reasoning effort: high) */
+  reasoningOn?: boolean;
+  /** Override max_tokens for this request */
+  maxTokens?: number | null;
+  /** User-preference flags used by auto-routing to boost matching models */
+  preferences?: {
+    webSearch?: boolean;
+    reasoningOn?: boolean;
+  };
 }
 
 /**

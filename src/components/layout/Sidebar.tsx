@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X } from "lucide-react";
+import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -142,7 +142,7 @@ export function Sidebar() {
   const { data: conversations = [], isLoading } = useConversations();
   const createConversation = useCreateConversation();
   const deleteConversation = useDeleteConversation();
-  const { selectedConversationId, setSelectedConversationId } = useChatStore();
+  const { selectedConversationId, setSelectedConversationId, incognitoMode, setIncognitoMode } = useChatStore();
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -247,7 +247,26 @@ export function Sidebar() {
         </ScrollArea>
 
         {/* Footer */}
-        <div className="border-t border-border/30 p-2">
+        <div className="border-t border-border/30 p-2 space-y-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setIncognitoMode(!incognitoMode)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition-colors",
+                  incognitoMode
+                    ? "bg-amber-500/10 text-amber-400 hover:bg-amber-500/15"
+                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+                )}
+              >
+                {incognitoMode ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                {incognitoMode ? "Incognito on" : "Incognito"}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {incognitoMode ? "Disable incognito mode" : "Enable incognito — messages won't be saved"}
+            </TooltipContent>
+          </Tooltip>
           <button
             onClick={() => setSettingsOpen(true)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-colors"

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { DEFAULT_MODEL } from "@/lib/models";
-import type { StructuredChatError, ChatRoutingInfo, StreamLifecycleState } from "@/types";
+import type { StructuredChatError, ChatRoutingInfo, StreamLifecycleState, Message } from "@/types";
 
 interface ChatState {
   selectedConversationId: string | null;
@@ -13,6 +13,12 @@ interface ChatState {
   lastStreamError: StructuredChatError | null;
   /** Routing decision info from the most recent (or current) stream */
   routingInfo: ChatRoutingInfo | null;
+  /** When true, the message list should scroll to bottom on next render */
+  forceScrollToBottom: boolean;
+  /** Whether incognito mode is active — no DB persistence */
+  incognitoMode: boolean;
+  /** In-memory messages for the current incognito session */
+  incognitoMessages: Message[];
   setSelectedConversationId: (id: string | null) => void;
   setDraft: (v: string) => void;
   setStreaming: (v: boolean) => void;
@@ -21,6 +27,10 @@ interface ChatState {
   resetStreaming: () => void;
   setLastStreamError: (err: StructuredChatError | null) => void;
   setRoutingInfo: (info: ChatRoutingInfo | null) => void;
+  setForceScrollToBottom: (v: boolean) => void;
+  setIncognitoMode: (v: boolean) => void;
+  addIncognitoMessage: (msg: Message) => void;
+  clearIncognitoMessages: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -32,6 +42,9 @@ export const useChatStore = create<ChatState>((set) => ({
   streamingTokenCount: 0,
   lastStreamError: null,
   routingInfo: null,
+  forceScrollToBottom: false,
+  incognitoMode: false,
+  incognitoMessages: [],
   setSelectedConversationId: (selectedConversationId) =>
     set({ selectedConversationId }),
   setDraft: (draft) => set({ draft }),
@@ -46,4 +59,10 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ isStreaming: false, streamingText: "", streamingTokenCount: 0 }),
   setLastStreamError: (lastStreamError) => set({ lastStreamError }),
   setRoutingInfo: (routingInfo) => set({ routingInfo }),
+  setForceScrollToBottom: (forceScrollToBottom) => set({ forceScrollToBottom }),
+  setIncognitoMode: (incognitoMode) =>
+    set({ incognitoMode, incognitoMessages: [] }),
+  addIncognitoMessage: (msg) =>
+    set((s) => ({ incognitoMessages: [...s.incognitoMessages, msg] })),
+  clearIncognitoMessages: () => set({ incognitoMessages: [] }),
 }));

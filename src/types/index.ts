@@ -7,7 +7,8 @@ export type ModelCategory =
   | "fast"
   | "reasoning"
   | "longContext"
-  | "creative";
+  | "creative"
+  | "all";
 
 export type ModelSpeed = "fast" | "medium" | "slow";
 export type ModelCostTier = "free" | "standard" | "premium";
@@ -29,6 +30,16 @@ export interface ModelCapabilities {
   toolUse: boolean;
   specialReasoning: boolean;
   streaming: boolean;
+  /** Model supports OpenRouter web-search plugin */
+  webSearch?: boolean;
+  /** Model can output images */
+  imageOutput?: boolean;
+  /** Model supports function/tool calling */
+  functionCalling?: boolean;
+  /** Model exposes explicit reasoning controls (e.g. effort level) */
+  reasoningMode?: boolean;
+  /** Model supports web browsing / fetch capability */
+  browsing?: boolean;
 }
 /**
  * Per-model probe result returned after a boot-time verification request.

@@ -44,14 +44,21 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings }: Props) {
-  const { isStreaming, streamingText, streamState, lastStreamError } = useChatStore();
+export function MessageList({ messages: dbMessages, onRegenerate, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings }: Props) {
+  const {
+    isStreaming, streamingText, streamState, lastStreamError,
+    forceScrollToBottom, setForceScrollToBottom,
+    incognitoMode, incognitoMessages,
+  } = useChatStore();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+
+  // Use incognito in-memory messages when incognito mode is active
+  const messages = incognitoMode ? incognitoMessages : dbMessages;
 
   const getViewport = useCallback(() => viewportRef.current, []);
 
@@ -88,6 +95,15 @@ export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback,
       }
     };
   }, []);
+
+  // Jump to bottom when a new message is sent (forceScrollToBottom)
+  useEffect(() => {
+    if (!forceScrollToBottom) return;
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setIsAtBottom(true);
+    setShowJumpToLatest(false);
+    setForceScrollToBottom(false);
+  }, [forceScrollToBottom, setForceScrollToBottom]);
 
   useEffect(() => {
     if (!isAtBottom) {
@@ -188,6 +204,7 @@ export function MessageList({ messages, onRegenerate, onRetry, onSwitchFallback,
             variant="outline"
             onClick={() => {
               bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+              setIsAtBottom(true);
               setShowJumpToLatest(false);
             }}
           >

@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Sparkles, Code2, Lightbulb, BookOpen, MessageSquarePlus } from "lucide-react";
+import { Sparkles, Code2, Lightbulb, BookOpen, MessageSquarePlus, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCreateConversation } from "@/hooks/useConversations";
 import { getPreset, CATEGORY_META } from "@/lib/models";
@@ -42,11 +42,12 @@ const PROMPTS = [
 export function EmptyState() {
   const createConversation = useCreateConversation();
   const selectedModel = useSettingsStore((s) => s.selectedModel);
-  const setDraft = useChatStore((s) => s.setDraft);
+  const { setDraft, incognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
+  const categoryMeta = CATEGORY_META[category] ?? CATEGORY_META.general;
 
   const handlePromptClick = async (prompt: string) => {
     await createConversation.mutateAsync();
@@ -65,9 +66,18 @@ export function EmptyState() {
         transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
         className="relative flex h-20 w-20 items-center justify-center"
       >
-        <div className="absolute inset-0 rounded-3xl bg-primary/10 ring-1 ring-primary/20" />
-        <div className="absolute inset-0 rounded-3xl bg-primary/5 blur-xl" />
-        <Sparkles className="relative h-9 w-9 text-primary" />
+        <div className={cn(
+          "absolute inset-0 rounded-3xl ring-1",
+          incognitoMode ? "bg-amber-500/10 ring-amber-500/20" : "bg-primary/10 ring-primary/20",
+        )} />
+        <div className={cn(
+          "absolute inset-0 rounded-3xl blur-xl",
+          incognitoMode ? "bg-amber-500/5" : "bg-primary/5",
+        )} />
+        {incognitoMode
+          ? <EyeOff className="relative h-9 w-9 text-amber-400" />
+          : <Sparkles className="relative h-9 w-9 text-primary" />
+        }
       </motion.div>
 
       {/* Heading */}
@@ -78,17 +88,25 @@ export function EmptyState() {
         className="space-y-2"
       >
         <h2 className="text-2xl font-bold tracking-tight">
-          Start a conversation
+          {incognitoMode ? "Incognito session" : "Start a conversation"}
         </h2>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          Chat with{" "}
-          <span className="font-medium text-foreground">{modelName}</span>
-          {" "}
-          <span className={cn("text-[11px] rounded-full px-1.5 py-0.5 font-medium", "bg-secondary text-muted-foreground")}>
-            {CATEGORY_META[category].emoji}
-          </span>
-          {" "}via OpenRouter. Free models, fully local data.
-        </p>
+        {incognitoMode ? (
+          <p className="text-sm text-amber-400/80 leading-relaxed">
+            Messages won't be saved to your local database.
+            <br />
+            <span className="text-muted-foreground">Chat with <span className="font-medium text-foreground">{modelName}</span> privately.</span>
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Chat with{" "}
+            <span className="font-medium text-foreground">{modelName}</span>
+            {" "}
+            <span className={cn("text-[11px] rounded-full px-1.5 py-0.5 font-medium", "bg-secondary text-muted-foreground")}>
+              {categoryMeta.emoji}
+            </span>
+            {" "}via OpenRouter. Free models, fully local data.
+          </p>
+        )}
       </motion.div>
 
       {/* Quick-start prompts */}
