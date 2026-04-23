@@ -12,8 +12,11 @@ app.whenReady().then(() => {
   createMainWindow();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    const windows = BrowserWindow.getAllWindows();
+    if (windows.length === 0) {
       createMainWindow();
+    } else {
+      windows[0].show();
     }
   });
 });

@@ -21,6 +21,10 @@ export function createMainWindow(): BrowserWindow {
   });
 
   win.once("ready-to-show", () => win.show());
+  win.webContents.on("did-fail-load", (_e, _code, desc) => {
+    console.error("[window] renderer failed to load:", desc);
+    win.show();
+  });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
