@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>GHchat</title>
+  <!-- Inline background ensures the body is never transparent before the
+       stylesheet is parsed, regardless of Electron's window transparency
+       settings or any CSS loading delay. -->
+  <style>html, body { background-color: #09090b; }</style>
 </head>
 <body>
   <div id="root"></div>
