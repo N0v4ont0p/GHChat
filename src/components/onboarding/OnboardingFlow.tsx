@@ -147,7 +147,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setSaving(true);
     try {
       await ipc.setApiKey(apiKey.trim());
-      await ipc.updateSettings({ defaultModel: selectedModel });
+      await ipc.updateSettings({ defaultModel: selectedModel, onboardingComplete: true });
     } finally {
       setSaving(false);
       onComplete();

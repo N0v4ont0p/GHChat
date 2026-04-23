@@ -29,6 +29,8 @@ export const settingsTable = sqliteTable("settings", {
   id: text("id").primaryKey().default("app"),
   defaultModel: text("default_model").notNull().default(DEFAULT_MODEL),
   theme: text("theme").notNull().default("dark"),
+  onboardingComplete: integer("onboarding_complete", { mode: "boolean" }).notNull().default(false),
+  lastConversationId: text("last_conversation_id"),
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -59,10 +61,24 @@ export function initDatabase(): void {
     CREATE TABLE IF NOT EXISTS settings (
       id TEXT PRIMARY KEY DEFAULT 'app',
       default_model TEXT NOT NULL DEFAULT '${DEFAULT_MODEL}',
-      theme TEXT NOT NULL DEFAULT 'dark'
+      theme TEXT NOT NULL DEFAULT 'dark',
+      onboarding_complete INTEGER NOT NULL DEFAULT 0,
+      last_conversation_id TEXT
     );
-    INSERT OR IGNORE INTO settings (id, default_model, theme) VALUES ('app', '${DEFAULT_MODEL}', 'dark');
+    INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0);
   `);
+
+  // Migrate existing installations: add columns if they don't exist yet
+  const existingCols = sqlite
+    .prepare("PRAGMA table_info(settings)")
+    .all()
+    .map((c: Record<string, unknown>) => c["name"] as string);
+  if (!existingCols.includes("onboarding_complete")) {
+    sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!existingCols.includes("last_conversation_id")) {
+    sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
+  }
 
   db = drizzle(sqlite);
 }
@@ -161,6 +177,8 @@ export function getSettings(): AppSettings {
   return {
     defaultModel: row?.defaultModel ?? DEFAULT_MODEL,
     theme: (row?.theme ?? "dark") as AppSettings["theme"],
+    onboardingComplete: row?.onboardingComplete ?? false,
+    lastConversationId: row?.lastConversationId ?? null,
   };
 }
 
@@ -170,8 +188,20 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
     .set({
       ...(partial.defaultModel !== undefined && { defaultModel: partial.defaultModel }),
       ...(partial.theme !== undefined && { theme: partial.theme }),
+      ...(partial.onboardingComplete !== undefined && { onboardingComplete: partial.onboardingComplete }),
+      ...(partial.lastConversationId !== undefined && { lastConversationId: partial.lastConversationId }),
     })
     .where(eq(settingsTable.id, "app"))
     .run();
   return getSettings();
+}
+
+export function clearAllData(): void {
+  getDb().delete(messagesTable).run();
+  getDb().delete(conversationsTable).run();
+  getDb()
+    .update(settingsTable)
+    .set({ onboardingComplete: false, lastConversationId: null })
+    .where(eq(settingsTable.id, "app"))
+    .run();
 }

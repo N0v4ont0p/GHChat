@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw } from "lucide-react";
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -12,11 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useChatStore } from "@/stores/chat-store";
 import { ipc } from "@/lib/ipc";
 import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ModelCategory, OpenRouterDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
 
 /** Compact verification badge used inside model cards */
@@ -81,12 +83,18 @@ function LayerStatus({ label, layer }: { label: string; layer: ValidationLayerSt
 export function SettingsModal() {
   const { settingsOpen, setSettingsOpen, selectedModel, setSelectedModel } =
     useSettingsStore();
+  const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
+  const qc = useQueryClient();
 
   const [apiKey, setApiKey] = useState("");
+  const [storedKeyExists, setStoredKeyExists] = useState(false);
+  const [changingKey, setChangingKey] = useState(false);
   const [validating, setValidating] = useState(false);
   const [keyStatus, setKeyStatus] = useState<"idle" | "ready" | "warning" | "invalid">("idle");
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const [removingKey, setRemovingKey] = useState(false);
+  const [clearingData, setClearingData] = useState(false);
   const [activeTab, setActiveTab] = useState<"apikey" | "model">("model");
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
   const [modelSearch, setModelSearch] = useState("");
@@ -98,10 +106,12 @@ export function SettingsModal() {
   useEffect(() => {
     if (settingsOpen) {
       ipc.getApiKey().then((k) => {
+        setStoredKeyExists(!!k);
         setApiKey(k);
         setValidatedToken(k || null);
         setKeyStatus("idle");
         setKeyMessage("");
+        setChangingKey(!k); // show input immediately when no key is stored
       }).catch(() => {});
       ipc.getDiagnostics().then(setDiagnostics).catch(() => {});
     }
@@ -140,12 +150,47 @@ export function SettingsModal() {
     try {
       await ipc.setApiKey(apiKey.trim());
       await ipc.updateSettings({ defaultModel: selectedModel });
+      setStoredKeyExists(true);
+      setChangingKey(false);
       toast.success("Settings saved");
       setSettingsOpen(false);
     } catch {
       toast.error("Failed to save settings");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRemoveKey = async () => {
+    setRemovingKey(true);
+    try {
+      await ipc.deleteApiKey();
+      await ipc.updateSettings({ onboardingComplete: false, lastConversationId: null });
+      toast.success("API key removed. Please re-enter your key to continue.");
+      setSettingsOpen(false);
+      // Reload the window to go back to onboarding
+      window.location.reload();
+    } catch {
+      toast.error("Failed to remove API key");
+    } finally {
+      setRemovingKey(false);
+    }
+  };
+
+  const handleClearAllData = async () => {
+    setClearingData(true);
+    try {
+      await ipc.clearAllData();
+      await ipc.deleteApiKey();
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+      setSelectedConversationId(null);
+      toast.success("All data cleared. Re-enter your key to continue.");
+      setSettingsOpen(false);
+      window.location.reload();
+    } catch {
+      toast.error("Failed to clear data");
+    } finally {
+      setClearingData(false);
     }
   };
 
@@ -181,59 +226,90 @@ export function SettingsModal() {
         <div className="px-6 py-5 max-h-[480px] overflow-y-auto">
           {activeTab === "apikey" && (
             <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">OpenRouter API Key</label>
-                <div className="flex gap-2">
-                  <Input
-                    type="password"
-                    placeholder="sk-or-••••••••••••••••••••"
-                    value={apiKey}
-                    onChange={(e) => {
-                      setApiKey(e.target.value);
-                      setKeyStatus("idle");
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && validateKey()}
-                    className={cn(
-                      "flex-1 font-mono text-sm",
-                       keyStatus === "ready" && "border-green-500/50",
-                       keyStatus === "warning" && "border-amber-500/50",
-                       keyStatus === "invalid" && "border-red-500/50",
-                    )}
-                    autoComplete="off"
-                  />
+              {/* Connected status banner */}
+              {storedKeyExists && !changingKey && (
+                <div className="flex items-center justify-between rounded-lg border border-green-500/30 bg-green-500/5 px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-green-400" />
+                    <span className="text-sm font-medium text-green-400">Connected</span>
+                    <span className="text-xs text-muted-foreground">OpenRouter API key is stored securely.</span>
+                  </div>
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    onClick={validateKey}
-                    disabled={!apiKey.trim() || validating}
-                    className="shrink-0"
+                    className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setChangingKey(true)}
                   >
-                    {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Verify"}
+                    Change key
                   </Button>
                 </div>
+              )}
 
-                {keyMessage && (
-                  <p
-                    className={cn(
-                      "flex items-center gap-1 text-xs",
-                       keyStatus === "ready"
-                         ? "text-green-400"
-                         : keyStatus === "warning"
-                           ? "text-amber-400"
-                           : "text-red-400",
-                     )}
-                   >
-                     {keyStatus === "ready" ? (
-                       <CheckCircle2 className="h-3 w-3" />
-                     ) : keyStatus === "warning" ? (
-                       <AlertTriangle className="h-3 w-3" />
-                     ) : (
-                       <XCircle className="h-3 w-3" />
-                     )}
-                    {keyMessage}
-                  </p>
-                )}
-              </div>
+              {/* Key input — shown when no key stored or user wants to change */}
+              {(!storedKeyExists || changingKey) && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">OpenRouter API Key</label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="password"
+                      placeholder="sk-or-••••••••••••••••••••"
+                      value={apiKey}
+                      onChange={(e) => {
+                        setApiKey(e.target.value);
+                        setKeyStatus("idle");
+                      }}
+                      onKeyDown={(e) => e.key === "Enter" && validateKey()}
+                      className={cn(
+                        "flex-1 font-mono text-sm",
+                        keyStatus === "ready" && "border-green-500/50",
+                        keyStatus === "warning" && "border-amber-500/50",
+                        keyStatus === "invalid" && "border-red-500/50",
+                      )}
+                      autoComplete="off"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={validateKey}
+                      disabled={!apiKey.trim() || validating}
+                      className="shrink-0"
+                    >
+                      {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Verify"}
+                    </Button>
+                  </div>
+
+                  {keyMessage && (
+                    <p
+                      className={cn(
+                        "flex items-center gap-1 text-xs",
+                        keyStatus === "ready"
+                          ? "text-green-400"
+                          : keyStatus === "warning"
+                            ? "text-amber-400"
+                            : "text-red-400",
+                      )}
+                    >
+                      {keyStatus === "ready" ? (
+                        <CheckCircle2 className="h-3 w-3" />
+                      ) : keyStatus === "warning" ? (
+                        <AlertTriangle className="h-3 w-3" />
+                      ) : (
+                        <XCircle className="h-3 w-3" />
+                      )}
+                      {keyMessage}
+                    </p>
+                  )}
+
+                  {changingKey && (
+                    <button
+                      onClick={() => { setChangingKey(false); setApiKey(""); setKeyStatus("idle"); setKeyMessage(""); }}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="rounded-lg border border-border/50 bg-card/50 p-3 text-xs text-muted-foreground space-y-1.5">
                 <p>
@@ -253,7 +329,7 @@ export function SettingsModal() {
                   <span className="text-foreground font-medium">Electron safeStorage</span>.
                   Never written in plain text or uploaded anywhere.
                 </p>
-                  {diagnostics && (
+                {diagnostics && (
                   <div className="space-y-1 pt-1">
                     <LayerStatus label="API Key" layer={diagnostics.keyValidation} />
                     <LayerStatus label="Catalog" layer={diagnostics.catalogValidation} />
@@ -306,21 +382,39 @@ export function SettingsModal() {
                     </div>
                   </div>
                 )}
-                {apiKey && (
-                  <button
-                    onClick={() => {
-                      setApiKey("");
-                      setValidatedToken(null);
-                      setDiagnostics(null);
-                      setKeyStatus("idle");
-                      setKeyMessage("");
-                    }}
-                    className="text-red-400/70 hover:text-red-400 transition-colors"
-                  >
-                    Clear stored key
-                  </button>
-                )}
               </div>
+
+              {/* Danger zone */}
+              {storedKeyExists && (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 space-y-2">
+                  <p className="text-xs font-medium text-red-400/80">Danger zone</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
+                      onClick={handleRemoveKey}
+                      disabled={removingKey || clearingData}
+                    >
+                      {removingKey ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <LogOut className="mr-1.5 h-3 w-3" />}
+                      Remove API key / Sign out
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
+                      onClick={handleClearAllData}
+                      disabled={removingKey || clearingData}
+                    >
+                      {clearingData ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1.5 h-3 w-3" />}
+                      Clear all data
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/60">
+                    "Remove key" clears your API key and returns to setup. "Clear all data" removes conversations, messages, and your key.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -487,7 +581,11 @@ export function SettingsModal() {
           <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(false)}>
             Cancel
           </Button>
-          <Button size="sm" onClick={handleSave} disabled={saving}>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saving || (activeTab === "apikey" && storedKeyExists && !changingKey)}
+          >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save changes"}
           </Button>
         </DialogFooter>
