@@ -35,6 +35,10 @@ export const ipc = {
   // Keychain
   getApiKey: () => api().invoke<string>(IPC.KEYCHAIN_GET),
   setApiKey: (key: string) => api().invoke<void>(IPC.KEYCHAIN_SET, key),
+  deleteApiKey: () => api().invoke<void>(IPC.KEYCHAIN_DELETE),
+
+  // Data management
+  clearAllData: () => api().invoke<void>(IPC.CLEAR_ALL_DATA),
 
   // OpenRouter
   listModels: (apiKey?: string) => api().invoke<ModelPreset[]>(IPC.OR_MODELS_LIST, apiKey),

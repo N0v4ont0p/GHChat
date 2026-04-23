@@ -76,6 +76,10 @@ export interface ValidationLayerState {
 export interface AppSettings {
   defaultModel: string;
   theme: "dark" | "light" | "system";
+  /** Set to true once the user has completed the onboarding flow */
+  onboardingComplete?: boolean;
+  /** ID of the last active conversation, restored on next launch */
+  lastConversationId?: string | null;
 }
 
 export interface ModelInfo {
@@ -237,6 +241,8 @@ export const IPC = {
   SETTINGS_UPDATE: "settings:update",
   KEYCHAIN_GET: "keychain:get",
   KEYCHAIN_SET: "keychain:set",
+  KEYCHAIN_DELETE: "keychain:delete",
+  CLEAR_ALL_DATA: "data:clear-all",
   OR_MODELS_LIST: "or:models:list",
   OR_DIAGNOSTICS_GET: "or:diagnostics:get",
   OR_DIAGNOSTICS_REFRESH: "or:diagnostics:refresh",

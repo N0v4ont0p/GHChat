@@ -1,6 +1,6 @@
 import { safeStorage, app } from "electron";
 import { join } from "path";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 
 const keyPath = () => join(app.getPath("userData"), ".hf-key");
 
@@ -19,4 +19,14 @@ export function setApiKey(key: string): void {
   if (!safeStorage.isEncryptionAvailable()) return;
   const encrypted = safeStorage.encryptString(key);
   writeFileSync(keyPath(), encrypted);
+}
+
+export function deleteApiKey(): void {
+  try {
+    if (existsSync(keyPath())) {
+      unlinkSync(keyPath());
+    }
+  } catch {
+    // Ignore errors during deletion
+  }
 }

@@ -3,12 +3,14 @@ import { AppShell } from "@/components/layout/AppShell";
 import { OnboardingFlow } from "@/components/onboarding/OnboardingFlow";
 import { ipc } from "@/lib/ipc";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useChatStore } from "@/stores/chat-store";
 
 type AppState = "loading" | "onboarding" | "ready";
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>("loading");
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
+  const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
 
   useEffect(() => {
     async function init() {
@@ -21,19 +23,23 @@ export default function App() {
         if (settings.defaultModel) {
           setSelectedModel(settings.defaultModel);
         }
-        if (!apiKey) {
-          setAppState("onboarding");
+        // Skip onboarding only when a key is stored AND onboarding was completed before
+        if (apiKey && settings.onboardingComplete) {
+          // Restore last active conversation if available
+          if (settings.lastConversationId) {
+            setSelectedConversationId(settings.lastConversationId);
+          }
+          setAppState("ready");
           return;
         }
-        const diagnostics = await ipc.getHfDiagnostics(apiKey);
-        setAppState(diagnostics.tokenValid ? "ready" : "onboarding");
+        setAppState("onboarding");
       } catch {
         // If anything fails on init, show onboarding
         setAppState("onboarding");
       }
     }
     void init();
-  }, [setSelectedModel]);
+  }, [setSelectedModel, setSelectedConversationId]);
 
   if (appState === "loading") {
     return (
