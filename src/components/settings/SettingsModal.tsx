@@ -180,8 +180,8 @@ export function SettingsModal() {
   const handleClearAllData = async () => {
     setClearingData(true);
     try {
+      // clearAllData resets conversations, messages, settings flags, and the key
       await ipc.clearAllData();
-      await ipc.deleteApiKey();
       qc.invalidateQueries({ queryKey: ["conversations"] });
       setSelectedConversationId(null);
       toast.success("All data cleared. Re-enter your key to continue.");
@@ -192,6 +192,13 @@ export function SettingsModal() {
     } finally {
       setClearingData(false);
     }
+  };
+
+  const handleCancelKeyChange = () => {
+    setChangingKey(false);
+    setApiKey("");
+    setKeyStatus("idle");
+    setKeyMessage("");
   };
 
   return (
@@ -302,7 +309,7 @@ export function SettingsModal() {
 
                   {changingKey && (
                     <button
-                      onClick={() => { setChangingKey(false); setApiKey(""); setKeyStatus("idle"); setKeyMessage(""); }}
+                      onClick={handleCancelKeyChange}
                       className="text-xs text-muted-foreground hover:text-foreground transition-colors"
                     >
                       Cancel

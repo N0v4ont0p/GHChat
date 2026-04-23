@@ -17,5 +17,8 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.KEYCHAIN_DELETE, () => deleteApiKey());
 
-  ipcMain.handle(IPC.CLEAR_ALL_DATA, () => clearAllData());
+  ipcMain.handle(IPC.CLEAR_ALL_DATA, () => {
+    clearAllData();
+    deleteApiKey();
+  });
 }

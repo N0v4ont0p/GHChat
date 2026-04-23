@@ -65,7 +65,7 @@ export function initDatabase(): void {
       onboarding_complete INTEGER NOT NULL DEFAULT 0,
       last_conversation_id TEXT
     );
-    INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0);
+    INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL);
   `);
 
   // Migrate existing installations: add columns if they don't exist yet
