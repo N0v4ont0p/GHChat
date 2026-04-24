@@ -1,5 +1,6 @@
 import { BrowserWindow, Rectangle, screen, shell } from "electron";
 import { join } from "path";
+import { existsSync } from "fs";
 
 const WINDOW_BACKGROUND = "#09090b";
 // Minimum visible fraction of the current window area before we treat it as effectively off-screen.
@@ -55,13 +56,29 @@ export function createMainWindow(): BrowserWindow {
     }
   };
 
+  // Guard: once the fallback page is being loaded we must not trigger it again.
+  // Without this, a failed data-URI load (or any subsequent navigation failure)
+  // would re-enter loadFallback in a tight loop.
+  let fallbackActive = false;
+
   const loadFallback = (reason: string) => {
-    console.error("[window] renderer fallback:", reason);
+    if (fallbackActive) {
+      console.error("[window] renderer fallback already active, skipping:", reason);
+      return;
+    }
+    fallbackActive = true;
+    console.error("[window] renderer fallback triggered:", reason);
     // Load a visible fallback page so the window is never blank/transparent
     void win.webContents
       .loadURL("data:text/html;charset=utf-8," + FALLBACK_HTML)
-      .then(showWindow)
-      .catch(showWindow);
+      .then(() => {
+        console.log("[window] fallback page loaded");
+        showWindow();
+      })
+      .catch((err: unknown) => {
+        console.error("[window] fallback page load FAILED:", err);
+        showWindow();
+      });
   };
 
   win.once("ready-to-show", showWindow);
@@ -69,12 +86,26 @@ export function createMainWindow(): BrowserWindow {
   win.once("show", () => clearTimeout(safetyShowTimeout));
   win.once("closed", () => clearTimeout(safetyShowTimeout));
 
-  win.webContents.on("did-fail-load", (_e, code, desc) => {
+  win.webContents.on("did-finish-load", () => {
+    console.log("[window] did-finish-load — renderer loaded successfully");
+  });
+
+  // Only react to main-frame failures. Subframe (iframe/webview) failures are
+  // non-fatal and must not trigger the fallback page.
+  win.webContents.on("did-fail-load", (_e, code, desc, _url, isMainFrame) => {
+    if (!isMainFrame) return;
     loadFallback(`did-fail-load (${code}): ${desc}`);
   });
 
   win.webContents.on("render-process-gone", (_e, details) => {
     loadFallback(`render-process-gone: ${details.reason}`);
+  });
+
+  // Unresponsive renderer — log and ensure the window is at least visible so
+  // the user can force-quit via the OS or the title-bar controls.
+  win.on("unresponsive", () => {
+    console.error("[window] renderer became unresponsive");
+    showWindow();
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -83,9 +114,33 @@ export function createMainWindow(): BrowserWindow {
   });
 
   if (process.env["ELECTRON_RENDERER_URL"]) {
-    win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+    // Log only the origin to avoid exposing any credentials in query parameters.
+    let devOrigin = "(unknown)";
+    try {
+      devOrigin = new URL(process.env["ELECTRON_RENDERER_URL"]).origin;
+    } catch {
+      /* URL parse failed — fall back to generic label */
+    }
+    console.log("[window] dev mode — loadURL origin:", devOrigin);
+    win
+      .loadURL(process.env["ELECTRON_RENDERER_URL"])
+      .catch((err: unknown) => loadFallback(`loadURL failed: ${String(err)}`));
   } else {
-    win.loadFile(join(__dirname, "../renderer/index.html"));
+    // Path contract: __dirname is out/main/ at runtime; ../renderer/index.html resolves to
+    // out/renderer/index.html — must match OUT_RENDERER in electron.vite.config.ts.
+    const rendererPath = join(__dirname, "../renderer/index.html");
+    const rendererExists = existsSync(rendererPath);
+    console.log(
+      "[window] production mode — loadFile:",
+      rendererPath,
+      "| exists:",
+      rendererExists,
+    );
+    if (!rendererExists) {
+      loadFallback(`renderer not found on disk: ${rendererPath}`);
+    } else {
+      win.loadFile(rendererPath).catch((err: unknown) => loadFallback(`loadFile failed: ${String(err)}`));
+    }
   }
 
   return win;

@@ -20,26 +20,42 @@ export default function App() {
 
     async function init() {
       try {
-        const [apiKey, settings] = await Promise.all([
+        // Fetch key and settings independently so a DB failure (e.g. missing
+        // better-sqlite3 native binary in the packaged app) does not force the
+        // user through onboarding when a valid key is already stored.
+        const [apiKeyResult, settingsResult] = await Promise.allSettled([
           ipc.getApiKey(),
           ipc.getSettings(),
         ]);
-        // Seed the store with the persisted model choice
-        if (settings.defaultModel) {
+
+        const apiKey =
+          apiKeyResult.status === "fulfilled" ? apiKeyResult.value : "";
+        const settings =
+          settingsResult.status === "fulfilled" ? settingsResult.value : null;
+
+        // Seed the store with the persisted model choice when available
+        if (settings?.defaultModel) {
           setSelectedModel(settings.defaultModel);
         }
-        // Skip onboarding only when a key is stored AND onboarding was completed before
-        if (apiKey && settings.onboardingComplete) {
-          // Restore last active conversation if available
-          if (settings.lastConversationId) {
+
+        // Skip onboarding when a key is stored AND either:
+        //   (a) the DB confirms onboarding was completed, or
+        //   (b) the DB is unavailable — the stored key is strong evidence that
+        //       the user already completed setup (setApiKey is only called from
+        //       handleFinish in OnboardingFlow, so a key cannot exist without
+        //       the user having gone through onboarding at least once).
+        //       This prevents re-onboarding every time the native DB module
+        //       fails to load in a packaged build (e.g. missing better-sqlite3).
+        const onboardingDone = settings === null ? true : !!settings.onboardingComplete;
+        if (apiKey && onboardingDone) {
+          // Restore last active conversation if the DB is available
+          if (settings?.lastConversationId) {
             setSelectedConversationId(settings.lastConversationId);
           }
           setAppState("ready");
           return;
         }
-        setAppState("onboarding");
-      } catch {
-        // If anything fails on init, show onboarding
+
         setAppState("onboarding");
       } finally {
         clearTimeout(timeout);

@@ -216,38 +216,38 @@ GHchat uses **`electron.safeStorage`**, Electron's built-in OS-level secret stor
 
 ## Model Recommendation Guide
 
-GHchat curates a list of models that work reliably with the Hugging Face Inference API, organized into four categories. You don't need to know model internals to make a good choice.
+GHchat fetches the live catalog of free models from OpenRouter and organizes them into categories. You don't need to know model internals to make a good choice — Auto mode picks the best model for each prompt automatically.
 
-### 💬 General Chat — Best for most people
+### 🤖 Auto — Best for most people
+
+Let GHchat classify your prompt (coding / reasoning / creative / fast / general) and route it to the best available free model automatically.
+
+### 💬 General Chat
 
 | Model | Why choose it |
 |---|---|
-| **Mistral 7B Instruct** *(default)* | Fast, balanced, works great for everyday questions and long conversations |
-| **Zephyr 7B** | Excellent at following instructions with a natural, helpful tone |
-| **Gemma 2 9B** | More thoughtful responses with Google's safety tuning |
+| **Gemma 4 31B** | Google's latest general-purpose model — strong quality across topics |
+| **Llama 3.3 70B** | Meta's flagship open model — excellent reasoning and general chat |
 
 ### 🧑‍💻 Coding — For programming tasks
 
 | Model | Why choose it |
 |---|---|
-| **Qwen 2.5 Coder 7B** | Purpose-built for code — strong at Python, TypeScript, Rust, Go, and debugging |
-| **Phi 3.5 Mini** | Compact but surprisingly capable for code tasks and long contexts |
+| **Qwen3 Coder** | Purpose-built for code — strong at Python, TypeScript, Rust, Go, and debugging |
 
 ### ⚡ Fast — For quick answers
 
 | Model | Why choose it |
 |---|---|
-| **Phi 3 Mini** | Ultra-fast, low latency, great for simple Q&A and summaries |
-| **Qwen 2.5 1.5B** | Smallest available, instant responses for lightweight tasks |
+| **Gemma 3n E2B** | Compact and fast — great for simple Q&A and summaries |
 
-### �� Reasoning — For complex problems
+### 🧠 Reasoning — For complex problems
 
 | Model | Why choose it |
 |---|---|
-| **Llama 3 8B Instruct** | Meta's flagship open model — excellent at analysis and multi-step reasoning |
-| **Qwen 2.5 7B** | Strong structured reasoning, especially good for non-English languages |
+| **Nemotron 3 Nano 30B** | NVIDIA's reasoning-focused free model |
 
-**Recommendation for new users:** Start with **Mistral 7B Instruct**. It's the best all-rounder and responds quickly. Switch to a specialized model once you know what you need.
+**Recommendation for new users:** Start with **Auto** mode. It routes each prompt to the best available free model. Switch to a specific model once you know your preferences.
 
 ---
 
@@ -274,7 +274,7 @@ Even if GHchat's source code is on an external drive, macOS stores **runtime dat
 | Data | Location |
 |---|---|
 | SQLite database | `~/Library/Application Support/ghchat/ghchat.db` |
-| Encrypted API key | `~/Library/Application Support/ghchat/.hf-key` |
+| Encrypted API key | `~/Library/Application Support/ghchat/.or-key` (safeStorage-encrypted) |
 | Electron logs | `~/Library/Logs/ghchat/` |
 
 This is intentional: macOS apps write to `app.getPath('userData')` which always resolves to the internal Library. This ensures:
@@ -299,11 +299,11 @@ This is intentional: macOS apps write to `app.getPath('userData')` which always 
 GHchat
 ├── Electron Main Process
 │   ├── Window management (hiddenInset titleBar, vibrancy)
-│   ├── IPC handlers (conversations, messages, settings, HF streaming)
+│   ├── IPC handlers (conversations, messages, settings, OpenRouter streaming)
 │   ├── SQLite + Drizzle ORM (better-sqlite3)
 │   ├── electron.safeStorage (API key encryption)
 │   └── Provider system
-│       └── HuggingFaceProvider
+│       └── OpenRouterProvider
 │           ├── healthCheck()
 │           ├── validateApiKey()
 │           ├── listModels() / getRecommendedModels()
@@ -347,24 +347,23 @@ Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implemen
 
 ### Invalid API key
 
-- Make sure the key starts with `hf_` and was copied in full
-- Use the **Verify** button in Settings before saving
-- Keys need at least **Read** permissions — write-only tokens won't work
-- If you recently created the token, wait 30 seconds and try again
+- Make sure your OpenRouter API key was copied in full from [openrouter.ai/keys](https://openrouter.ai/keys)
+- Use the **Verify** button during onboarding or in Settings before saving
+- If you recently created the key, wait 30 seconds and try again
 
 ### No response / streaming stops
 
 - Check your internet connection
-- The model may be loading on Hugging Face — wait 20–30 seconds and retry
-- Some models require a Pro subscription; try a different model
+- The model may be temporarily unavailable on OpenRouter — wait 20–30 seconds and retry
+- Switch to a different model or use **Auto** mode to let GHchat pick a working model
 - Click **Regenerate** to retry the last response without retyping
 
 ### Model errors
 
-- `503 loading`: The model is cold-starting on HF infrastructure. Try again in ~30 seconds
-- `403 Forbidden`: Your account may not have access to gated models (e.g. Llama requires accepting terms on HF)
-- `404 Not Found`: The model ID may have changed — check the model page on huggingface.co
-- `429 Rate limit`: You've hit the free tier limit. Wait a few minutes or upgrade to HF Pro
+- `503 Service Unavailable`: The model is temporarily overloaded on OpenRouter. Try again in ~30 seconds or switch models
+- `403 Forbidden`: The model may be restricted for your account. Use **Auto** mode or select a different model
+- `404 Not Found`: The model ID may have changed — the live catalog is refreshed on each launch
+- `429 Rate limit`: You've hit the free tier rate limit. Wait a few minutes or switch to a different model
 
 ### Database / path issues
 
