@@ -2,7 +2,9 @@ import { BrowserWindow, Rectangle, screen, shell } from "electron";
 import { join } from "path";
 
 const WINDOW_BACKGROUND = "#09090b";
+// Minimum visible fraction of the current window area before we treat it as effectively off-screen.
 const OFFSCREEN_VISIBLE_AREA_THRESHOLD = 0.2;
+// Keep recovery repositioning immediate to avoid a delayed/flickering first-frame reveal on activation.
 const RECOVER_BOUNDS_WITH_ANIMATION = false;
 
 const FALLBACK_HTML = encodeURIComponent(`<!DOCTYPE html>
