@@ -1,7 +1,7 @@
 {
   "name": "ghchat",
   "version": "0.2.0",
-  "description": "Premium macOS desktop AI chat app powered by Hugging Face",
+  "description": "Premium macOS desktop AI chat app powered by OpenRouter",
   "main": "out/main/index.js",
   "private": true,
   "scripts": {
@@ -17,7 +17,6 @@
     "package:mac:x64": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --x64"
   },
   "dependencies": {
-    "@huggingface/inference": "^2.8.1",
     "@radix-ui/react-dialog": "^1.1.4",
     "@radix-ui/react-scroll-area": "^1.2.3",
     "@radix-ui/react-select": "^2.1.4",
