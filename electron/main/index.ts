@@ -46,8 +46,10 @@ app.whenReady().then(() => {
     }
   });
 }).catch((err) => {
-  // app.whenReady() itself rejected — last-resort log before the process exits.
+  // app.whenReady() itself rejected — log and quit so the process doesn't
+  // linger invisibly as a Dock/menu-bar ghost with no window.
   console.error("[main] app.whenReady failed:", err);
+  app.quit();
 });
 
 app.on("window-all-closed", () => {

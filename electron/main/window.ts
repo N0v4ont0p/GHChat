@@ -55,7 +55,17 @@ export function createMainWindow(): BrowserWindow {
     }
   };
 
+  // Guard: once the fallback page is being loaded we must not trigger it again.
+  // Without this, a failed data-URI load (or any subsequent navigation failure)
+  // would re-enter loadFallback in a tight loop.
+  let fallbackActive = false;
+
   const loadFallback = (reason: string) => {
+    if (fallbackActive) {
+      console.error("[window] renderer fallback already active, skipping:", reason);
+      return;
+    }
+    fallbackActive = true;
     console.error("[window] renderer fallback:", reason);
     // Load a visible fallback page so the window is never blank/transparent
     void win.webContents
@@ -69,12 +79,26 @@ export function createMainWindow(): BrowserWindow {
   win.once("show", () => clearTimeout(safetyShowTimeout));
   win.once("closed", () => clearTimeout(safetyShowTimeout));
 
-  win.webContents.on("did-fail-load", (_e, code, desc) => {
+  win.webContents.on("did-finish-load", () => {
+    console.log("[window] did-finish-load — renderer loaded successfully");
+  });
+
+  // Only react to main-frame failures. Subframe (iframe/webview) failures are
+  // non-fatal and must not trigger the fallback page.
+  win.webContents.on("did-fail-load", (_e, code, desc, _url, isMainFrame) => {
+    if (!isMainFrame) return;
     loadFallback(`did-fail-load (${code}): ${desc}`);
   });
 
   win.webContents.on("render-process-gone", (_e, details) => {
     loadFallback(`render-process-gone: ${details.reason}`);
+  });
+
+  // Unresponsive renderer — log and ensure the window is at least visible so
+  // the user can force-quit via the OS or the title-bar controls.
+  win.on("unresponsive", () => {
+    console.error("[window] renderer became unresponsive");
+    showWindow();
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
