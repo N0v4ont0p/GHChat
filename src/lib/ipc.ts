@@ -8,7 +8,16 @@ import type {
   OpenRouterDiagnostics,
 } from "@/types";
 
-const api = () => window.ghchat;
+function api() {
+  if (typeof window === "undefined" || !window.ghchat) {
+    const msg =
+      "[ipc] window.ghchat is unavailable — the Electron preload script did not load. " +
+      "IPC calls will not work.";
+    console.error(msg);
+    throw new Error(msg);
+  }
+  return window.ghchat;
+}
 
 export const ipc = {
   // Conversations
