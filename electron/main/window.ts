@@ -2,6 +2,8 @@ import { BrowserWindow, Rectangle, screen, shell } from "electron";
 import { join } from "path";
 
 const WINDOW_BACKGROUND = "#09090b";
+const OFFSCREEN_VISIBLE_AREA_THRESHOLD = 0.2;
+const RECOVER_BOUNDS_WITH_ANIMATION = false;
 
 const FALLBACK_HTML = encodeURIComponent(`<!DOCTYPE html>
 <html lang="en">
@@ -109,7 +111,7 @@ function isMostlyOffscreen(windowBounds: Rectangle, visibleBounds: Rectangle): b
   const visibleHeight = Math.max(0, intersectionBottom - intersectionTop);
   const visibleArea = visibleWidth * visibleHeight;
   const windowArea = windowBounds.width * windowBounds.height;
-  return visibleArea / windowArea < 0.2;
+  return visibleArea / windowArea < OFFSCREEN_VISIBLE_AREA_THRESHOLD;
 }
 
 function centerInsideVisibleArea(windowBounds: Rectangle, visibleBounds: Rectangle): Rectangle {
@@ -130,8 +132,7 @@ export function revealMainWindow(win: BrowserWindow): void {
   const visibleBounds = getDisplayWorkArea(bounds);
   if (isMostlyOffscreen(bounds, visibleBounds)) {
     const centered = centerInsideVisibleArea(bounds, visibleBounds);
-    const animate = false; // explicitly disable animation for immediate on-screen recovery
-    win.setBounds(centered, animate);
+    win.setBounds(centered, RECOVER_BOUNDS_WITH_ANIMATION);
   }
 
   win.show();
