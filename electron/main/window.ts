@@ -130,7 +130,8 @@ export function revealMainWindow(win: BrowserWindow): void {
   const visibleBounds = getDisplayWorkArea(bounds);
   if (isMostlyOffscreen(bounds, visibleBounds)) {
     const centered = centerInsideVisibleArea(bounds, visibleBounds);
-    win.setBounds(centered, false); // disable animation to force immediate on-screen recovery
+    const animate = false; // explicitly disable animation for immediate on-screen recovery
+    win.setBounds(centered, animate);
   }
 
   win.show();
