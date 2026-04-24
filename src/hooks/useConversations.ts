@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { useChatStore } from "@/stores/chat-store";
 
@@ -20,6 +21,10 @@ export function useCreateConversation() {
       qc.invalidateQueries({ queryKey: KEY });
       setSelected(conv.id);
     },
+    onError: (err) => {
+      console.error("[useCreateConversation] failed:", err);
+      toast.error("Failed to create conversation. Check that the app database is available.");
+    },
   });
 }
 
@@ -29,6 +34,10 @@ export function useRenameConversation() {
     mutationFn: ({ id, title }: { id: string; title: string }) =>
       ipc.renameConversation(id, title),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      console.error("[useRenameConversation] failed:", err);
+      toast.error("Failed to rename conversation.");
+    },
   });
 }
 
@@ -40,6 +49,10 @@ export function useDeleteConversation() {
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: KEY });
       if (selectedConversationId === id) setSelectedConversationId(null);
+    },
+    onError: (err) => {
+      console.error("[useDeleteConversation] failed:", err);
+      toast.error("Failed to delete conversation.");
     },
   });
 }

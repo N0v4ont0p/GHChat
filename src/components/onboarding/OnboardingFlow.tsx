@@ -5,6 +5,7 @@ import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { CATEGORY_META, ALL_CATEGORIES, AUTO_MODEL_ID } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -130,6 +131,10 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         // Auto-advance to model step — the user has validated and we have results
         setStep("model");
       }
+    } catch (err) {
+      console.error("[OnboardingFlow] validateKey failed:", err);
+      setKeyStatus("invalid");
+      setKeyMessage(err instanceof Error ? err.message : "Validation failed. Check your connection and try again.");
     } finally {
       setValidating(false);
     }
@@ -148,9 +153,15 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     try {
       await ipc.setApiKey(apiKey.trim());
       await ipc.updateSettings({ defaultModel: selectedModel, onboardingComplete: true });
+      onComplete();
+    } catch (err) {
+      console.error("[OnboardingFlow] handleFinish failed:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save settings. Please try again.",
+        { duration: 6000 },
+      );
     } finally {
       setSaving(false);
-      onComplete();
     }
   };
 

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { AppSettings } from "@/types";
@@ -31,5 +32,9 @@ export function useUpdateSettings() {
   return useMutation({
     mutationFn: (partial: Partial<AppSettings>) => ipc.updateSettings(partial),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      console.error("[useUpdateSettings] failed:", err);
+      toast.error("Failed to save settings.");
+    },
   });
 }

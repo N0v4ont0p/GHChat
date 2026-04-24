@@ -5,20 +5,59 @@ import { IPC } from "./channels";
 import type { AppSettings } from "../../../src/types";
 
 export function registerSettingsHandlers(ipcMain: IpcMain): void {
-  ipcMain.handle(IPC.SETTINGS_GET, () => getSettings());
+  ipcMain.handle(IPC.SETTINGS_GET, () => {
+    try {
+      return getSettings();
+    } catch (err) {
+      console.error("[ipc:settings:get] failed:", err);
+      throw err;
+    }
+  });
 
-  ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, partial: Partial<AppSettings>) =>
-    updateSettings(partial),
-  );
+  ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, partial: Partial<AppSettings>) => {
+    try {
+      return updateSettings(partial);
+    } catch (err) {
+      console.error("[ipc:settings:update] failed:", err);
+      throw err;
+    }
+  });
 
-  ipcMain.handle(IPC.KEYCHAIN_GET, () => getApiKey());
+  ipcMain.handle(IPC.KEYCHAIN_GET, () => {
+    try {
+      return getApiKey();
+    } catch (err) {
+      console.error("[ipc:keychain:get] failed:", err);
+      throw err;
+    }
+  });
 
-  ipcMain.handle(IPC.KEYCHAIN_SET, (_e, key: string) => setApiKey(key));
+  ipcMain.handle(IPC.KEYCHAIN_SET, (_e, key: string) => {
+    try {
+      return setApiKey(key);
+    } catch (err) {
+      console.error("[ipc:keychain:set] failed:", err);
+      throw err;
+    }
+  });
 
-  ipcMain.handle(IPC.KEYCHAIN_DELETE, () => deleteApiKey());
+  ipcMain.handle(IPC.KEYCHAIN_DELETE, () => {
+    try {
+      return deleteApiKey();
+    } catch (err) {
+      console.error("[ipc:keychain:delete] failed:", err);
+      throw err;
+    }
+  });
 
   ipcMain.handle(IPC.CLEAR_ALL_DATA, () => {
-    clearAllData();
-    deleteApiKey();
+    try {
+      clearAllData();
+      deleteApiKey();
+      console.log("[ipc:data:clear-all] completed");
+    } catch (err) {
+      console.error("[ipc:data:clear-all] failed:", err);
+      throw err;
+    }
   });
 }

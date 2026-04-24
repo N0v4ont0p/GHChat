@@ -235,52 +235,61 @@ export function useChat(conversationId: string | null) {
     async (content: string) => {
       if (!conversationId || isStreaming || !content.trim()) return;
 
-      const apiKey = await ipc.getApiKey();
-      if (!apiKey) {
-        toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
-          duration: 5000,
-          action: { label: "Open Settings", onClick: () => {} },
-        });
-        setStreamState("failed");
-        return;
-      }
-
-      // Signal the message list to scroll to bottom immediately
-      setForceScrollToBottom(true);
-
-      if (incognitoMode) {
-        // Incognito: keep messages in-memory only
-        const userMsg = makeIncognitoMessage(conversationId, "user", content);
-        addIncognitoMessage(userMsg);
-        const allMsgs = [...incognitoMessages, userMsg];
-        await dispatchStream(
-          selectedModel,
-          allMsgs.map((m) => ({ role: m.role, content: m.content })),
-        );
-        return;
-      }
-
-      await ipc.appendMessage({ conversationId, role: "user", content });
-      qc.invalidateQueries({ queryKey: ["messages", conversationId] });
-
-      // Auto-name the conversation from the first user message
-      const existingMessages = await ipc.listMessages(conversationId);
-      const userMessages = existingMessages.filter((m) => m.role === "user");
-      if (userMessages.length === 1) {
-        // This is the first user message — derive a title
-        const newTitle = deriveTitleFromMessage(content);
-        if (newTitle) {
-          ipc.renameConversation(conversationId, newTitle).then(() => {
-            qc.invalidateQueries({ queryKey: ["conversations"] });
-          }).catch(() => {});
+      try {
+        const apiKey = await ipc.getApiKey();
+        if (!apiKey) {
+          toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
+            duration: 5000,
+            action: { label: "Open Settings", onClick: () => {} },
+          });
+          setStreamState("failed");
+          return;
         }
-      }
 
-      const messages = await ipc.listMessages(conversationId);
-      await dispatchStream(selectedModel, messages.map((m) => ({ role: m.role, content: m.content })));
+        // Signal the message list to scroll to bottom immediately
+        setForceScrollToBottom(true);
+
+        if (incognitoMode) {
+          // Incognito: keep messages in-memory only
+          const userMsg = makeIncognitoMessage(conversationId, "user", content);
+          addIncognitoMessage(userMsg);
+          const allMsgs = [...incognitoMessages, userMsg];
+          await dispatchStream(
+            selectedModel,
+            allMsgs.map((m) => ({ role: m.role, content: m.content })),
+          );
+          return;
+        }
+
+        await ipc.appendMessage({ conversationId, role: "user", content });
+        qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+        // Auto-name the conversation from the first user message
+        const existingMessages = await ipc.listMessages(conversationId);
+        const userMessages = existingMessages.filter((m) => m.role === "user");
+        if (userMessages.length === 1) {
+          // This is the first user message — derive a title
+          const newTitle = deriveTitleFromMessage(content);
+          if (newTitle) {
+            ipc.renameConversation(conversationId, newTitle).then(() => {
+              qc.invalidateQueries({ queryKey: ["conversations"] });
+            }).catch((err: unknown) => {
+              console.error("[useChat] auto-rename failed:", err);
+            });
+          }
+        }
+
+        const messages = await ipc.listMessages(conversationId);
+        await dispatchStream(selectedModel, messages.map((m) => ({ role: m.role, content: m.content })));
+      } catch (err) {
+        console.error("[useChat] sendMessage failed:", err);
+        toast.error(err instanceof Error ? err.message : "Failed to send message. Please try again.");
+        setStreamState("failed");
+        resetStreaming();
+      }
     },
     [conversationId, isStreaming, selectedModel, dispatchStream, qc, setStreamState,
-     setForceScrollToBottom, incognitoMode, incognitoMessages, addIncognitoMessage],
+     setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage],
   );
 
   // ── Stop the active stream ─────────────────────────────────────────────────
@@ -296,30 +305,38 @@ export function useChat(conversationId: string | null) {
   const regenerate = useCallback(async () => {
     if (!conversationId || isStreaming) return;
 
-    if (incognitoMode) {
-      // Incognito regenerate: remove last assistant message and re-stream
-      const msgs = incognitoMessages;
-      if (msgs.length === 0) return;
-      const lastMsg = msgs[msgs.length - 1];
+    try {
+      if (incognitoMode) {
+        // Incognito regenerate: remove last assistant message and re-stream
+        const msgs = incognitoMessages;
+        if (msgs.length === 0) return;
+        const lastMsg = msgs[msgs.length - 1];
+        if (lastMsg.role !== "assistant") return;
+        const remaining = msgs.slice(0, -1);
+        await dispatchStream(selectedModel, remaining.map((m) => ({ role: m.role, content: m.content })));
+        return;
+      }
+
+      const messages = await ipc.listMessages(conversationId);
+      if (messages.length === 0) return;
+
+      const lastMsg = messages[messages.length - 1];
       if (lastMsg.role !== "assistant") return;
-      const remaining = msgs.slice(0, -1);
+
+      // Remove the stale assistant message
+      await ipc.deleteMessage(lastMsg.id);
+      qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+      const remaining = messages.slice(0, -1);
       await dispatchStream(selectedModel, remaining.map((m) => ({ role: m.role, content: m.content })));
-      return;
+    } catch (err) {
+      console.error("[useChat] regenerate failed:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to regenerate. Please try again.");
+      setStreamState("failed");
+      resetStreaming();
     }
-
-    const messages = await ipc.listMessages(conversationId);
-    if (messages.length === 0) return;
-
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role !== "assistant") return;
-
-    // Remove the stale assistant message
-    await ipc.deleteMessage(lastMsg.id);
-    qc.invalidateQueries({ queryKey: ["messages", conversationId] });
-
-    const remaining = messages.slice(0, -1);
-    await dispatchStream(selectedModel, remaining.map((m) => ({ role: m.role, content: m.content })));
-  }, [conversationId, isStreaming, selectedModel, dispatchStream, qc, incognitoMode, incognitoMessages]);
+  }, [conversationId, isStreaming, selectedModel, dispatchStream, qc, resetStreaming, setStreamState,
+      incognitoMode, incognitoMessages]);
 
   // ── Retry after failure (no message deletion needed — stream never saved) ──
   const retryStream = useCallback(
@@ -329,16 +346,24 @@ export function useChat(conversationId: string | null) {
       if (overrideModel && overrideModel !== selectedModel) {
         setSelectedModel(overrideModel);
       }
-      if (incognitoMode) {
-        if (incognitoMessages.length === 0) return;
-        await dispatchStream(modelToUse, incognitoMessages.map((m) => ({ role: m.role, content: m.content })));
-        return;
+      try {
+        if (incognitoMode) {
+          if (incognitoMessages.length === 0) return;
+          await dispatchStream(modelToUse, incognitoMessages.map((m) => ({ role: m.role, content: m.content })));
+          return;
+        }
+        const messages = await ipc.listMessages(conversationId);
+        if (messages.length === 0) return;
+        await dispatchStream(modelToUse, messages.map((m) => ({ role: m.role, content: m.content })));
+      } catch (err) {
+        console.error("[useChat] retryStream failed:", err);
+        toast.error(err instanceof Error ? err.message : "Retry failed. Please try again.");
+        setStreamState("failed");
+        resetStreaming();
       }
-      const messages = await ipc.listMessages(conversationId);
-      if (messages.length === 0) return;
-      await dispatchStream(modelToUse, messages.map((m) => ({ role: m.role, content: m.content })));
     },
-    [conversationId, isStreaming, selectedModel, setSelectedModel, dispatchStream, incognitoMode, incognitoMessages],
+    [conversationId, isStreaming, selectedModel, setSelectedModel, dispatchStream, resetStreaming,
+     setStreamState, incognitoMode, incognitoMessages],
   );
 
   // ── Switch to Auto mode and retry ─────────────────────────────────────────

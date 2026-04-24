@@ -139,7 +139,7 @@ function ConversationItem({
 }
 
 export function Sidebar() {
-  const { data: conversations = [], isLoading } = useConversations();
+  const { data: conversations = [], isLoading, isError } = useConversations();
   const createConversation = useCreateConversation();
   const deleteConversation = useDeleteConversation();
   const { selectedConversationId, setSelectedConversationId, incognitoMode, setIncognitoMode } = useChatStore();
@@ -209,6 +209,14 @@ export function Sidebar() {
               {[1, 2, 3].map((i) => (
                 <div key={i} className="h-8 animate-pulse rounded-md bg-secondary/30" />
               ))}
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center">
+              <p className="text-xs text-red-400 leading-relaxed">
+                Failed to load conversations.
+                <br />
+                <span className="text-muted-foreground/60">Database may be unavailable.</span>
+              </p>
             </div>
           ) : conversations.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center">
