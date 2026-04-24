@@ -17,6 +17,11 @@ export const CATEGORY_META: Record<
     description: "Automatically chooses the best free model for your prompt",
     emoji: "🤖",
   },
+  best: {
+    label: "Best",
+    description: "Top-tier free models — large, capable, and broadly recommended",
+    emoji: "⭐",
+  },
   general: {
     label: "General Chat",
     description: "Versatile models for everyday conversations and questions",
@@ -51,6 +56,7 @@ export const CATEGORY_META: Record<
 
 export const ALL_CATEGORIES: ModelCategory[] = [
   "auto",
+  "best",
   "general",
   "coding",
   "fast",
@@ -65,5 +71,6 @@ export function getPreset(models: ModelPreset[], id: string): ModelPreset | unde
 }
 
 export function getModelsByCategory(models: ModelPreset[], category: ModelCategory): ModelPreset[] {
+  if (category === "best") return models.filter((m) => m.isFeatured || m.category === "best");
   return models.filter((m) => m.category === category);
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2 } from "lucide-react";
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2, Search, SlidersHorizontal } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -14,12 +14,12 @@ import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useChatStore } from "@/stores/chat-store";
 import { ipc } from "@/lib/ipc";
-import { CATEGORY_META, ALL_CATEGORIES } from "@/lib/models";
+import { CATEGORY_META, ALL_CATEGORIES, AUTO_MODEL_ID } from "@/lib/models";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ModelCategory, OpenRouterDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
+import type { ModelCategory, ModelPreset, OpenRouterDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
 
 /** Compact verification badge used inside model cards */
 function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
@@ -80,6 +80,44 @@ function LayerStatus({ label, layer }: { label: string; layer: ValidationLayerSt
   );
 }
 
+/** Capability pill badges — compact visual row shown on each model card */
+function CapabilityPills({ preset }: { preset: ModelPreset }) {
+  const cap = preset.capabilities;
+  const isAuto = preset.id === AUTO_MODEL_ID;
+  const pills: Array<{ label: string; icon: string; color: string }> = [];
+
+  if (isAuto) {
+    pills.push({ label: "Coding", icon: "🧑‍💻", color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" });
+    pills.push({ label: "Reasoning", icon: "🧠", color: "bg-violet-500/10 text-violet-400 border-violet-500/20" });
+    pills.push({ label: "Creative", icon: "✨", color: "bg-pink-500/10 text-pink-400 border-pink-500/20" });
+    pills.push({ label: "Fast", icon: "⚡", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" });
+  } else if (cap) {
+    if (cap.coding) pills.push({ label: "Coding", icon: "🧑‍💻", color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" });
+    if (cap.reasoning || cap.specialReasoning) pills.push({ label: "Reasoning", icon: "🧠", color: "bg-violet-500/10 text-violet-400 border-violet-500/20" });
+    if (cap.creative) pills.push({ label: "Creative", icon: "✨", color: "bg-pink-500/10 text-pink-400 border-pink-500/20" });
+    if (cap.fast) pills.push({ label: "Fast", icon: "⚡", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" });
+    if (cap.longContext) pills.push({ label: "Long ctx", icon: "📚", color: "bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20" });
+    if (cap.webSearch) pills.push({ label: "Search", icon: "🔍", color: "bg-blue-500/10 text-blue-400 border-blue-500/20" });
+    if (cap.reasoningMode) pills.push({ label: "Think", icon: "💭", color: "bg-indigo-500/10 text-indigo-400 border-indigo-500/20" });
+  }
+
+  if (pills.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      {pills.slice(0, 5).map((p) => (
+        <span
+          key={p.label}
+          className={cn("inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none", p.color)}
+        >
+          <span className="text-[9px]">{p.icon}</span>
+          {p.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function SettingsModal() {
   const { settingsOpen, setSettingsOpen, selectedModel, setSelectedModel } =
     useSettingsStore();
@@ -96,8 +134,9 @@ export function SettingsModal() {
   const [removingKey, setRemovingKey] = useState(false);
   const [clearingData, setClearingData] = useState(false);
   const [activeTab, setActiveTab] = useState<"apikey" | "model">("model");
-  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("general");
+  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("best");
   const [modelSearch, setModelSearch] = useState("");
+  const [sortBy, setSortBy] = useState<"default" | "context" | "name">("default");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { data: models = [] } = useModels(validatedToken ?? undefined);
@@ -203,11 +242,11 @@ export function SettingsModal() {
 
   return (
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-      <DialogContent className="max-w-xl p-0 gap-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-6 pb-4 border-b border-border/50">
-          <DialogTitle className="text-lg">Settings</DialogTitle>
-          <DialogDescription className="text-sm">
-            Configure your API key and preferred model.
+      <DialogContent className="max-w-2xl p-0 gap-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-4 border-b border-border/50">
+          <DialogTitle className="text-base font-semibold">Settings</DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground">
+            Configure your OpenRouter API key and preferred model.
           </DialogDescription>
         </DialogHeader>
 
@@ -225,12 +264,12 @@ export function SettingsModal() {
               )}
             >
               {tab === "apikey" ? <Key className="h-3 w-3" /> : <Cpu className="h-3 w-3" />}
-              {tab === "apikey" ? "API Key" : "Model"}
+              {tab === "apikey" ? "API Key" : "Models"}
             </button>
           ))}
         </div>
 
-        <div className="px-6 py-5 max-h-[480px] overflow-y-auto">
+        <div className="px-6 py-5 max-h-[520px] overflow-y-auto">
           {activeTab === "apikey" && (
             <div className="space-y-4">
               {/* Connected status banner */}
@@ -427,122 +466,230 @@ export function SettingsModal() {
 
           {activeTab === "model" && (() => {
               const q = modelSearch.trim().toLowerCase();
-              const filteredModels = availableModels.filter((m) => {
-                const matchesCategory = selectedCategory === "all" || m.category === selectedCategory;
-                if (!matchesCategory) return false;
-                if (!q) return true;
-                return (
-                  m.name.toLowerCase().includes(q) ||
-                  m.id.toLowerCase().includes(q) ||
-                  (m.description ?? "").toLowerCase().includes(q)
-                );
+
+              // Category filter
+              const categoryFiltered = availableModels.filter((m) => {
+                if (selectedCategory === "all") return true;
+                if (selectedCategory === "auto") return m.id === AUTO_MODEL_ID;
+                if (selectedCategory === "best") return m.isFeatured || m.id === AUTO_MODEL_ID;
+                return m.category === selectedCategory;
               });
 
+              // Text search filter
+              const filteredModels = q
+                ? categoryFiltered.filter((m) =>
+                    m.name.toLowerCase().includes(q) ||
+                    m.id.toLowerCase().includes(q) ||
+                    (m.vendor ?? "").toLowerCase().includes(q) ||
+                    (m.family ?? "").toLowerCase().includes(q) ||
+                    (m.description ?? "").toLowerCase().includes(q),
+                  )
+                : categoryFiltered;
+
+              // Sort
+              const sortedModels = [...filteredModels].sort((a, b) => {
+                // Auto always first
+                if (a.id === AUTO_MODEL_ID) return -1;
+                if (b.id === AUTO_MODEL_ID) return 1;
+                if (sortBy === "name") return a.name.localeCompare(b.name);
+                if (sortBy === "context") {
+                  const aCtx = Number((a.contextWindow ?? "0").replace(/[^0-9]/g, "")) *
+                    (a.contextWindow?.includes("M") ? 1_000_000 : a.contextWindow?.includes("k") ? 1_000 : 1);
+                  const bCtx = Number((b.contextWindow ?? "0").replace(/[^0-9]/g, "")) *
+                    (b.contextWindow?.includes("M") ? 1_000_000 : b.contextWindow?.includes("k") ? 1_000 : 1);
+                  return bCtx - aCtx;
+                }
+                // Default: featured first, then by speed
+                if (a.isFeatured && !b.isFeatured) return -1;
+                if (!a.isFeatured && b.isFeatured) return 1;
+                const speedOrder = { fast: 0, medium: 1, slow: 2 };
+                return (speedOrder[a.speed ?? "medium"] ?? 1) - (speedOrder[b.speed ?? "medium"] ?? 1);
+              });
+
+              // Count models per category for badges
+              const getCatCount = (cat: ModelCategory) => {
+                if (cat === "auto") return availableModels.filter((m) => m.id === AUTO_MODEL_ID).length;
+                if (cat === "best") return availableModels.filter((m) => m.isFeatured || m.id === AUTO_MODEL_ID).length;
+                if (cat === "all") return availableModels.length;
+                return availableModels.filter((m) => m.category === cat).length;
+              };
+
               return (
-            <div className="space-y-4">
-              {/* Search input */}
-              <div className="relative">
-                <input
-                  type="text"
-                  value={modelSearch}
-                  onChange={(e) => setModelSearch(e.target.value)}
-                  placeholder="Search models…"
-                  className="w-full rounded-lg border border-border/60 bg-secondary/50 px-3 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                />
-                {modelSearch && (
-                  <button
-                    onClick={() => setModelSearch("")}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+            <div className="space-y-3">
+              {/* Search + sort row */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder="Search models by name, vendor, or capability…"
+                    className="w-full rounded-lg border border-border/60 bg-secondary/50 pl-8 pr-8 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                  {modelSearch && (
+                    <button
+                      onClick={() => setModelSearch("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Sort control */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground/50" />
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as "default" | "context" | "name")}
+                    className="rounded-lg border border-border/60 bg-secondary/50 px-2 py-1.5 text-xs text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 cursor-pointer"
                   >
-                    ✕
-                  </button>
-                )}
+                    <option value="default">Recommended</option>
+                    <option value="context">Context size</option>
+                    <option value="name">A–Z</option>
+                  </select>
+                </div>
               </div>
 
-              {/* Category filter */}
-              <div className="flex gap-1.5 flex-wrap">
-                {ALL_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedCategory(cat)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
-                      selectedCategory === cat
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-secondary text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <span>{CATEGORY_META[cat].emoji}</span>
-                    {CATEGORY_META[cat].label}
-                  </button>
-                ))}
+              {/* Category filter — horizontally scrollable */}
+              <div className="flex gap-1 overflow-x-auto pb-0.5 -mx-1 px-1 scrollbar-hide">
+                {ALL_CATEGORIES.map((cat) => {
+                  const count = getCatCount(cat);
+                  return (
+                    <button
+                      key={cat}
+                      onClick={() => setSelectedCategory(cat)}
+                      className={cn(
+                        "flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors shrink-0",
+                        selectedCategory === cat
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-secondary text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <span className="text-[11px]">{CATEGORY_META[cat].emoji}</span>
+                      {CATEGORY_META[cat].label}
+                      {count > 0 && selectedCategory !== cat && (
+                        <span className="ml-0.5 text-[10px] opacity-50">{count}</span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
-              <p className="text-xs text-muted-foreground">
+              {/* Category description */}
+              <p className="text-[11px] text-muted-foreground/60 leading-snug">
                 {CATEGORY_META[selectedCategory].description}
+                {sortedModels.length > 0 && (
+                  <span className="ml-1 opacity-60">· {sortedModels.length} model{sortedModels.length !== 1 ? "s" : ""}</span>
+                )}
               </p>
 
               {/* Model cards */}
               <div className="space-y-2">
-                {filteredModels.map((m) => {
+                {sortedModels.map((m) => {
+                  const isAuto = m.id === AUTO_MODEL_ID;
+                  const isSelected = selectedModel === m.id;
                   const isLimitedAccess = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
+
                   return (
                     <button
                       key={m.id}
                       onClick={() => setSelectedModel(m.id)}
                       className={cn(
                         "w-full rounded-xl border p-3 text-left transition-all",
-                        selectedModel === m.id
-                          ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
-                          : isLimitedAccess
-                            ? "border-border/40 bg-card/20 opacity-60"
-                            : "border-border/60 bg-card/30 hover:border-border hover:bg-card/60",
+                        isSelected
+                          ? isAuto
+                            ? "border-cyan-500/40 bg-cyan-500/5 ring-1 ring-cyan-500/20"
+                            : "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
+                          : isAuto
+                            ? "border-cyan-500/20 bg-cyan-500/5 hover:border-cyan-500/40 hover:bg-cyan-500/8"
+                            : isLimitedAccess
+                              ? "border-border/40 bg-card/20 opacity-60"
+                              : "border-border/60 bg-card/30 hover:border-border hover:bg-card/60",
                       )}
                     >
-                      <div className="flex items-start gap-2">
+                      <div className="flex items-start gap-2.5">
                         <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-                            <span className="font-medium text-sm">{m.name}</span>
-                            {m.isDefault && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                                Recommended
-                              </Badge>
+                          {/* Name row */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className={cn("font-semibold text-sm leading-tight", isAuto && "text-cyan-300")}>
+                              {m.name}
+                            </span>
+                            {/* Vendor chip */}
+                            {m.vendor && (
+                              <span className="rounded border border-border/50 bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground leading-none">
+                                {m.vendor}
+                              </span>
                             )}
-                            {m.isPopular && !m.isDefault && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                                Popular
-                              </Badge>
+                            {isAuto && (
+                              <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400 font-medium leading-none">
+                                Recommended
+                              </span>
+                            )}
+                            {m.isFeatured && !isAuto && (
+                              <span className="rounded border border-amber-500/20 bg-amber-500/8 px-1.5 py-0.5 text-[10px] text-amber-400/80 leading-none">
+                                ⭐ Top pick
+                              </span>
                             )}
                             <VerificationBadge status={m.verifiedStatus} />
                           </div>
-                          {/* Raw model ID — always shown in small muted text */}
-                          <p className="font-mono text-[9px] text-muted-foreground/40 mb-0.5 truncate">{m.id}</p>
-                          <p className="text-xs text-muted-foreground">{m.description}</p>
-                          <p className="mt-1 text-[11px] text-muted-foreground/60 leading-relaxed">
-                            {m.whyChoose}
+
+                          {/* Model ID in mono */}
+                          <p className="mt-0.5 font-mono text-[9px] text-muted-foreground/35 truncate">{m.id}</p>
+
+                          {/* Description */}
+                          <p className="mt-1 text-[11px] text-muted-foreground/80 leading-snug line-clamp-2">
+                            {m.description}
                           </p>
+
+                          {/* whyChoose */}
+                          {m.whyChoose && !isAuto && (
+                            <p className="mt-0.5 text-[10px] text-muted-foreground/50 leading-snug">
+                              {m.whyChoose}
+                            </p>
+                          )}
+                          {isAuto && (
+                            <p className="mt-0.5 text-[11px] text-cyan-400/70 leading-snug">
+                              {m.whyChoose}
+                            </p>
+                          )}
+
+                          {/* Status warnings */}
                           {m.verifiedStatus === "gated" && (
                             <p className="mt-1 text-[10px] text-amber-400/80">
-                              Requires model access approval
+                              ⚠ Requires model access approval on OpenRouter
                             </p>
                           )}
                           {m.verifiedStatus === "rate-limited" && (
                             <p className="mt-1 text-[10px] text-amber-400/80">
-                              Rate limited — may work again shortly
+                              ⚠ Rate limited — may work again shortly
                             </p>
                           )}
+
+                          {/* Capability pills */}
+                          <CapabilityPills preset={m} />
                         </div>
 
-                        <div className="flex shrink-0 flex-col items-end gap-1">
-                          {selectedModel === m.id && (
-                            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary">
-                              <Check className="h-3 w-3 text-primary-foreground" />
+                        {/* Right column: check + metadata */}
+                        <div className="flex shrink-0 flex-col items-end gap-1 pt-0.5">
+                          {isSelected && (
+                            <div className={cn(
+                              "flex h-5 w-5 items-center justify-center rounded-full",
+                              isAuto ? "bg-cyan-500" : "bg-primary",
+                            )}>
+                              <Check className="h-3 w-3 text-white" />
                             </div>
+                          )}
+                          {m.contextWindow && (
+                            <span className="rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground/60 leading-none font-mono whitespace-nowrap">
+                              {m.contextWindow}
+                            </span>
                           )}
                           {m.speed && (
                             <span
                               className={cn(
-                                "rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                "rounded px-1.5 py-0.5 text-[10px] font-medium leading-none",
                                 m.speed === "fast"
                                   ? "bg-green-500/10 text-green-400"
                                   : m.speed === "medium"
@@ -553,30 +700,25 @@ export function SettingsModal() {
                               {m.speed}
                             </span>
                           )}
-                          {m.contextWindow && (
-                            <span className="text-[10px] text-muted-foreground/50">
-                              {m.contextWindow}
-                            </span>
-                          )}
-                          <span className="text-[10px] text-muted-foreground/50">{m.costTier}</span>
-                          {m.freeTierFriendly && (
-                            <span className="text-[10px] text-green-400/70">free-tier friendly</span>
-                          )}
-                          {m.isSlow && (
-                            <span className="text-[10px] text-amber-400/70">slow</span>
-                          )}
-                          {m.isExperimental && (
-                            <span className="text-[10px] text-fuchsia-400/70">experimental</span>
-                          )}
                         </div>
                       </div>
                     </button>
                   );
                 })}
-                {filteredModels.length === 0 && (
-                  <p className="py-4 text-center text-sm text-muted-foreground/50">
-                    {modelSearch ? `No models match "${modelSearch}"` : "No models in this category yet."}
-                  </p>
+                {sortedModels.length === 0 && (
+                  <div className="py-8 text-center">
+                    <p className="text-sm text-muted-foreground/50">
+                      {modelSearch ? `No models match "${modelSearch}"` : "No models in this category yet."}
+                    </p>
+                    {modelSearch && (
+                      <button
+                        onClick={() => setModelSearch("")}
+                        className="mt-2 text-xs text-primary/70 hover:text-primary transition-colors"
+                      >
+                        Clear search
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

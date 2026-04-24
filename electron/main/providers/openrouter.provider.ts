@@ -49,16 +49,36 @@ interface RawOrModel {
 
 const FRIENDLY_NAMES: Record<string, string> = {
   "openrouter/free": "OpenRouter Free (Auto)",
-  "google/gemma-4-31b-it:free": "Gemma 4 31B IT",
-  "google/gemma-4-26b-a4b-it:free": "Gemma 4 26B A4B IT",
-  "google/gemma-3-12b-it:free": "Gemma 3 12B IT",
-  "google/gemma-3n-e2b-it:free": "Gemma 3n E2B IT",
+  "google/gemma-4-31b-it:free": "Gemma 4 31B",
+  "google/gemma-4-26b-a4b-it:free": "Gemma 4 26B MoE",
+  "google/gemma-3-12b-it:free": "Gemma 3 12B",
+  "google/gemma-3n-e2b-it:free": "Gemma 3n E2B",
   "qwen/qwen3-coder:free": "Qwen3 Coder",
   "meta-llama/llama-3.3-70b-instruct:free": "Llama 3.3 70B",
   "nvidia/nemotron-3-nano-30b-a3b:free": "Nemotron Nano 30B",
   "inclusionai/ling-2.6-flash:free": "Ling 2.6 Flash",
   "cognitivecomputations/dolphin-mistral-24b-venice-edition:free": "Dolphin Mistral 24B",
   "liquid/lfm-2.5-1.2b-instruct:free": "LFM 2.5 1.2B",
+};
+
+/** Map org/vendor slugs to display names */
+const VENDOR_NAMES: Record<string, string> = {
+  google: "Google",
+  meta: "Meta",
+  "meta-llama": "Meta",
+  mistral: "Mistral",
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  qwen: "Alibaba",
+  nvidia: "NVIDIA",
+  microsoft: "Microsoft",
+  cohere: "Cohere",
+  "01-ai": "01.AI",
+  deepseek: "DeepSeek",
+  liquid: "Liquid AI",
+  cognitivecomputations: "Cognitive Computations",
+  inclusionai: "Inclusion AI",
+  openrouter: "OpenRouter",
 };
 
 const KNOWN_FREE_IDS = [
@@ -82,7 +102,7 @@ function detectCapabilities(id: string, name: string, contextLength: number, mod
   const isLargeModel = LARGE_MODEL_REGEX.test(combined);
   const coding = /coder|code|coding/i.test(combined);
   const reasoning = /nemotron|deepseek-r|qwq|o1|o3|thinking|reason/i.test(combined);
-  const creative = /dolphin|hermes|roleplay|creative|uncensored/i.test(combined);
+  const creative = /dolphin|hermes|roleplay|creative|uncensored|mistral/i.test(combined);
   const longContext = contextLength > 32768;
   const toolUse = /tool/i.test(name);
   const fastBySize = /nano|mini|tiny|small|1\.5b|1b|2b|flash/i.test(combined);
@@ -101,10 +121,29 @@ function detectCapabilities(id: string, name: string, contextLength: number, mod
   };
 }
 
+function extractVendorFamily(id: string): { vendor: string; family: string } {
+  const org = id.split("/")[0] ?? "";
+  const modelPart = id.split("/")[1]?.replace(/:free$/, "") ?? "";
+
+  const vendor = VENDOR_NAMES[org.toLowerCase()] ?? org
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  // Derive family from the first capitalized/recognizable segment of the model slug
+  const familyMatch = modelPart.match(/^([a-zA-Z]+(?:\d+)?(?:-[a-zA-Z]+)?)/);
+  const rawFamily = familyMatch?.[1] ?? modelPart;
+  const family = rawFamily
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .slice(0, 20);
+
+  return { vendor, family };
+}
+
 function formatContextWindow(length: number): string {
-  if (length >= 1_000_000) return `${Math.round(length / 1_000_000)}M`;
-  if (length >= 1000) return `${Math.round(length / 1000)}k`;
-  return String(length);
+  if (length >= 1_000_000) return `${Math.round(length / 1_000_000)}M ctx`;
+  if (length >= 1000) return `${Math.round(length / 1000)}k ctx`;
+  return `${String(length)} ctx`;
 }
 
 function deriveFriendlyName(id: string): string {
@@ -115,8 +154,39 @@ function deriveFriendlyName(id: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** A model is "featured" (shown in Best category) if it is large, from a trusted vendor,
+ * or has a strong combination of capabilities. */
+function isFeaturedModel(id: string, capabilities: ReturnType<typeof detectCapabilities>, contextLength: number): boolean {
+  const isLarge = LARGE_MODEL_REGEX.test(id);
+  const org = id.split("/")[0]?.toLowerCase() ?? "";
+  const trustedVendor = ["google", "meta-llama", "nvidia", "mistral", "qwen", "deepseek"].includes(org);
+  const highCap = [capabilities.coding, capabilities.reasoning, capabilities.longContext, capabilities.creative]
+    .filter(Boolean).length >= 2;
+  return isLarge || (trustedVendor && highCap) || contextLength >= 128_000;
+}
+
+function buildWhyChoose(id: string, capabilities: ReturnType<typeof detectCapabilities>, contextLength: number): string {
+  const parts: string[] = [];
+  if (capabilities.coding) parts.push("coding & debugging");
+  if (capabilities.reasoning) parts.push("step-by-step reasoning");
+  if (capabilities.creative) parts.push("creative writing");
+  if (capabilities.longContext) parts.push(`long documents (${formatContextWindow(contextLength)})`);
+  if (capabilities.fast) parts.push("fast responses");
+  if (capabilities.webSearch) parts.push("live web search");
+  if (parts.length > 0) {
+    return `Strong at ${parts.slice(0, 3).join(", ")}. Free via OpenRouter.`;
+  }
+  const isLarge = LARGE_MODEL_REGEX.test(id);
+  return isLarge
+    ? "Large, capable general-purpose model. Free via OpenRouter."
+    : "General purpose free model via OpenRouter.";
+}
+
 function normalizeToPreset(raw: RawOrModel): ModelPreset {
   const capabilities = detectCapabilities(raw.id, raw.name, raw.context_length, raw.architecture?.modality);
+  const { vendor, family } = extractVendorFamily(raw.id);
+  const featured = isFeaturedModel(raw.id, capabilities, raw.context_length);
+
   let category: ModelCategory = "general";
   if (capabilities.coding) category = "coding";
   else if (capabilities.reasoning) category = "reasoning";
@@ -127,19 +197,14 @@ function normalizeToPreset(raw: RawOrModel): ModelPreset {
   const isLarge = LARGE_MODEL_REGEX.test(raw.id + raw.name);
   const speed = capabilities.fast ? "fast" : isLarge ? "slow" : "medium";
 
-  const whyParts: string[] = [];
-  if (capabilities.coding) whyParts.push("coding");
-  if (capabilities.reasoning) whyParts.push("reasoning");
-  if (capabilities.creative) whyParts.push("creative writing");
-  if (capabilities.longContext) whyParts.push("long context");
-  if (capabilities.fast) whyParts.push("fast responses");
-  const whyChoose = whyParts.length > 0
-    ? `Good for ${whyParts.join(", ")}. Free via OpenRouter.`
-    : "General purpose free model via OpenRouter.";
+  const whyChoose = buildWhyChoose(raw.id, capabilities, raw.context_length);
 
   return {
     id: raw.id,
     name: deriveFriendlyName(raw.id),
+    vendor,
+    family,
+    isFeatured: featured,
     category,
     description: raw.description ?? "Free model via OpenRouter",
     whyChoose,
@@ -157,10 +222,13 @@ function normalizeToPreset(raw: RawOrModel): ModelPreset {
 function buildAutoPreset(): ModelPreset {
   return {
     id: AUTO_MODEL_ID,
-    name: "Auto (Recommended)",
+    name: "Auto",
+    vendor: "OpenRouter",
+    family: "Auto Router",
+    isFeatured: true,
     category: "auto",
     description: "Routes each prompt to the best free model via OpenRouter",
-    whyChoose: "Best default — intelligently picks the right free model for each prompt.",
+    whyChoose: "Intelligently picks the right free model for each prompt — coding, reasoning, or general use. Best starting point.",
     isDefault: true,
     isPopular: true,
     speed: "fast",

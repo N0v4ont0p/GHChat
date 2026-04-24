@@ -20,10 +20,7 @@ export function StreamingIndicator() {
           <span
             key={i}
             className="inline-block w-[3px] rounded-full bg-primary/70 animate-wave origin-bottom"
-            style={{
-              animationDelay: `${i * 0.11}s`,
-              height: "100%",
-            }}
+            style={{ animationDelay: `${i * 0.11}s` }}
           />
         ))}
       </div>
