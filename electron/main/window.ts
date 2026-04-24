@@ -87,12 +87,14 @@ export function createMainWindow(): BrowserWindow {
   return win;
 }
 
-function getVisibleBounds(targetBounds: Rectangle): Rectangle {
+function getDisplayWorkArea(targetBounds: Rectangle): Rectangle {
   const display = screen.getDisplayMatching(targetBounds);
   return display.workArea;
 }
 
 function isMostlyOffscreen(windowBounds: Rectangle, visibleBounds: Rectangle): boolean {
+  if (windowBounds.width <= 0 || windowBounds.height <= 0) return true;
+
   const intersectionLeft = Math.max(windowBounds.x, visibleBounds.x);
   const intersectionTop = Math.max(windowBounds.y, visibleBounds.y);
   const intersectionRight = Math.min(
@@ -106,7 +108,7 @@ function isMostlyOffscreen(windowBounds: Rectangle, visibleBounds: Rectangle): b
   const visibleWidth = Math.max(0, intersectionRight - intersectionLeft);
   const visibleHeight = Math.max(0, intersectionBottom - intersectionTop);
   const visibleArea = visibleWidth * visibleHeight;
-  const windowArea = Math.max(1, windowBounds.width * windowBounds.height);
+  const windowArea = windowBounds.width * windowBounds.height;
   return visibleArea / windowArea < 0.2;
 }
 
@@ -125,10 +127,10 @@ export function revealMainWindow(win: BrowserWindow): void {
   }
 
   const bounds = win.getBounds();
-  const visibleBounds = getVisibleBounds(bounds);
+  const visibleBounds = getDisplayWorkArea(bounds);
   if (isMostlyOffscreen(bounds, visibleBounds)) {
     const centered = centerInsideVisibleArea(bounds, visibleBounds);
-    win.setBounds(centered, false);
+    win.setBounds(centered, false); // disable animation to force immediate on-screen recovery
   }
 
   win.show();
