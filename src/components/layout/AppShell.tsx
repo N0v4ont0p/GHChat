@@ -10,6 +10,7 @@ import { ipc } from "@/lib/ipc";
 export function AppShell() {
   const { data: conversations } = useConversations();
   const { selectedConversationId, setSelectedConversationId } = useChatStore();
+  const incognitoMode = useChatStore((s) => s.incognitoMode);
   const autoSelectedRef = useRef(false);
 
   // Auto-select the most recent conversation when conversations load
@@ -21,12 +22,13 @@ export function AppShell() {
     }
   }, [conversations, selectedConversationId, setSelectedConversationId]);
 
-  // Persist the active conversation so it can be restored on next launch
+  // Persist the active conversation so it can be restored on next launch.
+  // Skipped in incognito mode to avoid leaking session activity into the DB.
   useEffect(() => {
-    if (selectedConversationId) {
+    if (selectedConversationId && !incognitoMode) {
       void ipc.updateSettings({ lastConversationId: selectedConversationId });
     }
-  }, [selectedConversationId]);
+  }, [selectedConversationId, incognitoMode]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">

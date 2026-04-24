@@ -36,7 +36,7 @@ app.whenReady().then(() => {
   }
 
   const apiKey = getApiKey();
-  console.log("[main] keychain warmup: starting");
+  console.log("[main] keychain warmup: starting (key present:", apiKey.length > 0, ")");
   openRouterProvider
     .warmupForToken(apiKey)
     .then(() => console.log("[main] keychain warmup: done"))

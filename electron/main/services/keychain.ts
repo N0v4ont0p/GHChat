@@ -7,7 +7,10 @@ const keyPath = () => join(app.getPath("userData"), ".hf-key");
 export function getApiKey(): string {
   try {
     if (!existsSync(keyPath())) return "";
-    if (!safeStorage.isEncryptionAvailable()) return "";
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.warn("[keychain] safeStorage encryption unavailable — cannot decrypt stored key");
+      return "";
+    }
     const encrypted = readFileSync(keyPath());
     return safeStorage.decryptString(encrypted);
   } catch {
@@ -16,7 +19,10 @@ export function getApiKey(): string {
 }
 
 export function setApiKey(key: string): void {
-  if (!safeStorage.isEncryptionAvailable()) return;
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn("[keychain] safeStorage encryption unavailable — API key NOT stored");
+    return;
+  }
   const encrypted = safeStorage.encryptString(key);
   writeFileSync(keyPath(), encrypted);
 }
