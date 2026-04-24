@@ -107,10 +107,13 @@ export function createMainWindow(): BrowserWindow {
   });
 
   if (process.env["ELECTRON_RENDERER_URL"]) {
-    const devUrl = process.env["ELECTRON_RENDERER_URL"];
-    console.log("[window] dev mode — loadURL:", devUrl);
-    win.loadURL(devUrl).catch((err: unknown) => loadFallback(`loadURL failed: ${String(err)}`));
+    console.log("[window] dev mode — loadURL:", process.env["ELECTRON_RENDERER_URL"]);
+    win
+      .loadURL(process.env["ELECTRON_RENDERER_URL"])
+      .catch((err: unknown) => loadFallback(`loadURL failed: ${String(err)}`));
   } else {
+    // Path contract: __dirname is out/main/ at runtime; ../renderer/index.html resolves to
+    // out/renderer/index.html — must match OUT_RENDERER in electron.vite.config.ts.
     const rendererPath = join(__dirname, "../renderer/index.html");
     console.log("[window] production mode — loadFile:", rendererPath);
     win.loadFile(rendererPath).catch((err: unknown) => loadFallback(`loadFile failed: ${String(err)}`));
