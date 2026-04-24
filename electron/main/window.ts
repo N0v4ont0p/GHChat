@@ -1,4 +1,4 @@
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, Rectangle, screen, shell } from "electron";
 import { join } from "path";
 
 const WINDOW_BACKGROUND = "#09090b";
@@ -46,7 +46,9 @@ export function createMainWindow(): BrowserWindow {
   });
 
   const showWindow = () => {
-    if (!win.isDestroyed()) win.show();
+    if (!win.isDestroyed()) {
+      revealMainWindow(win);
+    }
   };
 
   const loadFallback = (reason: string) => {
@@ -83,4 +85,52 @@ export function createMainWindow(): BrowserWindow {
   }
 
   return win;
+}
+
+function getVisibleBounds(targetBounds: Rectangle): Rectangle {
+  const display = screen.getDisplayMatching(targetBounds);
+  return display.workArea;
+}
+
+function isMostlyOffscreen(windowBounds: Rectangle, visibleBounds: Rectangle): boolean {
+  const intersectionLeft = Math.max(windowBounds.x, visibleBounds.x);
+  const intersectionTop = Math.max(windowBounds.y, visibleBounds.y);
+  const intersectionRight = Math.min(
+    windowBounds.x + windowBounds.width,
+    visibleBounds.x + visibleBounds.width,
+  );
+  const intersectionBottom = Math.min(
+    windowBounds.y + windowBounds.height,
+    visibleBounds.y + visibleBounds.height,
+  );
+  const visibleWidth = Math.max(0, intersectionRight - intersectionLeft);
+  const visibleHeight = Math.max(0, intersectionBottom - intersectionTop);
+  const visibleArea = visibleWidth * visibleHeight;
+  const windowArea = Math.max(1, windowBounds.width * windowBounds.height);
+  return visibleArea / windowArea < 0.2;
+}
+
+function centerInsideVisibleArea(windowBounds: Rectangle, visibleBounds: Rectangle): Rectangle {
+  const width = Math.min(windowBounds.width, visibleBounds.width);
+  const height = Math.min(windowBounds.height, visibleBounds.height);
+  const x = Math.round(visibleBounds.x + (visibleBounds.width - width) / 2);
+  const y = Math.round(visibleBounds.y + (visibleBounds.height - height) / 2);
+  return { x, y, width, height };
+}
+
+export function revealMainWindow(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  if (win.isMinimized()) {
+    win.restore();
+  }
+
+  const bounds = win.getBounds();
+  const visibleBounds = getVisibleBounds(bounds);
+  if (isMostlyOffscreen(bounds, visibleBounds)) {
+    const centered = centerInsideVisibleArea(bounds, visibleBounds);
+    win.setBounds(centered, false);
+  }
+
+  win.show();
+  win.focus();
 }
