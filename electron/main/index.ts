@@ -15,27 +15,37 @@ process.on("unhandledRejection", (reason) => {
 });
 
 app.whenReady().then(() => {
+  console.log("[main] app ready — version:", app.getVersion(), "electron:", process.versions.electron);
+
   // Each setup step is wrapped independently so that a failure in one step
   // (e.g. better-sqlite3 native binary missing in the packaged app) does not
   // prevent the window from being created.  The window itself already has a
   // visible fallback page for renderer-load failures.
   try {
     initDatabase();
+    console.log("[main] database init OK");
   } catch (err) {
-    console.error("[main] initDatabase failed:", err);
+    console.error("[main] database init FAILED:", err);
   }
 
   try {
     registerAllIpcHandlers();
+    console.log("[main] IPC handlers registered");
   } catch (err) {
-    console.error("[main] registerAllIpcHandlers failed:", err);
+    console.error("[main] IPC handler registration FAILED:", err);
   }
 
-  void openRouterProvider.warmupForToken(getApiKey());
+  const apiKey = getApiKey();
+  console.log("[main] keychain warmup: starting");
+  openRouterProvider
+    .warmupForToken(apiKey)
+    .then(() => console.log("[main] keychain warmup: done"))
+    .catch((err: unknown) => console.error("[main] keychain warmup: failed:", err));
 
   // Always create the window last — it must be reached even if the steps
   // above throw, otherwise the app runs invisibly (icon in Dock, no window).
-  createMainWindow();
+  const win = createMainWindow();
+  console.log("[main] window created (id:", win.id, ")");
 
   app.on("activate", () => {
     const windows = BrowserWindow.getAllWindows();
@@ -48,7 +58,7 @@ app.whenReady().then(() => {
 }).catch((err) => {
   // app.whenReady() itself rejected — log and quit so the process doesn't
   // linger invisibly as a Dock/menu-bar ghost with no window.
-  console.error("[main] app.whenReady failed:", err);
+  console.error("[main] app.whenReady FAILED:", err);
   app.quit();
 });
 

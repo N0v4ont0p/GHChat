@@ -1,5 +1,6 @@
 import { BrowserWindow, Rectangle, screen, shell } from "electron";
 import { join } from "path";
+import { existsSync } from "fs";
 
 const WINDOW_BACKGROUND = "#09090b";
 // Minimum visible fraction of the current window area before we treat it as effectively off-screen.
@@ -66,12 +67,18 @@ export function createMainWindow(): BrowserWindow {
       return;
     }
     fallbackActive = true;
-    console.error("[window] renderer fallback:", reason);
+    console.error("[window] renderer fallback triggered:", reason);
     // Load a visible fallback page so the window is never blank/transparent
     void win.webContents
       .loadURL("data:text/html;charset=utf-8," + FALLBACK_HTML)
-      .then(showWindow)
-      .catch(showWindow);
+      .then(() => {
+        console.log("[window] fallback page loaded");
+        showWindow();
+      })
+      .catch((err: unknown) => {
+        console.error("[window] fallback page load FAILED:", err);
+        showWindow();
+      });
   };
 
   win.once("ready-to-show", showWindow);
@@ -107,7 +114,14 @@ export function createMainWindow(): BrowserWindow {
   });
 
   if (process.env["ELECTRON_RENDERER_URL"]) {
-    console.log("[window] dev mode — loadURL:", process.env["ELECTRON_RENDERER_URL"]);
+    // Log only the origin to avoid exposing any credentials in query parameters.
+    let devOrigin = "(unknown)";
+    try {
+      devOrigin = new URL(process.env["ELECTRON_RENDERER_URL"]).origin;
+    } catch {
+      /* URL parse failed — fall back to generic label */
+    }
+    console.log("[window] dev mode — loadURL origin:", devOrigin);
     win
       .loadURL(process.env["ELECTRON_RENDERER_URL"])
       .catch((err: unknown) => loadFallback(`loadURL failed: ${String(err)}`));
@@ -115,8 +129,18 @@ export function createMainWindow(): BrowserWindow {
     // Path contract: __dirname is out/main/ at runtime; ../renderer/index.html resolves to
     // out/renderer/index.html — must match OUT_RENDERER in electron.vite.config.ts.
     const rendererPath = join(__dirname, "../renderer/index.html");
-    console.log("[window] production mode — loadFile:", rendererPath);
-    win.loadFile(rendererPath).catch((err: unknown) => loadFallback(`loadFile failed: ${String(err)}`));
+    const rendererExists = existsSync(rendererPath);
+    console.log(
+      "[window] production mode — loadFile:",
+      rendererPath,
+      "| exists:",
+      rendererExists,
+    );
+    if (!rendererExists) {
+      loadFallback(`renderer not found on disk: ${rendererPath}`);
+    } else {
+      win.loadFile(rendererPath).catch((err: unknown) => loadFallback(`loadFile failed: ${String(err)}`));
+    }
   }
 
   return win;
