@@ -1,6 +1,8 @@
 import { BrowserWindow, shell } from "electron";
 import { join } from "path";
 
+const WINDOW_BACKGROUND = "#09090b";
+
 const FALLBACK_HTML = encodeURIComponent(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -33,14 +35,7 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 600,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
-    // transparent + "#00000000" are required for macOS vibrancy to render
-    // correctly. Without transparent:true the backgroundColor is silently
-    // ignored on some Electron/macOS combinations and the window appears
-    // fully see-through even when content is present.
-    transparent: true,
-    backgroundColor: "#00000000",
-    vibrancy: "under-window",
-    visualEffectState: "active",
+    backgroundColor: WINDOW_BACKGROUND,
     hasShadow: true,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
@@ -50,14 +45,30 @@ export function createMainWindow(): BrowserWindow {
     show: false,
   });
 
-  win.once("ready-to-show", () => win.show());
-  win.webContents.on("did-fail-load", (_e, code, desc) => {
-    console.error("[window] renderer failed to load:", code, desc);
+  const showWindow = () => {
+    if (!win.isDestroyed()) win.show();
+  };
+
+  const loadFallback = (reason: string) => {
+    console.error("[window] renderer fallback:", reason);
     // Load a visible fallback page so the window is never blank/transparent
     void win.webContents
       .loadURL("data:text/html;charset=utf-8," + FALLBACK_HTML)
-      .then(() => win.show())
-      .catch(() => win.show());
+      .then(showWindow)
+      .catch(showWindow);
+  };
+
+  win.once("ready-to-show", showWindow);
+  const safetyShowTimeout = setTimeout(showWindow, 2500);
+  win.once("show", () => clearTimeout(safetyShowTimeout));
+  win.once("closed", () => clearTimeout(safetyShowTimeout));
+
+  win.webContents.on("did-fail-load", (_e, code, desc) => {
+    loadFallback(`did-fail-load (${code}): ${desc}`);
+  });
+
+  win.webContents.on("render-process-gone", (_e, details) => {
+    loadFallback(`render-process-gone: ${details.reason}`);
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
