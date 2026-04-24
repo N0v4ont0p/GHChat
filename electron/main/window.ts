@@ -83,9 +83,13 @@ export function createMainWindow(): BrowserWindow {
   });
 
   if (process.env["ELECTRON_RENDERER_URL"]) {
-    win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+    const devUrl = process.env["ELECTRON_RENDERER_URL"];
+    console.log("[window] dev mode — loadURL:", devUrl);
+    win.loadURL(devUrl).catch((err: unknown) => loadFallback(`loadURL failed: ${String(err)}`));
   } else {
-    win.loadFile(join(__dirname, "../renderer/index.html"));
+    const rendererPath = join(__dirname, "../renderer/index.html");
+    console.log("[window] production mode — loadFile:", rendererPath);
+    win.loadFile(rendererPath).catch((err: unknown) => loadFallback(`loadFile failed: ${String(err)}`));
   }
 
   return win;
