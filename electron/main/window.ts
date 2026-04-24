@@ -1,7 +1,11 @@
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, Rectangle, screen, shell } from "electron";
 import { join } from "path";
 
 const WINDOW_BACKGROUND = "#09090b";
+// Minimum visible fraction of the current window area before we treat it as effectively off-screen.
+const OFFSCREEN_VISIBLE_AREA_THRESHOLD = 0.2;
+// Keep recovery repositioning immediate to avoid a delayed/flickering first-frame reveal on activation.
+const RECOVER_BOUNDS_WITH_ANIMATION = false;
 
 const FALLBACK_HTML = encodeURIComponent(`<!DOCTYPE html>
 <html lang="en">
@@ -46,7 +50,9 @@ export function createMainWindow(): BrowserWindow {
   });
 
   const showWindow = () => {
-    if (!win.isDestroyed()) win.show();
+    if (!win.isDestroyed()) {
+      revealMainWindow(win);
+    }
   };
 
   const loadFallback = (reason: string) => {
@@ -83,4 +89,54 @@ export function createMainWindow(): BrowserWindow {
   }
 
   return win;
+}
+
+function getDisplayWorkArea(targetBounds: Rectangle): Rectangle {
+  const display = screen.getDisplayMatching(targetBounds);
+  return display.workArea;
+}
+
+function isMostlyOffscreen(windowBounds: Rectangle, visibleBounds: Rectangle): boolean {
+  if (windowBounds.width <= 0 || windowBounds.height <= 0) return true;
+
+  const intersectionLeft = Math.max(windowBounds.x, visibleBounds.x);
+  const intersectionTop = Math.max(windowBounds.y, visibleBounds.y);
+  const intersectionRight = Math.min(
+    windowBounds.x + windowBounds.width,
+    visibleBounds.x + visibleBounds.width,
+  );
+  const intersectionBottom = Math.min(
+    windowBounds.y + windowBounds.height,
+    visibleBounds.y + visibleBounds.height,
+  );
+  const visibleWidth = Math.max(0, intersectionRight - intersectionLeft);
+  const visibleHeight = Math.max(0, intersectionBottom - intersectionTop);
+  const visibleArea = visibleWidth * visibleHeight;
+  const windowArea = windowBounds.width * windowBounds.height;
+  return visibleArea / windowArea < OFFSCREEN_VISIBLE_AREA_THRESHOLD;
+}
+
+function centerInsideVisibleArea(windowBounds: Rectangle, visibleBounds: Rectangle): Rectangle {
+  const width = Math.min(windowBounds.width, visibleBounds.width);
+  const height = Math.min(windowBounds.height, visibleBounds.height);
+  const x = Math.round(visibleBounds.x + (visibleBounds.width - width) / 2);
+  const y = Math.round(visibleBounds.y + (visibleBounds.height - height) / 2);
+  return { x, y, width, height };
+}
+
+export function revealMainWindow(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  if (win.isMinimized()) {
+    win.restore();
+  }
+
+  const bounds = win.getBounds();
+  const visibleBounds = getDisplayWorkArea(bounds);
+  if (isMostlyOffscreen(bounds, visibleBounds)) {
+    const centered = centerInsideVisibleArea(bounds, visibleBounds);
+    win.setBounds(centered, RECOVER_BOUNDS_WITH_ANIMATION);
+  }
+
+  win.show();
+  win.focus();
 }

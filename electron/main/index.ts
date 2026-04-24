@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from "electron";
 import { initDatabase } from "./services/database";
 import { registerAllIpcHandlers } from "./ipc";
-import { createMainWindow } from "./window";
+import { createMainWindow, revealMainWindow } from "./window";
 import { getApiKey } from "./services/keychain";
 import { openRouterProvider } from "./providers";
 
@@ -16,7 +16,7 @@ app.whenReady().then(() => {
     if (windows.length === 0) {
       createMainWindow();
     } else {
-      windows[0].show();
+      revealMainWindow(windows[0]);
     }
   });
 });
