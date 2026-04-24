@@ -274,7 +274,7 @@ Even if GHchat's source code is on an external drive, macOS stores **runtime dat
 | Data | Location |
 |---|---|
 | SQLite database | `~/Library/Application Support/ghchat/ghchat.db` |
-| Encrypted API key | `~/Library/Application Support/ghchat/.hf-key` (safeStorage-encrypted) |
+| Encrypted API key | `~/Library/Application Support/ghchat/.or-key` (safeStorage-encrypted) |
 | Electron logs | `~/Library/Logs/ghchat/` |
 
 This is intentional: macOS apps write to `app.getPath('userData')` which always resolves to the internal Library. This ensures:
