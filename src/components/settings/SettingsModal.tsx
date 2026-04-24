@@ -118,6 +118,15 @@ function CapabilityPills({ preset }: { preset: ModelPreset }) {
   );
 }
 
+/** Parse a context window string like "128k ctx", "1M ctx", "8192 ctx" into a numeric token count */
+function parseContextWindowTokens(contextWindow: string | undefined): number {
+  if (!contextWindow) return 0;
+  const num = Number(contextWindow.replace(/[^0-9]/g, ""));
+  if (contextWindow.includes("M")) return num * 1_000_000;
+  if (contextWindow.includes("k")) return num * 1_000;
+  return num;
+}
+
 export function SettingsModal() {
   const { settingsOpen, setSettingsOpen, selectedModel, setSelectedModel } =
     useSettingsStore();
@@ -493,10 +502,8 @@ export function SettingsModal() {
                 if (b.id === AUTO_MODEL_ID) return 1;
                 if (sortBy === "name") return a.name.localeCompare(b.name);
                 if (sortBy === "context") {
-                  const aCtx = Number((a.contextWindow ?? "0").replace(/[^0-9]/g, "")) *
-                    (a.contextWindow?.includes("M") ? 1_000_000 : a.contextWindow?.includes("k") ? 1_000 : 1);
-                  const bCtx = Number((b.contextWindow ?? "0").replace(/[^0-9]/g, "")) *
-                    (b.contextWindow?.includes("M") ? 1_000_000 : b.contextWindow?.includes("k") ? 1_000 : 1);
+                  const aCtx = parseContextWindowTokens(a.contextWindow);
+                  const bCtx = parseContextWindowTokens(b.contextWindow);
                   return bCtx - aCtx;
                 }
                 // Default: featured first, then by speed

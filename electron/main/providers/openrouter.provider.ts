@@ -102,7 +102,7 @@ function detectCapabilities(id: string, name: string, contextLength: number, mod
   const isLargeModel = LARGE_MODEL_REGEX.test(combined);
   const coding = /coder|code|coding/i.test(combined);
   const reasoning = /nemotron|deepseek-r|qwq|o1|o3|thinking|reason/i.test(combined);
-  const creative = /dolphin|hermes|roleplay|creative|uncensored|mistral/i.test(combined);
+  const creative = /dolphin|hermes|roleplay|creative|uncensored|mistral.*uncensored/i.test(combined);
   const longContext = contextLength > 32768;
   const toolUse = /tool/i.test(name);
   const fastBySize = /nano|mini|tiny|small|1\.5b|1b|2b|flash/i.test(combined);
@@ -154,6 +154,8 @@ function deriveFriendlyName(id: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const MAX_HIGHLIGHTED_CAPABILITIES = 3;
+
 /** A model is "featured" (shown in Best category) if it is large, from a trusted vendor,
  * or has a strong combination of capabilities. */
 function isFeaturedModel(id: string, capabilities: ReturnType<typeof detectCapabilities>, contextLength: number): boolean {
@@ -174,7 +176,7 @@ function buildWhyChoose(id: string, capabilities: ReturnType<typeof detectCapabi
   if (capabilities.fast) parts.push("fast responses");
   if (capabilities.webSearch) parts.push("live web search");
   if (parts.length > 0) {
-    return `Strong at ${parts.slice(0, 3).join(", ")}. Free via OpenRouter.`;
+    return `Strong at ${parts.slice(0, MAX_HIGHLIGHTED_CAPABILITIES).join(", ")}. Free via OpenRouter.`;
   }
   const isLarge = LARGE_MODEL_REGEX.test(id);
   return isLarge
