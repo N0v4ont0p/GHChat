@@ -34,6 +34,16 @@ export const settingsTable = sqliteTable("settings", {
   lastConversationId: text("last_conversation_id"),
 });
 
+// ── Schema versioning ─────────────────────────────────────────────────────────
+// Increment SCHEMA_VERSION and add a new numbered migration block whenever the
+// DB schema changes.  Migrations are applied in ascending order; each step is
+// guarded by the SQLite `user_version` PRAGMA so it only runs once.
+//
+//  v1 — added onboarding_complete
+//  v2 — added last_conversation_id
+//
+const SCHEMA_VERSION = 2;
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 let db: ReturnType<typeof drizzle>;
@@ -123,49 +133,76 @@ export function initDatabase(): void {
       );
       INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL);
     `);
-    console.log("[db] schema applied — checking migrations…");
+    console.log("[db] schema creation done — checking migration version…");
 
-    // Migrate existing installations: add columns if they don't exist yet.
-    // NOTE: SQLite < 3.37.0 forbids ADD COLUMN … NOT NULL even with a DEFAULT,
-    // so migration statements deliberately omit NOT NULL.  getSettings() already
-    // coerces NULL → false / null via ?? operators, so this is safe.
-    const existingCols = sqlite
-      .prepare("PRAGMA table_info(settings)")
-      .all()
-      .map((c: Record<string, unknown>) => c["name"] as string);
-    console.log("[db] existing settings columns before migration:", existingCols);
+    // ── Schema migrations ────────────────────────────────────────────────────
+    // `PRAGMA user_version` is a free integer stored in the DB header.  We use
+    // it to track which migrations have already run so each migration is applied
+    // exactly once, even if initDatabase() is called again (e.g. after a crash
+    // and restart).  Fresh installs start at user_version=0; migrations are
+    // applied sequentially up to SCHEMA_VERSION.
+    const diskVersion = sqlite.pragma("user_version", { simple: true }) as number;
+    console.log(`[db] schema version on disk: ${diskVersion} (target: ${SCHEMA_VERSION})`);
 
-    if (!existingCols.includes("onboarding_complete")) {
-      console.log("[db] migration: adding onboarding_complete column…");
-      try {
-        sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER DEFAULT 0");
-        // Backfill NULLs for pre-existing rows (older SQLite does not apply
-        // the DEFAULT to existing rows the way 3.37+ does).
-        sqlite.exec("UPDATE settings SET onboarding_complete = 0 WHERE onboarding_complete IS NULL");
-        console.log("[db] migration: onboarding_complete added successfully");
-      } catch (err) {
-        throw new Error(
-          `Migration failed: could not add onboarding_complete — ${errMsg(err)}`,
-          { cause: err },
-        );
-      }
-    } else {
-      console.log("[db] migration: onboarding_complete already present, skipping");
+    // Warn on downgrade — the app may still work, but the schema may have
+    // columns that this version does not know about.
+    if (diskVersion > SCHEMA_VERSION) {
+      console.warn(
+        `[db] WARNING: DB schema version (${diskVersion}) is newer than this build (${SCHEMA_VERSION}). ` +
+        "The app may have been downgraded. Some features may not work correctly.",
+      );
     }
 
-    if (!existingCols.includes("last_conversation_id")) {
-      console.log("[db] migration: adding last_conversation_id column…");
+    // v1 — add onboarding_complete
+    if (diskVersion < 1) {
+      console.log("[db] migration v1: ensuring onboarding_complete column…");
       try {
-        sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
-        console.log("[db] migration: last_conversation_id added successfully");
+        const cols = (sqlite.prepare("PRAGMA table_info(settings)").all() as { name: string }[])
+          .map((c) => c.name);
+        console.log("[db] migration v1: existing settings columns:", cols);
+        if (!cols.includes("onboarding_complete")) {
+          // NOTE: NOT NULL is intentionally omitted here.  SQLite < 3.37.0
+          // forbids ADD COLUMN … NOT NULL even when a DEFAULT is provided.
+          // getSettings() coerces NULL → false via the ?? operator, so
+          // the missing NOT NULL constraint has no observable impact.
+          sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER DEFAULT 0");
+          // Backfill existing rows — older SQLite does not apply the DEFAULT
+          // to rows that already existed before the ALTER TABLE.
+          sqlite.exec("UPDATE settings SET onboarding_complete = 0 WHERE onboarding_complete IS NULL");
+          console.log("[db] migration v1: onboarding_complete column added and backfilled");
+        } else {
+          console.log("[db] migration v1: onboarding_complete already present");
+        }
+        sqlite.pragma("user_version = 1");
+        console.log("[db] migration v1: complete");
       } catch (err) {
-        throw new Error(
-          `Migration failed: could not add last_conversation_id — ${errMsg(err)}`,
-          { cause: err },
-        );
+        throw new Error(`Schema migration to v1 failed — ${errMsg(err)}`, { cause: err });
       }
+    }
+
+    // v2 — add last_conversation_id
+    if (diskVersion < 2) {
+      console.log("[db] migration v2: ensuring last_conversation_id column…");
+      try {
+        const cols = (sqlite.prepare("PRAGMA table_info(settings)").all() as { name: string }[])
+          .map((c) => c.name);
+        if (!cols.includes("last_conversation_id")) {
+          sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
+          console.log("[db] migration v2: last_conversation_id column added");
+        } else {
+          console.log("[db] migration v2: last_conversation_id already present");
+        }
+        sqlite.pragma("user_version = 2");
+        console.log("[db] migration v2: complete");
+      } catch (err) {
+        throw new Error(`Schema migration to v2 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
+    if (diskVersion >= SCHEMA_VERSION) {
+      console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
-      console.log("[db] migration: last_conversation_id already present, skipping");
+      console.log(`[db] all migrations complete — schema now at v${SCHEMA_VERSION}`);
     }
 
     db = drizzle(sqlite);
@@ -183,7 +220,10 @@ export function initDatabase(): void {
 }
 
 function getDb() {
-  if (!db) throw new Error("Database not initialized");
+  if (!db) {
+    const why = _dbInitError ?? "initDatabase() was not called";
+    throw new Error(`Database not initialized: ${why}`);
+  }
   return db;
 }
 
@@ -298,6 +338,13 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
 export function clearAllData(): void {
   getDb().delete(messagesTable).run();
   getDb().delete(conversationsTable).run();
+  // Ensure the settings row exists before updating it (defensive guard in case
+  // it was deleted outside normal code paths).
+  getDb()
+    .insert(settingsTable)
+    .values({ id: "app", defaultModel: DEFAULT_MODEL, theme: "dark", onboardingComplete: false, lastConversationId: null })
+    .onConflictDoNothing()
+    .run();
   getDb()
     .update(settingsTable)
     .set({ onboardingComplete: false, lastConversationId: null })

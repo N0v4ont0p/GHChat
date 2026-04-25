@@ -13,7 +13,7 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SETTINGS_GET, () => {
     try {
       if (!isDatabaseReady()) {
-        const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+        const why = getDbInitError() ?? "initialization failed (see app logs for details)";
         throw new Error(`Database not available: ${why}`);
       }
       return getSettings();
@@ -26,7 +26,7 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, partial: Partial<AppSettings>) => {
     try {
       if (!isDatabaseReady()) {
-        const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+        const why = getDbInitError() ?? "initialization failed (see app logs for details)";
         throw new Error(`Database not available: ${why}`);
       }
       return updateSettings(partial);
@@ -66,7 +66,7 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.CLEAR_ALL_DATA, () => {
     try {
       if (!isDatabaseReady()) {
-        const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+        const why = getDbInitError() ?? "initialization failed (see app logs for details)";
         throw new Error(`Database not available: ${why}`);
       }
       clearAllData();

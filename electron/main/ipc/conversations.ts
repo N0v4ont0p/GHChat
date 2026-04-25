@@ -16,7 +16,7 @@ import { IPC } from "./channels";
  */
 function requireDb(): void {
   if (!isDatabaseReady()) {
-    const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+    const why = getDbInitError() ?? "initialization failed (see app logs for details)";
     throw new Error(`Database not available: ${why}`);
   }
 }
