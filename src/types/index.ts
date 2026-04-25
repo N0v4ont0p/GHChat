@@ -2,6 +2,7 @@ export type MessageRole = "user" | "assistant" | "system";
 
 export type ModelCategory =
   | "auto"
+  | "best"
   | "general"
   | "coding"
   | "fast"
@@ -94,6 +95,12 @@ export interface ModelPreset {
   category: ModelCategory;
   description: string;
   whyChoose: string;
+  /** Short display name for the vendor (e.g. "Google", "Meta", "Mistral") */
+  vendor?: string;
+  /** Model family name (e.g. "Gemma", "Llama", "Qwen") */
+  family?: string;
+  /** True when this is a top-tier, broadly recommended model */
+  isFeatured?: boolean;
   isDefault?: boolean;
   isPopular?: boolean;
   speed?: ModelSpeed;

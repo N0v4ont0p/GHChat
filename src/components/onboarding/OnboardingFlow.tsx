@@ -92,7 +92,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [keyStatus, setKeyStatus] = useState<"idle" | "ready" | "warning" | "invalid">("idle");
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("auto");
+  const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("best");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { selectedModel, setSelectedModel } = useSettingsStore();
@@ -127,7 +127,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         // Pre-select the best working model, or fall back to Auto
         const best = diag.bestWorkingModels[0] ?? AUTO_MODEL_ID;
         setSelectedModel(best);
-        setSelectedCategory("auto");
+        setSelectedCategory("best");
         // Auto-advance to model step — the user has validated and we have results
         setStep("model");
       }
@@ -431,7 +431,13 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
               {/* Model cards */}
               <div className="space-y-2">
-                {availableModels.filter((m) => m.category === selectedCategory).map((m) => {
+                {availableModels.filter((m) => {
+                  if (selectedCategory === "all") return true;
+                  if (selectedCategory === "auto") return m.id === AUTO_MODEL_ID;
+                  if (selectedCategory === "best") return m.isFeatured || m.id === AUTO_MODEL_ID;
+                  return m.category === selectedCategory;
+                }).map((m) => {
+                  const isAuto = m.id === AUTO_MODEL_ID;
                   const isLimitedAccess = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
                   return (
                     <button
@@ -440,30 +446,34 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                       className={cn(
                         "w-full rounded-xl border p-3.5 text-left transition-all",
                         selectedModel === m.id
-                          ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
-                          : isLimitedAccess
-                            ? "border-border/40 bg-card/20 opacity-60"
-                            : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
+                          ? isAuto
+                            ? "border-cyan-500/40 bg-cyan-500/5 ring-1 ring-cyan-500/20"
+                            : "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
+                          : isAuto
+                            ? "border-cyan-500/20 bg-cyan-500/5 hover:border-cyan-500/40"
+                            : isLimitedAccess
+                              ? "border-border/40 bg-card/20 opacity-60"
+                              : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
                       )}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="font-semibold text-sm">{m.name}</span>
-                            {m.isDefault && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                                Recommended
-                              </Badge>
+                          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                            <span className={cn("font-semibold text-sm", isAuto && "text-cyan-300")}>{m.name}</span>
+                            {m.vendor && (
+                              <span className="rounded border border-border/50 bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground leading-none">
+                                {m.vendor}
+                              </span>
                             )}
-                            {m.isPopular && !m.isDefault && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                                Popular
-                              </Badge>
+                            {isAuto && (
+                              <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400 font-medium leading-none">
+                                Recommended
+                              </span>
                             )}
                             <VerificationBadge status={m.verifiedStatus} />
                           </div>
                           <p className="text-xs text-muted-foreground">{m.description}</p>
-                          <p className="mt-1.5 text-xs text-muted-foreground/70 leading-relaxed">
+                          <p className="mt-1 text-[11px] text-muted-foreground/70 leading-snug">
                             {m.whyChoose}
                           </p>
                           {m.verifiedStatus === "gated" && (
@@ -478,10 +488,15 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                           )}
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
+                          {m.contextWindow && (
+                            <span className="rounded bg-secondary/60 px-1.5 py-0.5 font-mono text-muted-foreground/60 leading-none whitespace-nowrap">
+                              {m.contextWindow}
+                            </span>
+                          )}
                           {m.speed && (
                             <span
                               className={cn(
-                                "rounded px-1.5 py-0.5 font-medium",
+                                "rounded px-1.5 py-0.5 font-medium leading-none",
                                 m.speed === "fast"
                                   ? "bg-green-500/10 text-green-400"
                                   : m.speed === "medium"
@@ -491,19 +506,6 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                             >
                               {m.speed}
                             </span>
-                          )}
-                          {m.contextWindow && (
-                            <span className="text-muted-foreground/60">{m.contextWindow}</span>
-                          )}
-                          <span className="text-muted-foreground/60">{m.costTier}</span>
-                          {m.freeTierFriendly && (
-                            <span className="text-green-400/70">free-tier friendly</span>
-                          )}
-                          {m.isSlow && (
-                            <span className="text-amber-400/70">slow</span>
-                          )}
-                          {m.isExperimental && (
-                            <span className="text-fuchsia-400/70">experimental</span>
                           )}
                         </div>
                       </div>

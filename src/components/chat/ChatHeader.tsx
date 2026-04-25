@@ -90,6 +90,7 @@ export function ChatHeader() {
 
   const preset = getPreset(models, selectedModel);
   const displayName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
+  const vendor = preset?.vendor;
   const category = preset?.category ?? "general";
   const verifiedStatus = preset?.verifiedStatus ?? "unknown";
   const healthTags = preset?.healthTags ?? [];
@@ -129,17 +130,28 @@ export function ChatHeader() {
                   <HealthIndicator status={verifiedStatus} modelId={selectedModel} />
                 )}
                 <span className="font-medium">{displayName}</span>
+                {vendor && !isStreaming && (
+                  <span className="text-[10px] text-muted-foreground/50 font-normal">
+                    {vendor}
+                  </span>
+                )}
                 <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
                   {categoryMeta.emoji} {categoryMeta.label}
                 </span>
                 {!isStreaming && <CapabilityBadges preset={preset} />}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" className="space-y-0.5 max-w-[220px]">
+            <TooltipContent side="bottom" className="space-y-0.5 max-w-[240px]">
               <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
               {!isStreaming && (
                 <>
                   <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
+                  {vendor && (
+                    <p className="text-[11px] text-muted-foreground">Provider: {vendor}</p>
+                  )}
+                  {preset?.contextWindow && (
+                    <p className="text-[11px] text-muted-foreground">Context: {preset.contextWindow}</p>
+                  )}
                   {healthTags.length > 0 && (
                     <p className="text-[11px] text-muted-foreground">
                       {healthTags.join(" · ")}
