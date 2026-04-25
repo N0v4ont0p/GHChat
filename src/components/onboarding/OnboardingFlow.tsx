@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ExternalLink, ArrowRight, CheckCircle2, Loader2, ShieldAlert, Clock, AlertTriangle, RefreshCw, Search, X } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
@@ -97,7 +97,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { selectedModel, setSelectedModel } = useSettingsStore();
-  const { data: models = [] } = useModels(validatedToken ?? undefined);
+  const { data: models = [], isLoading: modelsLoading } = useModels(validatedToken ?? undefined);
   const availableModels = useMemo(
     () => (models.length > 0 ? models : (diagnostics?.models ?? [])),
     [models, diagnostics?.models],
@@ -136,6 +136,18 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     });
   }, [availableModels, selectedCategory, modelSearch]);
 
+  // After models finish loading, auto-switch from "best" to "general" if the
+  // "best" category has no entries (no isFeatured models in the live catalog).
+  useEffect(() => {
+    if (modelsLoading || availableModels.length === 0) return;
+    if (selectedCategory === "best") {
+      const hasBestModels = availableModels.some(
+        (m) => m.id !== AUTO_MODEL_ID && !!m.isFeatured,
+      );
+      if (!hasBestModels) setSelectedCategory("general");
+    }
+  }, [modelsLoading, availableModels, selectedCategory]);
+
   const validateKey = async () => {
     const trimmed = apiKey.trim();
     if (!trimmed) return;
@@ -161,9 +173,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       setValidatedToken(result.valid ? trimmed : null);
       if (result.valid && diag) {
         setDiagnostics(diag);
-        // Pre-select the best working model, or fall back to Auto
-        const best = diag.bestWorkingModels[0] ?? AUTO_MODEL_ID;
-        setSelectedModel(best);
+        // Always pre-select Auto — the recommendation card makes it obvious and
+        // the user can override by tapping any specific model in the list.
+        setSelectedModel(AUTO_MODEL_ID);
         setSelectedCategory("best");
         // Auto-advance to model step — the user has validated and we have results
         setStep("model");
@@ -189,7 +201,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setSaving(true);
     try {
       await ipc.setApiKey(apiKey.trim());
-      await ipc.updateSettings({ defaultModel: selectedModel, onboardingComplete: true });
+      // Settings save is best-effort. A DB failure (e.g. missing better-sqlite3
+      // native binary in the packaged build) must not strand the user here —
+      // App.tsx already treats a stored key + unavailable DB as onboarding-done.
+      try {
+        await ipc.updateSettings({ defaultModel: selectedModel, onboardingComplete: true });
+      } catch (settingsErr) {
+        console.warn("[OnboardingFlow] updateSettings failed (non-fatal):", settingsErr);
+      }
       onComplete();
     } catch (err) {
       console.error("[OnboardingFlow] handleFinish failed:", err);
@@ -203,7 +222,17 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   };
 
   // Auto model object for the recommendation card
-  const autoModel = availableModels.find((m) => m.id === AUTO_MODEL_ID);
+  const autoModel = useMemo(
+    () => availableModels.find((m) => m.id === AUTO_MODEL_ID),
+    [availableModels],
+  );
+
+  // Human-friendly name for the currently selected model (used in footer summary)
+  const selectedModelName = useMemo(() => {
+    if (selectedModel === AUTO_MODEL_ID) return "Auto — smart routing";
+    const preset = availableModels.find((m) => m.id === selectedModel);
+    return preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
+  }, [selectedModel, availableModels]);
 
   return (
     <div
@@ -554,111 +583,137 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
               </div>
 
               {/* ── Scrollable model list ────────────────────────────── */}
-              <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1 [scrollbar-width:thin]">
-                {filteredModels.map((m) => {
-                  const isLimitedAccess =
-                    m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => setSelectedModel(m.id)}
-                      className={cn(
-                        "w-full rounded-xl border p-3.5 text-left transition-all",
-                        selectedModel === m.id
-                          ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
-                          : isLimitedAccess
-                            ? "border-border/40 bg-card/20 opacity-60"
-                            : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="mb-0.5 flex flex-wrap items-center gap-1.5">
-                            <span className="text-sm font-semibold">{m.name}</span>
-                            {m.vendor && (
-                              <span className="rounded border border-border/50 bg-secondary/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
-                                {m.vendor}
-                              </span>
-                            )}
-                            <VerificationBadge status={m.verifiedStatus} />
-                          </div>
-                          <p className="text-xs text-muted-foreground">{m.description}</p>
-                          <p className="mt-1 text-[11px] leading-snug text-muted-foreground/70">
-                            {m.whyChoose}
-                          </p>
-                          {m.verifiedStatus === "gated" && (
-                            <p className="mt-1 text-[10px] text-amber-400/80">
-                              Requires model access approval
-                            </p>
-                          )}
-                          {m.verifiedStatus === "rate-limited" && (
-                            <p className="mt-1 text-[10px] text-amber-400/80">
-                              Rate limited during check — may work in a few minutes
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
-                          {m.contextWindow && (
-                            <span className="rounded bg-secondary/60 px-1.5 py-0.5 font-mono leading-none text-muted-foreground/60 whitespace-nowrap">
-                              {m.contextWindow}
-                            </span>
-                          )}
-                          {m.speed && (
-                            <span
-                              className={cn(
-                                "rounded px-1.5 py-0.5 font-medium leading-none",
-                                m.speed === "fast"
-                                  ? "bg-green-500/10 text-green-400"
-                                  : m.speed === "medium"
-                                    ? "bg-yellow-500/10 text-yellow-400"
-                                    : "bg-orange-500/10 text-orange-400",
-                              )}
-                            >
-                              {m.speed}
-                            </span>
-                          )}
-                          {selectedModel === m.id && (
-                            <CheckCircle2 className="h-4 w-4 text-primary" />
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-
-                {filteredModels.length === 0 && (
-                  <div className="py-10 text-center">
-                    <p className="text-sm text-muted-foreground">
-                      {modelSearch
-                        ? `No models match "${modelSearch}"`
-                        : "No models in this category"}
-                    </p>
-                    {modelSearch && (
-                      <button
-                        onClick={() => setModelSearch("")}
-                        className="mt-2 text-xs text-primary hover:underline"
-                      >
-                        Clear search
-                      </button>
-                    )}
+              <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1 pb-2 [scrollbar-width:thin]">
+                {modelsLoading && availableModels.length === 0 ? (
+                  <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading models…
                   </div>
+                ) : (
+                  <>
+                    {filteredModels.map((m) => {
+                      const isLimitedAccess =
+                        m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={() => setSelectedModel(m.id)}
+                          className={cn(
+                            "w-full rounded-xl border p-3.5 text-left transition-all",
+                            selectedModel === m.id
+                              ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
+                              : isLimitedAccess
+                                ? "border-border/40 bg-card/20 opacity-60"
+                                : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="mb-0.5 flex flex-wrap items-center gap-1.5">
+                                <span className="text-sm font-semibold">{m.name}</span>
+                                {m.vendor && (
+                                  <span className="rounded border border-border/50 bg-secondary/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+                                    {m.vendor}
+                                  </span>
+                                )}
+                                <VerificationBadge status={m.verifiedStatus} />
+                              </div>
+                              <p className="text-xs text-muted-foreground">{m.description}</p>
+                              <p className="mt-1 text-[11px] leading-snug text-muted-foreground/70">
+                                {m.whyChoose}
+                              </p>
+                              {m.verifiedStatus === "gated" && (
+                                <p className="mt-1 text-[10px] text-amber-400/80">
+                                  Requires model access approval
+                                </p>
+                              )}
+                              {m.verifiedStatus === "rate-limited" && (
+                                <p className="mt-1 text-[10px] text-amber-400/80">
+                                  Rate limited during check — may work in a few minutes
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
+                              {m.contextWindow && (
+                                <span className="rounded bg-secondary/60 px-1.5 py-0.5 font-mono leading-none text-muted-foreground/60 whitespace-nowrap">
+                                  {m.contextWindow}
+                                </span>
+                              )}
+                              {m.speed && (
+                                <span
+                                  className={cn(
+                                    "rounded px-1.5 py-0.5 font-medium leading-none",
+                                    m.speed === "fast"
+                                      ? "bg-green-500/10 text-green-400"
+                                      : m.speed === "medium"
+                                        ? "bg-yellow-500/10 text-yellow-400"
+                                        : "bg-orange-500/10 text-orange-400",
+                                  )}
+                                >
+                                  {m.speed}
+                                </span>
+                              )}
+                              {selectedModel === m.id && (
+                                <CheckCircle2 className="h-4 w-4 text-primary" />
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+
+                    {filteredModels.length === 0 && (
+                      <div className="py-10 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          {modelSearch
+                            ? `No models match "${modelSearch}"`
+                            : "No models in this category"}
+                        </p>
+                        {modelSearch ? (
+                          <button
+                            onClick={() => setModelSearch("")}
+                            className="mt-2 text-xs text-primary hover:underline"
+                          >
+                            Clear search
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setSelectedCategory("all")}
+                            className="mt-2 text-xs text-primary hover:underline"
+                          >
+                            Browse all models
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
               {/* ── Footer ──────────────────────────────────────────── */}
-              <div className="mt-4 flex shrink-0 gap-3">
-                <Button variant="ghost" onClick={() => setStep("apikey")} className="flex-1">
-                  Back
-                </Button>
-                <Button className="flex-1 gap-2" onClick={handleFinish} disabled={saving}>
-                  {saving ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      Start chatting <ArrowRight className="h-4 w-4" />
-                    </>
-                  )}
-                </Button>
+              <div className="mt-4 shrink-0 space-y-2.5">
+                {/* Selected model summary — keeps the user informed even while scrolled */}
+                <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground/80">
+                  <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
+                  <span className="truncate">
+                    Starting with:{" "}
+                    <span className="font-medium text-foreground">{selectedModelName}</span>
+                  </span>
+                </div>
+                <div className="flex gap-3">
+                  <Button variant="ghost" onClick={() => setStep("apikey")} className="flex-1">
+                    Back
+                  </Button>
+                  <Button className="flex-1 gap-2" onClick={handleFinish} disabled={saving}>
+                    {saving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        Start chatting <ArrowRight className="h-4 w-4" />
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
             </motion.div>
           )}
