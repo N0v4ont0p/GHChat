@@ -3,7 +3,8 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { text, integer, sqliteTable } from "drizzle-orm/sqlite-core";
 import { eq } from "drizzle-orm";
 import { app } from "electron";
-import { join } from "path";
+import { join, dirname } from "path";
+import { mkdirSync } from "fs";
 import { randomUUID } from "crypto";
 import type { Conversation, Message, AppSettings } from "../../../src/types";
 import { DEFAULT_MODEL } from "../../../src/lib/models";
@@ -36,51 +37,78 @@ export const settingsTable = sqliteTable("settings", {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 let db: ReturnType<typeof drizzle>;
+let _dbReady = false;
+let _dbInitError: string | null = null;
+
+export function isDatabaseReady(): boolean {
+  return _dbReady;
+}
+
+export function getDbInitError(): string | null {
+  return _dbInitError;
+}
 
 export function initDatabase(): void {
-  const dbPath = join(app.getPath("userData"), "ghchat.db");
-  const sqlite = new Database(dbPath);
+  _dbInitError = null;
+  try {
+    const dbPath = join(app.getPath("userData"), "ghchat.db");
+    // Ensure the directory exists before opening the DB — app.getPath("userData")
+    // is guaranteed to exist on most platforms, but mkdirSync is a safe guard
+    // for edge cases (e.g. first-run on a fresh system, unusual userData paths).
+    mkdirSync(dirname(dbPath), { recursive: true });
+    console.log("[db] opening database at:", dbPath);
 
-  sqlite.pragma("journal_mode = WAL");
+    const sqlite = new Database(dbPath);
 
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-    );
-    CREATE TABLE IF NOT EXISTS settings (
-      id TEXT PRIMARY KEY DEFAULT 'app',
-      default_model TEXT NOT NULL DEFAULT '${DEFAULT_MODEL}',
-      theme TEXT NOT NULL DEFAULT 'dark',
-      onboarding_complete INTEGER NOT NULL DEFAULT 0,
-      last_conversation_id TEXT
-    );
-    INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL);
-  `);
+    sqlite.pragma("journal_mode = WAL");
 
-  // Migrate existing installations: add columns if they don't exist yet
-  const existingCols = sqlite
-    .prepare("PRAGMA table_info(settings)")
-    .all()
-    .map((c: Record<string, unknown>) => c["name"] as string);
-  if (!existingCols.includes("onboarding_complete")) {
-    sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER NOT NULL DEFAULT 0");
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS settings (
+        id TEXT PRIMARY KEY DEFAULT 'app',
+        default_model TEXT NOT NULL DEFAULT '${DEFAULT_MODEL}',
+        theme TEXT NOT NULL DEFAULT 'dark',
+        onboarding_complete INTEGER NOT NULL DEFAULT 0,
+        last_conversation_id TEXT
+      );
+      INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL);
+    `);
+
+    // Migrate existing installations: add columns if they don't exist yet
+    const existingCols = sqlite
+      .prepare("PRAGMA table_info(settings)")
+      .all()
+      .map((c: Record<string, unknown>) => c["name"] as string);
+    if (!existingCols.includes("onboarding_complete")) {
+      sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!existingCols.includes("last_conversation_id")) {
+      sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
+    }
+
+    db = drizzle(sqlite);
+    _dbReady = true;
+    console.log("[db] initialized successfully");
+  } catch (err) {
+    _dbInitError = err instanceof Error ? err.message : String(err);
+    console.error("[db] initialization failed — path:", (() => {
+      try { return join(app.getPath("userData"), "ghchat.db"); } catch { return "(unknown)"; }
+    })(), "error:", err);
+    throw err;
   }
-  if (!existingCols.includes("last_conversation_id")) {
-    sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
-  }
-
-  db = drizzle(sqlite);
 }
 
 function getDb() {

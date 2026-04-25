@@ -11,6 +11,7 @@ export default function App() {
   const [appState, setAppState] = useState<AppState>("loading");
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
   const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
+  const setDbAvailable = useSettingsStore((s) => s.setDbAvailable);
 
   useEffect(() => {
     // Safety-net: if IPC never responds, fall through to onboarding after 5 s
@@ -20,18 +21,29 @@ export default function App() {
 
     async function init() {
       try {
-        // Fetch key and settings independently so a DB failure (e.g. missing
-        // better-sqlite3 native binary in the packaged app) does not force the
-        // user through onboarding when a valid key is already stored.
-        const [apiKeyResult, settingsResult] = await Promise.allSettled([
+        // Fetch key, settings, and DB status independently so a DB failure
+        // (e.g. missing better-sqlite3 native binary in the packaged app)
+        // does not prevent the rest of the app from loading.
+        const [apiKeyResult, settingsResult, dbStatusResult] = await Promise.allSettled([
           ipc.getApiKey(),
           ipc.getSettings(),
+          ipc.getDbStatus(),
         ]);
 
         const apiKey =
           apiKeyResult.status === "fulfilled" ? apiKeyResult.value : "";
         const settings =
           settingsResult.status === "fulfilled" ? settingsResult.value : null;
+        const dbStatus =
+          dbStatusResult.status === "fulfilled" ? dbStatusResult.value : null;
+
+        // Propagate DB readiness so the UI can disable actions when unavailable.
+        // Default to true when we can't reach the IPC handler (shouldn't happen).
+        const dbReady = dbStatus?.ready ?? true;
+        setDbAvailable(dbReady, dbStatus?.error ?? null);
+        if (!dbReady) {
+          console.warn("[App] database unavailable:", dbStatus?.error ?? "(no details)");
+        }
 
         // Seed the store with the persisted model choice when available
         if (settings?.defaultModel) {
@@ -64,7 +76,7 @@ export default function App() {
     void init();
 
     return () => clearTimeout(timeout);
-  }, [setSelectedModel, setSelectedConversationId]);
+  }, [setSelectedModel, setSelectedConversationId, setDbAvailable]);
 
   if (appState === "loading") {
     return (

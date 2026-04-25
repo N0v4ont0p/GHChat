@@ -250,6 +250,8 @@ export const IPC = {
   KEYCHAIN_SET: "keychain:set",
   KEYCHAIN_DELETE: "keychain:delete",
   CLEAR_ALL_DATA: "data:clear-all",
+  /** Returns { ready: boolean; error: string | null } — whether the DB initialized successfully */
+  DB_STATUS: "db:status",
   OR_MODELS_LIST: "or:models:list",
   OR_DIAGNOSTICS_GET: "or:diagnostics:get",
   OR_DIAGNOSTICS_REFRESH: "or:diagnostics:refresh",

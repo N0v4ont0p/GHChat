@@ -1,10 +1,15 @@
 import type { IpcMain } from "electron";
-import { getSettings, updateSettings, clearAllData } from "../services/database";
+import { getSettings, updateSettings, clearAllData, isDatabaseReady, getDbInitError } from "../services/database";
 import { getApiKey, setApiKey, deleteApiKey } from "../services/keychain";
 import { IPC } from "./channels";
 import type { AppSettings } from "../../../src/types";
 
 export function registerSettingsHandlers(ipcMain: IpcMain): void {
+  ipcMain.handle(IPC.DB_STATUS, () => ({
+    ready: isDatabaseReady(),
+    error: getDbInitError(),
+  }));
+
   ipcMain.handle(IPC.SETTINGS_GET, () => {
     try {
       return getSettings();

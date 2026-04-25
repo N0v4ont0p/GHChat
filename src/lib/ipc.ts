@@ -49,6 +49,9 @@ export const ipc = {
   // Data management
   clearAllData: () => api().invoke<void>(IPC.CLEAR_ALL_DATA),
 
+  // Database health
+  getDbStatus: () => api().invoke<{ ready: boolean; error: string | null }>(IPC.DB_STATUS),
+
   // OpenRouter
   listModels: (apiKey?: string) => api().invoke<ModelPreset[]>(IPC.OR_MODELS_LIST, apiKey),
   validateApiKey: (key: string) => api().invoke<KeyValidationResult>(IPC.OR_KEY_VALIDATE, key),

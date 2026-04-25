@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye } from "lucide-react";
+import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -144,7 +144,13 @@ export function Sidebar() {
   const deleteConversation = useDeleteConversation();
   const { selectedConversationId, setSelectedConversationId, incognitoMode, setIncognitoMode } = useChatStore();
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
+  const dbAvailable = useSettingsStore((s) => s.dbAvailable);
   const [searchQuery, setSearchQuery] = useState("");
+
+  const newChatDisabled = createConversation.isPending || !dbAvailable;
+  const newChatTooltip = !dbAvailable
+    ? "Database unavailable — restart the app or run npm run rebuild:native"
+    : "New chat";
 
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return conversations;
@@ -172,12 +178,12 @@ export function Sidebar() {
                 variant="ghost"
                 className="h-7 w-7 text-muted-foreground hover:text-foreground active:scale-95 transition-transform"
                 onClick={() => createConversation.mutate()}
-                disabled={createConversation.isPending}
+                disabled={newChatDisabled}
               >
                 <Plus className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="right">New chat</TooltipContent>
+            <TooltipContent side="right">{newChatTooltip}</TooltipContent>
           </Tooltip>
         </div>
 
@@ -210,12 +216,20 @@ export function Sidebar() {
                 <div key={i} className="h-8 animate-pulse rounded-md bg-secondary/30" />
               ))}
             </div>
-          ) : isError ? (
+          ) : isError || !dbAvailable ? (
             <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center">
-              <p className="text-xs text-red-400 leading-relaxed">
-                Failed to load conversations.
+              <AlertTriangle className="h-7 w-7 text-amber-400/60" />
+              <p className="text-xs text-amber-400/80 leading-relaxed font-medium">
+                Database unavailable
+              </p>
+              <p className="text-xs text-muted-foreground/50 leading-relaxed">
+                Conversations cannot be loaded.
                 <br />
-                <span className="text-muted-foreground/60">Database may be unavailable.</span>
+                Restart the app, or run{" "}
+                <code className="rounded bg-secondary/60 px-1 font-mono text-[10px]">
+                  npm run rebuild:native
+                </code>
+                {" "}if this is a fresh install.
               </p>
             </div>
           ) : conversations.length === 0 ? (
