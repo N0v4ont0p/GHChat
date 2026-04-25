@@ -125,18 +125,47 @@ export function initDatabase(): void {
     `);
     console.log("[db] schema applied — checking migrations…");
 
-    // Migrate existing installations: add columns if they don't exist yet
+    // Migrate existing installations: add columns if they don't exist yet.
+    // NOTE: SQLite < 3.37.0 forbids ADD COLUMN … NOT NULL even with a DEFAULT,
+    // so migration statements deliberately omit NOT NULL.  getSettings() already
+    // coerces NULL → false / null via ?? operators, so this is safe.
     const existingCols = sqlite
       .prepare("PRAGMA table_info(settings)")
       .all()
       .map((c: Record<string, unknown>) => c["name"] as string);
+    console.log("[db] existing settings columns before migration:", existingCols);
+
     if (!existingCols.includes("onboarding_complete")) {
-      console.log("[db] migration: adding onboarding_complete column");
-      sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER NOT NULL DEFAULT 0");
+      console.log("[db] migration: adding onboarding_complete column…");
+      try {
+        sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER DEFAULT 0");
+        // Backfill NULLs for pre-existing rows (older SQLite does not apply
+        // the DEFAULT to existing rows the way 3.37+ does).
+        sqlite.exec("UPDATE settings SET onboarding_complete = 0 WHERE onboarding_complete IS NULL");
+        console.log("[db] migration: onboarding_complete added successfully");
+      } catch (err) {
+        throw new Error(
+          `Migration failed: could not add onboarding_complete — ${errMsg(err)}`,
+          { cause: err },
+        );
+      }
+    } else {
+      console.log("[db] migration: onboarding_complete already present, skipping");
     }
+
     if (!existingCols.includes("last_conversation_id")) {
-      console.log("[db] migration: adding last_conversation_id column");
-      sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
+      console.log("[db] migration: adding last_conversation_id column…");
+      try {
+        sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
+        console.log("[db] migration: last_conversation_id added successfully");
+      } catch (err) {
+        throw new Error(
+          `Migration failed: could not add last_conversation_id — ${errMsg(err)}`,
+          { cause: err },
+        );
+      }
+    } else {
+      console.log("[db] migration: last_conversation_id already present, skipping");
     }
 
     db = drizzle(sqlite);
