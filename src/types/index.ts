@@ -1,5 +1,38 @@
 export type MessageRole = "user" | "assistant" | "system";
 
+// ── App mode ──────────────────────────────────────────────────────────────────
+
+/** Top-level operating mode for GHchat. */
+export type AppMode = "online" | "offline" | "auto";
+
+/**
+ * States of the offline setup state machine.
+ *
+ * not-installed      – no offline runtime or model has been set up
+ * analyzing-system   – hardware profile detection in progress
+ * recommendation-ready – hardware profile done; recommendations available
+ * installing         – model download / runtime install in progress
+ * installed          – offline runtime is ready and a model is available
+ * install-failed     – the last install attempt failed; user can retry
+ * repair-needed      – files are present but the runtime check failed
+ */
+export type OfflineSetupState =
+  | "not-installed"
+  | "analyzing-system"
+  | "recommendation-ready"
+  | "installing"
+  | "installed"
+  | "install-failed"
+  | "repair-needed";
+
+/** Current offline readiness returned by the main process. */
+export interface OfflineReadiness {
+  /** Current position in the offline setup state machine. */
+  state: OfflineSetupState;
+  /** Human-readable status message (progress, error detail, etc.). */
+  message?: string;
+}
+
 export type ModelCategory =
   | "auto"
   | "best"
@@ -263,4 +296,10 @@ export const IPC = {
   OR_CHAT_ERROR: "or:chat:error",
   /** Emitted before streaming starts; tells the renderer which model was chosen and why */
   OR_CHAT_ROUTING: "or:chat:routing",
+  /** Returns the current AppMode */
+  MODE_GET: "mode:get",
+  /** Sets the current AppMode; returns the updated AppMode */
+  MODE_SET: "mode:set",
+  /** Returns OfflineReadiness — current offline state machine position */
+  OFFLINE_STATUS: "offline:status",
 } as const;

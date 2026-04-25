@@ -25,4 +25,10 @@ export const IPC = {
   OR_CHAT_ERROR: "or:chat:error",
   /** Emitted before streaming starts; tells the renderer which model was chosen and why */
   OR_CHAT_ROUTING: "or:chat:routing",
+  /** Returns the current AppMode */
+  MODE_GET: "mode:get",
+  /** Sets the current AppMode; returns the updated AppMode */
+  MODE_SET: "mode:set",
+  /** Returns OfflineReadiness — current offline state machine position */
+  OFFLINE_STATUS: "offline:status",
 } as const;

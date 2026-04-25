@@ -6,6 +6,8 @@ import type {
   ModelPreset,
   KeyValidationResult,
   OpenRouterDiagnostics,
+  AppMode,
+  OfflineReadiness,
 } from "@/types";
 
 function api() {
@@ -63,4 +65,9 @@ export const ipc = {
   // Streaming
   stopStream: (requestId: string) =>
     api().send(IPC.OR_CHAT_STOP, { requestId }),
+
+  // Mode
+  getMode: () => api().invoke<AppMode>(IPC.MODE_GET),
+  setMode: (mode: AppMode) => api().invoke<AppMode>(IPC.MODE_SET, mode),
+  getOfflineStatus: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_STATUS),
 };
