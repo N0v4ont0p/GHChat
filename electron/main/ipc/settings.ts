@@ -12,6 +12,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.SETTINGS_GET, () => {
     try {
+      if (!isDatabaseReady()) {
+        const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+        throw new Error(`Database not available: ${why}`);
+      }
       return getSettings();
     } catch (err) {
       console.error("[ipc:settings:get] failed:", err);
@@ -21,6 +25,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, partial: Partial<AppSettings>) => {
     try {
+      if (!isDatabaseReady()) {
+        const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+        throw new Error(`Database not available: ${why}`);
+      }
       return updateSettings(partial);
     } catch (err) {
       console.error("[ipc:settings:update] failed:", err);
@@ -57,6 +65,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.CLEAR_ALL_DATA, () => {
     try {
+      if (!isDatabaseReady()) {
+        const why = getDbInitError() ?? "initialization failed — run: pnpm run rebuild:native";
+        throw new Error(`Database not available: ${why}`);
+      }
       clearAllData();
       deleteApiKey();
       console.log("[ipc:data:clear-all] completed");

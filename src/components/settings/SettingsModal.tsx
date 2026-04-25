@@ -213,7 +213,14 @@ export function SettingsModal() {
     setRemovingKey(true);
     try {
       await ipc.deleteApiKey();
-      await ipc.updateSettings({ onboardingComplete: false, lastConversationId: null });
+      // Best-effort: reset onboarding state in DB. If the DB is unavailable the
+      // key is still deleted — the app will land on onboarding after reload
+      // because the key is gone.
+      try {
+        await ipc.updateSettings({ onboardingComplete: false, lastConversationId: null });
+      } catch {
+        // DB may be unavailable; key removal already succeeded above.
+      }
       toast.success("API key removed. Please re-enter your key to continue.");
       setSettingsOpen(false);
       // Reload the window to go back to onboarding
