@@ -145,6 +145,7 @@ export function Sidebar() {
   const { selectedConversationId, setSelectedConversationId, incognitoMode, setIncognitoMode } = useChatStore();
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
   const dbAvailable = useSettingsStore((s) => s.dbAvailable);
+  const dbInitError = useSettingsStore((s) => s.dbInitError);
   const [searchQuery, setSearchQuery] = useState("");
 
   const newChatDisabled = createConversation.isPending || !dbAvailable;
@@ -231,6 +232,11 @@ export function Sidebar() {
                 </code>
                 {" "}(rebuilds native dependencies) if this is a fresh install.
               </p>
+              {dbInitError && (
+                <p className="mt-1 max-w-full break-all rounded bg-secondary/40 px-2 py-1 font-mono text-[10px] text-amber-300/70">
+                  {dbInitError}
+                </p>
+              )}
             </div>
           ) : conversations.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center">
