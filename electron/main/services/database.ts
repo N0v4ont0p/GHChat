@@ -202,7 +202,7 @@ export function initDatabase(): void {
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
-      console.log(`[db] all migrations complete — schema now at v${SCHEMA_VERSION}`);
+      console.log(`[db] schema upgraded from v${diskVersion} to v${SCHEMA_VERSION} — all migration steps complete`);
     }
 
     db = drizzle(sqlite);
