@@ -363,13 +363,13 @@ Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implemen
 
 - DB path: `~/Library/Application Support/ghchat/ghchat.db`
 - If the Sidebar shows "Database unavailable", the `better-sqlite3` native module failed to load. The exact error is displayed inline in the Sidebar — look for `NODE_MODULE_VERSION` or `invalid ELF` to confirm an ABI mismatch.
-- **Fix:** delete `node_modules` and run `pnpm install` to reinstall and rebuild `better-sqlite3` for the current Electron version, then restart. As a targeted shortcut you can also run `pnpm run rebuild:native`.
+- **Fix:** delete `node_modules` and run `pnpm install` — this reinstalls everything and automatically rebuilds `better-sqlite3` for the current Electron version. Then restart the app. To rebuild without reinstalling all packages, run `pnpm run rebuild:native`.
 - If the app fails to open, delete the DB file and restart (you'll lose conversation history)
 - WAL mode is enabled by default for performance and concurrent access safety
 
 ### External drive issues
 
-- If the app crashes on launch after moving between machines: delete `node_modules` and run `pnpm install` (or run `pnpm run rebuild:native` as a shortcut)
+- If the app crashes on launch after moving between machines: delete `node_modules` and run `pnpm install` (which auto-rebuilds native modules). To rebuild without reinstalling, run `pnpm run rebuild:native`.
 - The app's SQLite data is always on the internal disk — the external drive only holds source code
 
 ### macOS app launch / security
