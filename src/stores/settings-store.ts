@@ -32,5 +32,5 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setAdvancedParams: (partial) =>
     set((s) => ({ advancedParams: { ...s.advancedParams, ...partial } })),
   setDbAvailable: (ready, error = null) =>
-    set({ dbAvailable: ready, dbInitError: ready ? null : (error ?? null) }),
+    set({ dbAvailable: ready, dbInitError: ready ? null : error }),
 }));

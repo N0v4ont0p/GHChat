@@ -229,7 +229,7 @@ export function Sidebar() {
                 <code className="rounded bg-secondary/60 px-1 font-mono text-[10px]">
                   npm run rebuild:native
                 </code>
-                {" "}if this is a fresh install.
+                {" "}(rebuilds native dependencies) if this is a fresh install.
               </p>
             </div>
           ) : conversations.length === 0 ? (

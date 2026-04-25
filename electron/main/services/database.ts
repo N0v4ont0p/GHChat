@@ -50,8 +50,8 @@ export function getDbInitError(): string | null {
 
 export function initDatabase(): void {
   _dbInitError = null;
+  const dbPath = join(app.getPath("userData"), "ghchat.db");
   try {
-    const dbPath = join(app.getPath("userData"), "ghchat.db");
     // Ensure the directory exists before opening the DB — app.getPath("userData")
     // is guaranteed to exist on most platforms, but mkdirSync is a safe guard
     // for edge cases (e.g. first-run on a fresh system, unusual userData paths).
@@ -104,9 +104,7 @@ export function initDatabase(): void {
     console.log("[db] initialized successfully");
   } catch (err) {
     _dbInitError = err instanceof Error ? err.message : String(err);
-    console.error("[db] initialization failed — path:", (() => {
-      try { return join(app.getPath("userData"), "ghchat.db"); } catch { return "(unknown)"; }
-    })(), "error:", err);
+    console.error("[db] initialization failed — path:", dbPath, "error:", err);
     throw err;
   }
 }
