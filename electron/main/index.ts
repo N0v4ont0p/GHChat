@@ -14,15 +14,14 @@ process.on("unhandledRejection", (reason) => {
   console.error("[main] unhandledRejection:", reason);
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   console.log("[main] app ready — version:", app.getVersion(), "electron:", process.versions.electron);
 
   // Each setup step is wrapped independently so that a failure in one step
-  // (e.g. better-sqlite3 native binary missing in the packaged app) does not
-  // prevent the window from being created.  The window itself already has a
-  // visible fallback page for renderer-load failures.
+  // does not prevent the window from being created.  The window itself already
+  // has a visible fallback page for renderer-load failures.
   try {
-    initDatabase();
+    await initDatabase();
     console.log("[main] database init OK");
   } catch (err) {
     console.error("[main] database init FAILED:", err);

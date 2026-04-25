@@ -8,13 +8,12 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package:mac": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --arm64 && CXXFLAGS='-std=gnu++20' electron-builder --mac --x64",
-    "package:mac:arm64": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --arm64",
+    "package:mac": "electron-vite build && electron-builder --mac --arm64 && electron-builder --mac --x64",
+    "package:mac:arm64": "electron-vite build && electron-builder --mac --arm64",
     "lint": "eslint src electron --ext .ts,.tsx",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "rebuild:native": "CXXFLAGS='-std=gnu++20' electron-rebuild -f -w better-sqlite3",
-    "package:mac:x64": "electron-vite build && CXXFLAGS='-std=gnu++20' electron-builder --mac --x64"
+    "package:mac:x64": "electron-vite build && electron-builder --mac --x64"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.4",
@@ -24,7 +23,6 @@
     "@radix-ui/react-slot": "^1.1.1",
     "@radix-ui/react-tooltip": "^1.1.6",
     "@tanstack/react-query": "^5.99.2",
-    "better-sqlite3": "^12.9.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
@@ -37,14 +35,13 @@
     "rehype-highlight": "^7.0.1",
     "remark-gfm": "^4.0.0",
     "sonner": "^1.4.41",
+    "sql.js": "1.14.1",
     "tailwind-merge": "^2.5.5",
     "zod": "^3.23.8",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.6.0",
     "@eslint/js": "^10.0.1",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
@@ -65,6 +62,9 @@
     "vite": "^5.4.21"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "electron", "esbuild"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }

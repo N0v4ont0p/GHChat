@@ -1,10 +1,11 @@
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import initSqlJs from "sql.js";
+import type { Database as SqlJsDatabase } from "sql.js";
+import { drizzle } from "drizzle-orm/sql-js";
 import { text, integer, sqliteTable } from "drizzle-orm/sqlite-core";
 import { eq } from "drizzle-orm";
 import { app } from "electron";
 import { join, dirname } from "path";
-import { mkdirSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { randomUUID } from "crypto";
 import type { Conversation, Message, AppSettings } from "../../../src/types";
 import { DEFAULT_MODEL } from "../../../src/lib/models";
@@ -47,6 +48,8 @@ const SCHEMA_VERSION = 2;
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 let db: ReturnType<typeof drizzle>;
+let sqliteDb: SqlJsDatabase;
+let _dbPath: string;
 let _dbReady = false;
 let _dbInitError: string | null = null;
 
@@ -71,10 +74,47 @@ export function getDbInitError(): string | null {
   return _dbInitError;
 }
 
-export function initDatabase(): void {
+/**
+ * Persist the in-memory SQLite database to disk atomically.
+ * Uses a write-to-tmp-then-rename pattern to avoid partial writes.
+ */
+function flushDb(): void {
+  if (!sqliteDb || !_dbReady || !_dbPath) {
+    console.warn("[db] flushDb() called but database is not ready — skipping persist");
+    return;
+  }
+  const data = sqliteDb.export();
+  const tmp = _dbPath + ".tmp";
+  writeFileSync(tmp, data);
+  renameSync(tmp, _dbPath);
+}
+
+/**
+ * Resolve the path to the sql.js WASM file.
+ *
+ * In development the file lives in node_modules/sql.js/dist/.
+ * In a packaged app it is placed outside the asar archive via
+ * electron-builder's asarUnpack rule so it can be read from the filesystem.
+ */
+function locateSqlJsWasm(file: string): string {
+  if (app.isPackaged) {
+    return join(
+      process.resourcesPath,
+      "app.asar.unpacked",
+      "node_modules",
+      "sql.js",
+      "dist",
+      file,
+    );
+  }
+  // app.getAppPath() returns the project root in development mode.
+  return join(app.getAppPath(), "node_modules", "sql.js", "dist", file);
+}
+
+export async function initDatabase(): Promise<void> {
   _dbInitError = null;
   const userData = app.getPath("userData");
-  const dbPath = join(userData, "ghchat.db");
+  _dbPath = join(userData, "ghchat.db");
 
   console.log(
     "[db] init — platform:", process.platform,
@@ -83,33 +123,25 @@ export function initDatabase(): void {
     "node:", process.versions.node,
     "modules:", process.versions.modules,
     "userData:", userData,
-    "dbPath:", dbPath,
+    "dbPath:", _dbPath,
   );
 
   try {
-    // Ensure the directory exists before opening the DB — app.getPath("userData")
-    // is guaranteed to exist on most platforms, but mkdirSync is a safe guard
-    // for edge cases (e.g. first-run on a fresh system, unusual userData paths).
-    mkdirSync(dirname(dbPath), { recursive: true });
-    console.log("[db] opening better-sqlite3 database…");
+    mkdirSync(dirname(_dbPath), { recursive: true });
 
-    let sqlite: InstanceType<typeof Database>;
-    try {
-      sqlite = new Database(dbPath);
-    } catch (openErr) {
-      // Augment the error with env context to make native ABI / arch issues
-      // immediately obvious in the log without having to correlate other lines.
-      throw new Error(
-        `better-sqlite3 failed to open "${dbPath}" (${dbEnvInfo()}): ${errMsg(openErr)}`,
-        { cause: openErr },
-      );
+    console.log("[db] loading sql.js (WASM-based SQLite, no native compilation)…");
+    const SQL = await initSqlJs({ locateFile: locateSqlJsWasm });
+
+    if (existsSync(_dbPath)) {
+      console.log("[db] loading existing database from", _dbPath);
+      sqliteDb = new SQL.Database(readFileSync(_dbPath));
+    } else {
+      console.log("[db] creating new database at", _dbPath);
+      sqliteDb = new SQL.Database();
     }
-    console.log("[db] file opened — applying WAL pragma…");
+    console.log("[db] database opened — running schema creation…");
 
-    sqlite.pragma("journal_mode = WAL");
-    console.log("[db] WAL enabled — running schema creation…");
-
-    sqlite.exec(`
+    sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -141,7 +173,28 @@ export function initDatabase(): void {
     // exactly once, even if initDatabase() is called again (e.g. after a crash
     // and restart).  Fresh installs start at user_version=0; migrations are
     // applied sequentially up to SCHEMA_VERSION.
-    const diskVersion = sqlite.pragma("user_version", { simple: true }) as number;
+
+    /** Run a single-row PRAGMA and return its value under the given column. */
+    function pragmaValue<T>(sql: string, col: string): T {
+      const stmt = sqliteDb.prepare(sql);
+      stmt.step();
+      const val = (stmt.getAsObject() as Record<string, unknown>)[col] as T;
+      stmt.free();
+      return val;
+    }
+
+    /** Return the column names for a table. */
+    function tableColumns(table: string): string[] {
+      const stmt = sqliteDb.prepare(`PRAGMA table_info(${table})`);
+      const cols: string[] = [];
+      while (stmt.step()) {
+        cols.push((stmt.getAsObject() as { name: string }).name);
+      }
+      stmt.free();
+      return cols;
+    }
+
+    const diskVersion = pragmaValue<number>("PRAGMA user_version", "user_version");
     console.log(`[db] schema version on disk: ${diskVersion} (target: ${SCHEMA_VERSION})`);
 
     // Warn on downgrade — the app may still work, but the schema may have
@@ -157,25 +210,25 @@ export function initDatabase(): void {
     if (diskVersion < 1) {
       console.log("[db] migration v1: ensuring onboarding_complete column…");
       try {
-        const cols = (sqlite.prepare("PRAGMA table_info(settings)").all() as { name: string }[])
-          .map((c) => c.name);
+        const cols = tableColumns("settings");
         console.log("[db] migration v1: existing settings columns:", cols);
+        sqliteDb.exec("BEGIN");
         if (!cols.includes("onboarding_complete")) {
           // NOTE: NOT NULL is intentionally omitted here.  SQLite < 3.37.0
           // forbids ADD COLUMN … NOT NULL even when a DEFAULT is provided.
           // getSettings() coerces NULL → false via the ?? operator, so
           // the missing NOT NULL constraint has no observable impact.
-          sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER DEFAULT 0");
-          // Backfill existing rows — older SQLite does not apply the DEFAULT
-          // to rows that already existed before the ALTER TABLE.
-          sqlite.exec("UPDATE settings SET onboarding_complete = 0 WHERE onboarding_complete IS NULL");
+          sqliteDb.run("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER DEFAULT 0");
+          sqliteDb.run("UPDATE settings SET onboarding_complete = 0 WHERE onboarding_complete IS NULL");
           console.log("[db] migration v1: onboarding_complete column added and backfilled");
         } else {
           console.log("[db] migration v1: onboarding_complete already present");
         }
-        sqlite.pragma("user_version = 1");
+        sqliteDb.run("PRAGMA user_version = 1");
+        sqliteDb.exec("COMMIT");
         console.log("[db] migration v1: complete");
       } catch (err) {
+        sqliteDb.exec("ROLLBACK");
         throw new Error(`Schema migration to v1 failed — ${errMsg(err)}`, { cause: err });
       }
     }
@@ -184,17 +237,19 @@ export function initDatabase(): void {
     if (diskVersion < 2) {
       console.log("[db] migration v2: ensuring last_conversation_id column…");
       try {
-        const cols = (sqlite.prepare("PRAGMA table_info(settings)").all() as { name: string }[])
-          .map((c) => c.name);
+        const cols = tableColumns("settings");
+        sqliteDb.exec("BEGIN");
         if (!cols.includes("last_conversation_id")) {
-          sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
+          sqliteDb.run("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
           console.log("[db] migration v2: last_conversation_id column added");
         } else {
           console.log("[db] migration v2: last_conversation_id already present");
         }
-        sqlite.pragma("user_version = 2");
+        sqliteDb.run("PRAGMA user_version = 2");
+        sqliteDb.exec("COMMIT");
         console.log("[db] migration v2: complete");
       } catch (err) {
+        sqliteDb.exec("ROLLBACK");
         throw new Error(`Schema migration to v2 failed — ${errMsg(err)}`, { cause: err });
       }
     }
@@ -205,15 +260,17 @@ export function initDatabase(): void {
       console.log(`[db] schema upgraded from v${diskVersion} to v${SCHEMA_VERSION} — all migration steps complete`);
     }
 
-    db = drizzle(sqlite);
+    db = drizzle(sqliteDb);
     _dbReady = true;
+
+    // Persist the freshly initialised/migrated database immediately.
+    flushDb();
     console.log("[db] initialized successfully");
   } catch (err) {
     _dbInitError = errMsg(err);
     console.error(
-      `[db] initialization FAILED (${dbEnvInfo()}) — path: ${dbPath}`,
+      `[db] initialization FAILED (${dbEnvInfo()}) — path: ${_dbPath}`,
       "\n[db] error:", err,
-      "\n[db] hint: if the error mentions 'NODE_MODULE_VERSION' or 'invalid ELF' run: pnpm run rebuild:native",
     );
     throw err;
   }
@@ -247,6 +304,7 @@ export function createConversation(title = "New conversation"): Conversation {
   const now = Date.now();
   const id = randomUUID();
   getDb().insert(conversationsTable).values({ id, title, createdAt: now, updatedAt: now }).run();
+  flushDb();
   return { id, title, createdAt: now, updatedAt: now };
 }
 
@@ -256,11 +314,13 @@ export function renameConversation(id: string, title: string): void {
     .set({ title, updatedAt: Date.now() })
     .where(eq(conversationsTable.id, id))
     .run();
+  flushDb();
 }
 
 export function deleteConversation(id: string): void {
   getDb().delete(messagesTable).where(eq(messagesTable.conversationId, id)).run();
   getDb().delete(conversationsTable).where(eq(conversationsTable.id, id)).run();
+  flushDb();
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -302,11 +362,13 @@ export function appendMessage({
     .set({ updatedAt: createdAt })
     .where(eq(conversationsTable.id, conversationId))
     .run();
+  flushDb();
   return { id, conversationId, role: role as Message["role"], content, createdAt };
 }
 
 export function deleteMessage(id: string): void {
   getDb().delete(messagesTable).where(eq(messagesTable.id, id)).run();
+  flushDb();
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -332,6 +394,7 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
     })
     .where(eq(settingsTable.id, "app"))
     .run();
+  flushDb();
   return getSettings();
 }
 
@@ -350,4 +413,6 @@ export function clearAllData(): void {
     .set({ onboardingComplete: false, lastConversationId: null })
     .where(eq(settingsTable.id, "app"))
     .run();
+  flushDb();
 }
+
