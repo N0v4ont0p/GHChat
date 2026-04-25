@@ -6,6 +6,10 @@ import { modelRegistry } from "../services/offline";
 // ── In-memory mode state ──────────────────────────────────────────────────────
 // Mode and offline state are held in memory for now.
 // A future migration (DB schema v3+) will persist them across launches.
+//
+// TODO: once modelRegistry is backed by real persistent storage, replace the
+// hard-coded "not-installed" fallback below with an actual registry check so
+// that previously installed models are recognised on restart.
 
 let _currentMode: AppMode = "online";
 
