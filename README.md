@@ -101,7 +101,7 @@ GHchat's main process handles all model intelligence so the renderer stays clean
 | Animation | [Framer Motion](https://framer.motion.com) |
 | State | [Zustand](https://zustand-demo.pmnd.rs) |
 | Server state | [TanStack Query](https://tanstack.com/query) v5 |
-| Database | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) + [Drizzle ORM](https://orm.drizzle.team) |
+| Database | [sql.js](https://github.com/sql-js/sql.js) (SQLite/WASM, no native compilation) + [Drizzle ORM](https://orm.drizzle.team) |
 | AI provider | [OpenRouter API](https://openrouter.ai/docs) (free models) |
 | Syntax highlighting | [highlight.js](https://highlightjs.org) via rehype |
 
@@ -114,7 +114,7 @@ GHchat's main process handles all model intelligence so the renderer stays clean
 git clone https://github.com/N0v4ont0p/GHChat.git
 cd GHChat
 
-# Install dependencies — automatically rebuilds better-sqlite3 for Electron's ABI
+# Install dependencies (no native compilation required)
 pnpm install
 
 # Start in development mode
@@ -132,15 +132,13 @@ Then open Settings, paste your OpenRouter API key, pick a model (or leave on Aut
 - **Node.js** 20 or later
 - **pnpm** 9 or later (`npm install -g pnpm` or use corepack)
 - **macOS** 13 Ventura or later (for vibrancy and `electron.safeStorage`)
-- **Xcode Command Line Tools** (for building native modules)
-  ```bash
-  xcode-select --install
-  ```
+
+> No Xcode or native build tools required — GHchat uses [sql.js](https://github.com/sql-js/sql.js) (SQLite compiled to WebAssembly) for local storage, so there is nothing to compile.
 
 ### Install
 
 ```bash
-pnpm install     # installs deps, downloads the Electron binary, and rebuilds better-sqlite3 for Electron's ABI
+pnpm install     # installs all dependencies — no native compilation step needed
 ```
 
 ### Develop
@@ -257,7 +255,7 @@ You can clone the repo and run `pnpm dev` from any path — the app doesn't have
 
 ```bash
 cd /Volumes/MySSD/GHChat
-pnpm install   # installs deps and rebuilds better-sqlite3 for Electron's ABI
+pnpm install   # no native compilation required
 pnpm dev
 ```
 
@@ -283,7 +281,7 @@ This is intentional: macOS apps write to `app.getPath('userData')` which always 
 | Drive ejected while app runs | App keeps running; your data is safe on the internal disk |
 | Reinstall on a different machine | You need to re-enter your API key; conversations stay on the original machine |
 | Moving the packaged `.app` | Drag the app from `dist/mac-arm64/GHchat.app` to `/Applications` — data path is unchanged |
-| Native module mismatch | If you move `node_modules` between machines, run `pnpm install` to rebuild |
+| Moving `node_modules` between machines | Just run `pnpm install` — no native rebuild step needed |
 
 ---
 
@@ -294,7 +292,7 @@ GHchat
 ├── Electron Main Process
 │   ├── Window management (hiddenInset titleBar, vibrancy)
 │   ├── IPC handlers (conversations, messages, settings, OpenRouter streaming)
-│   ├── SQLite + Drizzle ORM (better-sqlite3)
+│   ├── SQLite + Drizzle ORM (sql.js — WASM, no native compilation)
 │   ├── electron.safeStorage (API key encryption)
 │   └── Provider system
 │       └── OpenRouterProvider
@@ -362,14 +360,13 @@ Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implemen
 ### Database / path issues
 
 - DB path: `~/Library/Application Support/ghchat/ghchat.db`
-- If the Sidebar shows "Database unavailable", the `better-sqlite3` native module failed to load. The exact error is displayed inline in the Sidebar — look for `NODE_MODULE_VERSION` or `invalid ELF` to confirm an ABI mismatch.
-- **Fix:** delete `node_modules` and run `pnpm install` — this reinstalls everything and automatically rebuilds `better-sqlite3` for the current Electron version. Then restart the app. To rebuild without reinstalling all packages, run `pnpm run rebuild:native`.
+- GHchat uses [sql.js](https://github.com/sql-js/sql.js) (SQLite compiled to WebAssembly) — there are no native binaries to compile or rebuild.
+- If the Sidebar shows "Database unavailable", check the Electron logs (`~/Library/Logs/ghchat/`) for the exact error message.
 - If the app fails to open, delete the DB file and restart (you'll lose conversation history)
-- WAL mode is enabled by default for performance and concurrent access safety
 
 ### External drive issues
 
-- If the app crashes on launch after moving between machines: delete `node_modules` and run `pnpm install` (which auto-rebuilds native modules). To rebuild without reinstalling, run `pnpm run rebuild:native`.
+- If the app crashes on launch after moving between machines: run `pnpm install` — no native rebuild step is needed since there are no native modules.
 - The app's SQLite data is always on the internal disk — the external drive only holds source code
 
 ### macOS app launch / security
@@ -389,7 +386,6 @@ pnpm preview                # Preview the built renderer
 pnpm lint                   # Run ESLint
 pnpm format                 # Format with Prettier
 pnpm format:check           # Check formatting without writing
-pnpm run rebuild:native     # Manually rebuild better-sqlite3 for Electron (postinstall does this automatically)
 pnpm run package:mac        # Build + package macOS .dmg (arm64 + x64)
 pnpm run package:mac:arm64  # Build + package macOS .dmg (Apple Silicon)
 pnpm run package:mac:x64    # Build + package macOS .dmg (Intel)
