@@ -17,6 +17,9 @@ import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { Conversation } from "@/types";
 
+/** Error keywords that indicate a native module ABI mismatch requiring a rebuild. */
+const NATIVE_MODULE_ERROR_RE = /NODE_MODULE_VERSION|invalid ELF|napi/i;
+
 function groupByDate(convs: Conversation[]): Array<{ label: string; items: Conversation[] }> {
   const today = new Date();
   const yesterday = new Date(today);
@@ -150,7 +153,7 @@ export function Sidebar() {
 
   const newChatDisabled = createConversation.isPending || !dbAvailable;
   const newChatTooltip = !dbAvailable
-    ? "Database unavailable — restart the app or run npm run rebuild:native"
+    ? "Database unavailable — restart the app or run: pnpm run rebuild:native"
     : "New chat";
 
   const filtered = useMemo(() => {
@@ -226,11 +229,16 @@ export function Sidebar() {
               <p className="text-xs text-muted-foreground/50 leading-relaxed">
                 Conversations cannot be loaded.
                 <br />
-                Restart the app, or run{" "}
-                <code className="rounded bg-secondary/60 px-1 font-mono text-[10px]">
-                  npm run rebuild:native
-                </code>
-                {" "}(rebuilds native dependencies) if this is a fresh install.
+                Restart the app to retry.
+                {dbInitError && NATIVE_MODULE_ERROR_RE.test(dbInitError) && (
+                  <>
+                    {" "}Or run{" "}
+                    <code className="rounded bg-secondary/60 px-1 font-mono text-[10px]">
+                      pnpm run rebuild:native
+                    </code>
+                    {" "}to rebuild native dependencies.
+                  </>
+                )}
               </p>
               {dbInitError && (
                 <p className="mt-1 max-w-full break-all rounded bg-secondary/40 px-2 py-1 font-mono text-[10px] text-amber-300/70">
