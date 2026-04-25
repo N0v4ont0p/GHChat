@@ -56,7 +56,7 @@ let _dbInitError: string | null = null;
 /** One-liner describing the runtime environment — useful in every error/log path. */
 function dbEnvInfo(): string {
   return (
-    `electron ${process.versions.electron}, ` +
+    `electron ${process.versions.electron}, modules ${process.versions.modules}, ` +
     `${process.platform}/${process.arch}`
   );
 }
@@ -79,7 +79,10 @@ export function getDbInitError(): string | null {
  * Uses a write-to-tmp-then-rename pattern to avoid partial writes.
  */
 function flushDb(): void {
-  if (!sqliteDb || !_dbReady || !_dbPath) return;
+  if (!sqliteDb || !_dbReady || !_dbPath) {
+    console.warn("[db] flushDb() called but database is not ready — skipping persist");
+    return;
+  }
   const data = sqliteDb.export();
   const tmp = _dbPath + ".tmp";
   writeFileSync(tmp, data);
@@ -118,6 +121,7 @@ export async function initDatabase(): Promise<void> {
     "arch:", process.arch,
     "electron:", process.versions.electron,
     "node:", process.versions.node,
+    "modules:", process.versions.modules,
     "userData:", userData,
     "dbPath:", _dbPath,
   );
@@ -169,10 +173,28 @@ export async function initDatabase(): Promise<void> {
     // exactly once, even if initDatabase() is called again (e.g. after a crash
     // and restart).  Fresh installs start at user_version=0; migrations are
     // applied sequentially up to SCHEMA_VERSION.
-    const versionStmt = sqliteDb.prepare("PRAGMA user_version");
-    versionStmt.step();
-    const diskVersion = (versionStmt.getAsObject() as { user_version: number }).user_version;
-    versionStmt.free();
+
+    /** Run a single-row PRAGMA and return its value under the given column. */
+    function pragmaValue<T>(sql: string, col: string): T {
+      const stmt = sqliteDb.prepare(sql);
+      stmt.step();
+      const val = (stmt.getAsObject() as Record<string, unknown>)[col] as T;
+      stmt.free();
+      return val;
+    }
+
+    /** Return the column names for a table. */
+    function tableColumns(table: string): string[] {
+      const stmt = sqliteDb.prepare(`PRAGMA table_info(${table})`);
+      const cols: string[] = [];
+      while (stmt.step()) {
+        cols.push((stmt.getAsObject() as { name: string }).name);
+      }
+      stmt.free();
+      return cols;
+    }
+
+    const diskVersion = pragmaValue<number>("PRAGMA user_version", "user_version");
     console.log(`[db] schema version on disk: ${diskVersion} (target: ${SCHEMA_VERSION})`);
 
     // Warn on downgrade — the app may still work, but the schema may have
@@ -184,24 +206,18 @@ export async function initDatabase(): Promise<void> {
       );
     }
 
-    // Helper: read column names for a table.
-    function tableColumns(table: string): string[] {
-      const stmt = sqliteDb.prepare(`PRAGMA table_info(${table})`);
-      const cols: string[] = [];
-      while (stmt.step()) {
-        cols.push((stmt.getAsObject() as { name: string }).name);
-      }
-      stmt.free();
-      return cols;
-    }
-
     // v1 — add onboarding_complete
     if (diskVersion < 1) {
       console.log("[db] migration v1: ensuring onboarding_complete column…");
       try {
         const cols = tableColumns("settings");
         console.log("[db] migration v1: existing settings columns:", cols);
+        sqliteDb.exec("BEGIN");
         if (!cols.includes("onboarding_complete")) {
+          // NOTE: NOT NULL is intentionally omitted here.  SQLite < 3.37.0
+          // forbids ADD COLUMN … NOT NULL even when a DEFAULT is provided.
+          // getSettings() coerces NULL → false via the ?? operator, so
+          // the missing NOT NULL constraint has no observable impact.
           sqliteDb.run("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER DEFAULT 0");
           sqliteDb.run("UPDATE settings SET onboarding_complete = 0 WHERE onboarding_complete IS NULL");
           console.log("[db] migration v1: onboarding_complete column added and backfilled");
@@ -209,8 +225,10 @@ export async function initDatabase(): Promise<void> {
           console.log("[db] migration v1: onboarding_complete already present");
         }
         sqliteDb.run("PRAGMA user_version = 1");
+        sqliteDb.exec("COMMIT");
         console.log("[db] migration v1: complete");
       } catch (err) {
+        sqliteDb.exec("ROLLBACK");
         throw new Error(`Schema migration to v1 failed — ${errMsg(err)}`, { cause: err });
       }
     }
@@ -220,6 +238,7 @@ export async function initDatabase(): Promise<void> {
       console.log("[db] migration v2: ensuring last_conversation_id column…");
       try {
         const cols = tableColumns("settings");
+        sqliteDb.exec("BEGIN");
         if (!cols.includes("last_conversation_id")) {
           sqliteDb.run("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
           console.log("[db] migration v2: last_conversation_id column added");
@@ -227,8 +246,10 @@ export async function initDatabase(): Promise<void> {
           console.log("[db] migration v2: last_conversation_id already present");
         }
         sqliteDb.run("PRAGMA user_version = 2");
+        sqliteDb.exec("COMMIT");
         console.log("[db] migration v2: complete");
       } catch (err) {
+        sqliteDb.exec("ROLLBACK");
         throw new Error(`Schema migration to v2 failed — ${errMsg(err)}`, { cause: err });
       }
     }
