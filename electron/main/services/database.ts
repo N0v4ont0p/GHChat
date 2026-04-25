@@ -213,7 +213,7 @@ export function initDatabase(): void {
     console.error(
       `[db] initialization FAILED (${dbEnvInfo()}) — path: ${dbPath}`,
       "\n[db] error:", err,
-      "\n[db] hint: if the error mentions 'NODE_MODULE_VERSION' or 'invalid ELF' run: pnpm run rebuild:native",
+      "\n[db] hint: if the error mentions 'NODE_MODULE_VERSION' or 'invalid ELF', delete node_modules and run: pnpm install",
     );
     throw err;
   }

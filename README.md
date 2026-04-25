@@ -114,11 +114,8 @@ GHchat's main process handles all model intelligence so the renderer stays clean
 git clone https://github.com/N0v4ont0p/GHChat.git
 cd GHChat
 
-# Install dependencies (also downloads Electron binary)
+# Install dependencies — automatically rebuilds better-sqlite3 for Electron's ABI
 pnpm install
-
-# Rebuild better-sqlite3 for Electron's native ABI — required for the DB to work
-pnpm run rebuild:native
 
 # Start in development mode
 pnpm dev
@@ -143,8 +140,7 @@ Then open Settings, paste your OpenRouter API key, pick a model (or leave on Aut
 ### Install
 
 ```bash
-pnpm install                     # installs deps and downloads the Electron binary
-pnpm run rebuild:native          # required: builds better-sqlite3 for Electron's ABI
+pnpm install     # installs deps, downloads the Electron binary, and rebuilds better-sqlite3 for Electron's ABI
 ```
 
 ### Develop
@@ -261,8 +257,7 @@ You can clone the repo and run `pnpm dev` from any path — the app doesn't have
 
 ```bash
 cd /Volumes/MySSD/GHChat
-pnpm install
-pnpm run rebuild:native   # required — native modules must be rebuilt for your Electron
+pnpm install   # installs deps and rebuilds better-sqlite3 for Electron's ABI
 pnpm dev
 ```
 
@@ -288,7 +283,7 @@ This is intentional: macOS apps write to `app.getPath('userData')` which always 
 | Drive ejected while app runs | App keeps running; your data is safe on the internal disk |
 | Reinstall on a different machine | You need to re-enter your API key; conversations stay on the original machine |
 | Moving the packaged `.app` | Drag the app from `dist/mac-arm64/GHchat.app` to `/Applications` — data path is unchanged |
-| Native module mismatch | If you move `node_modules` between machines, run `pnpm run rebuild:native` |
+| Native module mismatch | If you move `node_modules` between machines, run `pnpm install` to rebuild |
 
 ---
 
@@ -368,13 +363,13 @@ Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implemen
 
 - DB path: `~/Library/Application Support/ghchat/ghchat.db`
 - If the Sidebar shows "Database unavailable", the `better-sqlite3` native module failed to load. The exact error is displayed inline in the Sidebar — look for `NODE_MODULE_VERSION` or `invalid ELF` to confirm an ABI mismatch.
-- **Fix:** run `pnpm run rebuild:native` to rebuild `better-sqlite3` for the Electron version in use, then restart.
+- **Fix:** delete `node_modules` and run `pnpm install` to reinstall and rebuild `better-sqlite3` for the current Electron version, then restart. As a targeted shortcut you can also run `pnpm run rebuild:native`.
 - If the app fails to open, delete the DB file and restart (you'll lose conversation history)
 - WAL mode is enabled by default for performance and concurrent access safety
 
 ### External drive issues
 
-- If the app crashes on launch after moving between machines: run `pnpm run rebuild:native`
+- If the app crashes on launch after moving between machines: delete `node_modules` and run `pnpm install` (or run `pnpm run rebuild:native` as a shortcut)
 - The app's SQLite data is always on the internal disk — the external drive only holds source code
 
 ### macOS app launch / security
@@ -394,7 +389,7 @@ pnpm preview                # Preview the built renderer
 pnpm lint                   # Run ESLint
 pnpm format                 # Format with Prettier
 pnpm format:check           # Check formatting without writing
-pnpm run rebuild:native     # Rebuild better-sqlite3 for Electron
+pnpm run rebuild:native     # Manually rebuild better-sqlite3 for Electron (postinstall does this automatically)
 pnpm run package:mac        # Build + package macOS .dmg (arm64 + x64)
 pnpm run package:mac:arm64  # Build + package macOS .dmg (Apple Silicon)
 pnpm run package:mac:x64    # Build + package macOS .dmg (Intel)
