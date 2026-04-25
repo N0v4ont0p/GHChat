@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ExternalLink, ArrowRight, CheckCircle2, Loader2, ShieldAlert, Clock, AlertTriangle, RefreshCw } from "lucide-react";
+import { ExternalLink, ArrowRight, CheckCircle2, Loader2, ShieldAlert, Clock, AlertTriangle, RefreshCw, Search, X } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -93,11 +93,60 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [keyMessage, setKeyMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("best");
+  const [modelSearch, setModelSearch] = useState("");
   const [validatedToken, setValidatedToken] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<OpenRouterDiagnostics | null>(null);
   const { selectedModel, setSelectedModel } = useSettingsStore();
-  const { data: models = [] } = useModels(validatedToken ?? undefined);
-  const availableModels = models.length > 0 ? models : (diagnostics?.models ?? []);
+  const { data: models = [], isLoading: modelsLoading } = useModels(validatedToken ?? undefined);
+  const availableModels = useMemo(
+    () => (models.length > 0 ? models : (diagnostics?.models ?? [])),
+    [models, diagnostics?.models],
+  );
+
+  // Category tabs for the model step (auto is shown separately as a recommendation card)
+  const MODEL_STEP_TABS = ALL_CATEGORIES.filter((c) => c !== "auto");
+
+  // Count of non-auto models (for the header description)
+  const nonAutoModelCount = useMemo(
+    () => availableModels.filter((m) => m.id !== AUTO_MODEL_ID).length,
+    [availableModels],
+  );
+
+  // Filtered model list: when search is active it spans all categories
+  const filteredModels = useMemo(() => {
+    return availableModels.filter((m) => {
+      if (m.id === AUTO_MODEL_ID) return false; // shown separately in the recommendation card
+
+      const q = modelSearch.trim().toLowerCase();
+      if (q) {
+        // Search overrides category filter
+        return (
+          m.name.toLowerCase().includes(q) ||
+          m.description.toLowerCase().includes(q) ||
+          (m.vendor?.toLowerCase().includes(q) ?? false) ||
+          (m.family?.toLowerCase().includes(q) ?? false) ||
+          m.id.toLowerCase().includes(q)
+        );
+      }
+
+      // Category filter (no search)
+      if (selectedCategory === "all") return true;
+      if (selectedCategory === "best") return !!m.isFeatured;
+      return m.category === selectedCategory;
+    });
+  }, [availableModels, selectedCategory, modelSearch]);
+
+  // After models finish loading, auto-switch from "best" to "general" if the
+  // "best" category has no entries (no isFeatured models in the live catalog).
+  useEffect(() => {
+    if (modelsLoading || availableModels.length === 0) return;
+    if (selectedCategory === "best") {
+      const hasBestModels = availableModels.some(
+        (m) => m.id !== AUTO_MODEL_ID && !!m.isFeatured,
+      );
+      if (!hasBestModels) setSelectedCategory("general");
+    }
+  }, [modelsLoading, availableModels, selectedCategory]);
 
   const validateKey = async () => {
     const trimmed = apiKey.trim();
@@ -124,9 +173,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       setValidatedToken(result.valid ? trimmed : null);
       if (result.valid && diag) {
         setDiagnostics(diag);
-        // Pre-select the best working model, or fall back to Auto
-        const best = diag.bestWorkingModels[0] ?? AUTO_MODEL_ID;
-        setSelectedModel(best);
+        // Always pre-select Auto — the recommendation card makes it obvious and
+        // the user can override by tapping any specific model in the list.
+        setSelectedModel(AUTO_MODEL_ID);
         setSelectedCategory("best");
         // Auto-advance to model step — the user has validated and we have results
         setStep("model");
@@ -152,7 +201,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     setSaving(true);
     try {
       await ipc.setApiKey(apiKey.trim());
-      await ipc.updateSettings({ defaultModel: selectedModel, onboardingComplete: true });
+      // Settings save is best-effort. A DB failure (e.g. missing better-sqlite3
+      // native binary in the packaged build) must not strand the user here —
+      // App.tsx already treats a stored key + unavailable DB as onboarding-done.
+      try {
+        await ipc.updateSettings({ defaultModel: selectedModel, onboardingComplete: true });
+      } catch (settingsErr) {
+        console.warn("[OnboardingFlow] updateSettings failed (non-fatal):", settingsErr);
+      }
       onComplete();
     } catch (err) {
       console.error("[OnboardingFlow] handleFinish failed:", err);
@@ -165,10 +221,30 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     }
   };
 
+  // Auto model object for the recommendation card
+  const autoModel = useMemo(
+    () => availableModels.find((m) => m.id === AUTO_MODEL_ID),
+    [availableModels],
+  );
+
+  // Human-friendly name for the currently selected model (used in footer summary)
+  const selectedModelName = useMemo(() => {
+    if (selectedModel === AUTO_MODEL_ID) return "Auto — smart routing";
+    const preset = availableModels.find((m) => m.id === selectedModel);
+    return preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
+  }, [selectedModel, availableModels]);
+
   return (
-    <div className="relative flex h-screen w-full items-center justify-center bg-background">
+    <div
+      className={cn(
+        "relative h-screen w-full bg-background",
+        step === "model"
+          ? "flex flex-col items-center overflow-hidden"
+          : "flex items-center justify-center",
+      )}
+    >
       <div
-        className="absolute inset-x-0 top-0 z-20 flex h-11 items-center justify-center"
+        className="absolute inset-x-0 top-0 z-20 flex h-11 shrink-0 items-center justify-center"
         style={{ WebkitAppRegion: "drag" } as { WebkitAppRegion: "drag" }}
       >
         <span className="select-none text-xs font-medium tracking-wide text-muted-foreground/60">
@@ -178,9 +254,21 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       {/* Subtle radial gradient backdrop */}
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_center,_hsl(263_70%_65%_/_0.06)_0%,_transparent_70%)]" />
 
-      <div className="relative w-full max-w-lg px-6">
+      <div
+        className={cn(
+          "relative",
+          step === "model"
+            ? "mt-11 flex w-full max-w-2xl flex-1 flex-col overflow-hidden px-6 pb-4"
+            : "w-full max-w-lg px-6",
+        )}
+      >
         {/* Step progress dots */}
-        <div className="mb-10 flex items-center justify-center gap-2">
+        <div
+          className={cn(
+            "flex items-center justify-center gap-2",
+            step === "model" ? "mb-5 shrink-0 pt-4" : "mb-10",
+          )}
+        >
           {(["welcome", "apikey", "model"] as Step[]).map((s, i) => (
             <div
               key={s}
@@ -381,16 +469,20 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           )}
 
           {step === "model" && (
-            <motion.div key="model" {...SLIDE} className="space-y-5">
-              <div className="space-y-2">
-                <h2 className="text-2xl font-bold tracking-tight">Your models are ready</h2>
+            <motion.div key="model" {...SLIDE} className="flex flex-1 flex-col overflow-hidden min-h-0">
+              {/* ── Header ─────────────────────────────────────────────── */}
+              <div className="shrink-0 space-y-1.5 mb-4">
+                <h2 className="text-2xl font-bold tracking-tight">Choose your starting model</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  GHchat fetched the live catalog of free models from OpenRouter.{" "}
-                  <span className="text-foreground font-medium">Auto</span> is selected by
-                  default — it routes each prompt to the best available free model automatically.
+                  GHchat fetched{" "}
+                  <span className="text-foreground font-medium">
+                    {diagnostics?.freeModelCount ?? nonAutoModelCount}
+                  </span>{" "}
+                  free models from OpenRouter. Pick one below — you can always change it later in
+                  Settings.
                 </p>
                 {diagnostics && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 pt-0.5">
                     <Button
                       variant="outline"
                       size="sm"
@@ -401,138 +493,227 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                       }}
                     >
                       <RefreshCw className="mr-1 h-3 w-3" />
-                      Refresh model availability
+                      Refresh availability
                     </Button>
                     <span className="text-[11px] text-muted-foreground">
-                      Last checked {new Date(diagnostics.checkedAt).toLocaleTimeString()}
+                      Checked {new Date(diagnostics.checkedAt).toLocaleTimeString()}
                     </span>
                   </div>
                 )}
               </div>
 
-              {/* Category tabs */}
-              <div className="flex gap-1.5 overflow-x-auto pb-1">
-                {ALL_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedCategory(cat)}
-                    className={cn(
-                      "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-                      selectedCategory === cat
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-secondary text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <span>{CATEGORY_META[cat].emoji}</span>
-                    {CATEGORY_META[cat].label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Model cards */}
-              <div className="space-y-2">
-                {availableModels.filter((m) => {
-                  if (selectedCategory === "all") return true;
-                  if (selectedCategory === "auto") return m.id === AUTO_MODEL_ID;
-                  if (selectedCategory === "best") return m.isFeatured || m.id === AUTO_MODEL_ID;
-                  return m.category === selectedCategory;
-                }).map((m) => {
-                  const isAuto = m.id === AUTO_MODEL_ID;
-                  const isLimitedAccess = m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => setSelectedModel(m.id)}
-                      className={cn(
-                        "w-full rounded-xl border p-3.5 text-left transition-all",
-                        selectedModel === m.id
-                          ? isAuto
-                            ? "border-cyan-500/40 bg-cyan-500/5 ring-1 ring-cyan-500/20"
-                            : "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
-                          : isAuto
-                            ? "border-cyan-500/20 bg-cyan-500/5 hover:border-cyan-500/40"
-                            : isLimitedAccess
-                              ? "border-border/40 bg-card/20 opacity-60"
-                              : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-                            <span className={cn("font-semibold text-sm", isAuto && "text-cyan-300")}>{m.name}</span>
-                            {m.vendor && (
-                              <span className="rounded border border-border/50 bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground leading-none">
-                                {m.vendor}
-                              </span>
-                            )}
-                            {isAuto && (
-                              <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400 font-medium leading-none">
-                                Recommended
-                              </span>
-                            )}
-                            <VerificationBadge status={m.verifiedStatus} />
-                          </div>
-                          <p className="text-xs text-muted-foreground">{m.description}</p>
-                          <p className="mt-1 text-[11px] text-muted-foreground/70 leading-snug">
-                            {m.whyChoose}
-                          </p>
-                          {m.verifiedStatus === "gated" && (
-                            <p className="mt-1 text-[10px] text-amber-400/80">
-                              Requires model access approval
-                            </p>
-                          )}
-                          {m.verifiedStatus === "rate-limited" && (
-                            <p className="mt-1 text-[10px] text-amber-400/80">
-                              Rate limited during check — may work in a few minutes
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
-                          {m.contextWindow && (
-                            <span className="rounded bg-secondary/60 px-1.5 py-0.5 font-mono text-muted-foreground/60 leading-none whitespace-nowrap">
-                              {m.contextWindow}
-                            </span>
-                          )}
-                          {m.speed && (
-                            <span
-                              className={cn(
-                                "rounded px-1.5 py-0.5 font-medium leading-none",
-                                m.speed === "fast"
-                                  ? "bg-green-500/10 text-green-400"
-                                  : m.speed === "medium"
-                                    ? "bg-yellow-500/10 text-yellow-400"
-                                    : "bg-orange-500/10 text-orange-400",
-                              )}
-                            >
-                              {m.speed}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      {selectedModel === m.id && (
-                        <div className="mt-2 flex items-center gap-1 text-[11px] text-primary">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Selected
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex gap-3">
-                <Button variant="ghost" onClick={() => setStep("apikey")} className="flex-1">
-                  Back
-                </Button>
-                <Button className="flex-1 gap-2" onClick={handleFinish} disabled={saving}>
-                  {saving ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      Start chatting <ArrowRight className="h-4 w-4" />
-                    </>
+              {/* ── Auto recommendation card ────────────────────────── */}
+              <div className="shrink-0 mb-3">
+                <button
+                  onClick={() => setSelectedModel(AUTO_MODEL_ID)}
+                  className={cn(
+                    "w-full rounded-xl border-2 p-3.5 text-left transition-all",
+                    selectedModel === AUTO_MODEL_ID
+                      ? "border-cyan-500/60 bg-cyan-500/8 ring-1 ring-cyan-500/30"
+                      : "border-cyan-500/20 bg-cyan-500/5 hover:border-cyan-500/40",
                   )}
-                </Button>
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <span className="mt-0.5 text-xl shrink-0">🤖</span>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                          <span className="font-semibold text-sm text-cyan-300">Auto</span>
+                          <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400 font-medium leading-none">
+                            Recommended
+                          </span>
+                          {autoModel && <VerificationBadge status={autoModel.verifiedStatus} />}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Routes each prompt to the best available free model automatically —
+                          coding, reasoning, creative, and fast queries each get the right model.
+                        </p>
+                      </div>
+                    </div>
+                    {selectedModel === AUTO_MODEL_ID && (
+                      <CheckCircle2 className="h-5 w-5 shrink-0 text-cyan-400" />
+                    )}
+                  </div>
+                </button>
+              </div>
+
+              {/* ── Search + category tabs ──────────────────────────── */}
+              <div className="shrink-0 space-y-2 mb-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="Search models by name, vendor, or capability…"
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    className="h-8 pl-8 pr-8 text-sm"
+                  />
+                  {modelSearch && (
+                    <button
+                      onClick={() => setModelSearch("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                {!modelSearch && (
+                  <div className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none] [-webkit-overflow-scrolling:touch]">
+                    {MODEL_STEP_TABS.map((cat) => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={cn(
+                          "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                          selectedCategory === cat
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-secondary text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        <span>{CATEGORY_META[cat].emoji}</span>
+                        {CATEGORY_META[cat].label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {modelSearch && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Searching across all categories
+                  </p>
+                )}
+              </div>
+
+              {/* ── Scrollable model list ────────────────────────────── */}
+              <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1 pb-2 [scrollbar-width:thin]">
+                {modelsLoading && availableModels.length === 0 ? (
+                  <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading models…
+                  </div>
+                ) : (
+                  <>
+                    {filteredModels.map((m) => {
+                      const isLimitedAccess =
+                        m.verifiedStatus === "unavailable" || m.verifiedStatus === "gated";
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={() => setSelectedModel(m.id)}
+                          className={cn(
+                            "w-full rounded-xl border p-3.5 text-left transition-all",
+                            selectedModel === m.id
+                              ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
+                              : isLimitedAccess
+                                ? "border-border/40 bg-card/20 opacity-60"
+                                : "border-border bg-card/50 hover:border-border/80 hover:bg-card",
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="mb-0.5 flex flex-wrap items-center gap-1.5">
+                                <span className="text-sm font-semibold">{m.name}</span>
+                                {m.vendor && (
+                                  <span className="rounded border border-border/50 bg-secondary/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+                                    {m.vendor}
+                                  </span>
+                                )}
+                                <VerificationBadge status={m.verifiedStatus} />
+                              </div>
+                              <p className="text-xs text-muted-foreground">{m.description}</p>
+                              <p className="mt-1 text-[11px] leading-snug text-muted-foreground/70">
+                                {m.whyChoose}
+                              </p>
+                              {m.verifiedStatus === "gated" && (
+                                <p className="mt-1 text-[10px] text-amber-400/80">
+                                  Requires model access approval
+                                </p>
+                              )}
+                              {m.verifiedStatus === "rate-limited" && (
+                                <p className="mt-1 text-[10px] text-amber-400/80">
+                                  Rate limited during check — may work in a few minutes
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-muted-foreground">
+                              {m.contextWindow && (
+                                <span className="rounded bg-secondary/60 px-1.5 py-0.5 font-mono leading-none text-muted-foreground/60 whitespace-nowrap">
+                                  {m.contextWindow}
+                                </span>
+                              )}
+                              {m.speed && (
+                                <span
+                                  className={cn(
+                                    "rounded px-1.5 py-0.5 font-medium leading-none",
+                                    m.speed === "fast"
+                                      ? "bg-green-500/10 text-green-400"
+                                      : m.speed === "medium"
+                                        ? "bg-yellow-500/10 text-yellow-400"
+                                        : "bg-orange-500/10 text-orange-400",
+                                  )}
+                                >
+                                  {m.speed}
+                                </span>
+                              )}
+                              {selectedModel === m.id && (
+                                <CheckCircle2 className="h-4 w-4 text-primary" />
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+
+                    {filteredModels.length === 0 && (
+                      <div className="py-10 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          {modelSearch
+                            ? `No models match "${modelSearch}"`
+                            : "No models in this category"}
+                        </p>
+                        {modelSearch ? (
+                          <button
+                            onClick={() => setModelSearch("")}
+                            className="mt-2 text-xs text-primary hover:underline"
+                          >
+                            Clear search
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setSelectedCategory("all")}
+                            className="mt-2 text-xs text-primary hover:underline"
+                          >
+                            Browse all models
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* ── Footer ──────────────────────────────────────────── */}
+              <div className="mt-4 shrink-0 space-y-2.5">
+                {/* Selected model summary — keeps the user informed even while scrolled */}
+                <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground/80">
+                  <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
+                  <span className="truncate">
+                    Starting with:{" "}
+                    <span className="font-medium text-foreground">{selectedModelName}</span>
+                  </span>
+                </div>
+                <div className="flex gap-3">
+                  <Button variant="ghost" onClick={() => setStep("apikey")} className="flex-1">
+                    Back
+                  </Button>
+                  <Button className="flex-1 gap-2" onClick={handleFinish} disabled={saving}>
+                    {saving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        Start chatting <ArrowRight className="h-4 w-4" />
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
             </motion.div>
           )}
