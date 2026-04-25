@@ -114,10 +114,10 @@ GHchat's main process handles all model intelligence so the renderer stays clean
 git clone https://github.com/N0v4ont0p/GHChat.git
 cd GHChat
 
-# Install dependencies
-pnpm install --ignore-scripts   # skips native rebuild in CI
+# Install dependencies (also downloads Electron binary)
+pnpm install
 
-# (Optional) Rebuild better-sqlite3 for your Electron version
+# Rebuild better-sqlite3 for Electron's native ABI — required for the DB to work
 pnpm run rebuild:native
 
 # Start in development mode
@@ -143,8 +143,8 @@ Then open Settings, paste your OpenRouter API key, pick a model (or leave on Aut
 ### Install
 
 ```bash
-pnpm install --ignore-scripts
-pnpm run rebuild:native          # builds better-sqlite3 for Electron
+pnpm install                     # installs deps and downloads the Electron binary
+pnpm run rebuild:native          # required: builds better-sqlite3 for Electron's ABI
 ```
 
 ### Develop
@@ -260,10 +260,9 @@ GHchat's repository and packaged app can live on an external SSD. Here's what yo
 You can clone the repo and run `pnpm dev` from any path — the app doesn't have to live on your internal disk.
 
 ```bash
-# On an external drive mounted at /Volumes/MySSD
 cd /Volumes/MySSD/GHChat
-pnpm install --ignore-scripts
-pnpm run rebuild:native   # important — native modules must be rebuilt for your Electron
+pnpm install
+pnpm run rebuild:native   # required — native modules must be rebuilt for your Electron
 pnpm dev
 ```
 
@@ -368,6 +367,8 @@ Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implemen
 ### Database / path issues
 
 - DB path: `~/Library/Application Support/ghchat/ghchat.db`
+- If the Sidebar shows "Database unavailable", the `better-sqlite3` native module failed to load. The exact error is displayed inline in the Sidebar — look for `NODE_MODULE_VERSION` or `invalid ELF` to confirm an ABI mismatch.
+- **Fix:** run `pnpm run rebuild:native` to rebuild `better-sqlite3` for the Electron version in use, then restart.
 - If the app fails to open, delete the DB file and restart (you'll lose conversation history)
 - WAL mode is enabled by default for performance and concurrent access safety
 

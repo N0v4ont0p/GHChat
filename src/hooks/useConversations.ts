@@ -2,13 +2,19 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { useChatStore } from "@/stores/chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
 const KEY = ["conversations"] as const;
 
 export function useConversations() {
+  const dbAvailable = useSettingsStore((s) => s.dbAvailable);
   return useQuery({
     queryKey: KEY,
     queryFn: () => ipc.listConversations(),
+    // Do not attempt IPC when the DB failed to initialise — the Sidebar already
+    // shows the "Database unavailable" panel based on the dbAvailable flag, so
+    // there is no point generating retries against a permanently broken channel.
+    enabled: dbAvailable,
   });
 }
 

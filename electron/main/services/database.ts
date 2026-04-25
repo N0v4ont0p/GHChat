@@ -40,6 +40,19 @@ let db: ReturnType<typeof drizzle>;
 let _dbReady = false;
 let _dbInitError: string | null = null;
 
+/** One-liner describing the runtime environment — useful in every error/log path. */
+function dbEnvInfo(): string {
+  return (
+    `electron ${process.versions.electron}, modules ${process.versions.modules}, ` +
+    `${process.platform}/${process.arch}`
+  );
+}
+
+/** Extract a human-readable message from any thrown value. */
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function isDatabaseReady(): boolean {
   return _dbReady;
 }
@@ -50,17 +63,41 @@ export function getDbInitError(): string | null {
 
 export function initDatabase(): void {
   _dbInitError = null;
-  const dbPath = join(app.getPath("userData"), "ghchat.db");
+  const userData = app.getPath("userData");
+  const dbPath = join(userData, "ghchat.db");
+
+  console.log(
+    "[db] init — platform:", process.platform,
+    "arch:", process.arch,
+    "electron:", process.versions.electron,
+    "node:", process.versions.node,
+    "modules:", process.versions.modules,
+    "userData:", userData,
+    "dbPath:", dbPath,
+  );
+
   try {
     // Ensure the directory exists before opening the DB — app.getPath("userData")
     // is guaranteed to exist on most platforms, but mkdirSync is a safe guard
     // for edge cases (e.g. first-run on a fresh system, unusual userData paths).
     mkdirSync(dirname(dbPath), { recursive: true });
-    console.log("[db] opening database at:", dbPath);
+    console.log("[db] opening better-sqlite3 database…");
 
-    const sqlite = new Database(dbPath);
+    let sqlite: InstanceType<typeof Database>;
+    try {
+      sqlite = new Database(dbPath);
+    } catch (openErr) {
+      // Augment the error with env context to make native ABI / arch issues
+      // immediately obvious in the log without having to correlate other lines.
+      throw new Error(
+        `better-sqlite3 failed to open "${dbPath}" (${dbEnvInfo()}): ${errMsg(openErr)}`,
+        { cause: openErr },
+      );
+    }
+    console.log("[db] file opened — applying WAL pragma…");
 
     sqlite.pragma("journal_mode = WAL");
+    console.log("[db] WAL enabled — running schema creation…");
 
     sqlite.exec(`
       CREATE TABLE IF NOT EXISTS conversations (
@@ -86,6 +123,7 @@ export function initDatabase(): void {
       );
       INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL);
     `);
+    console.log("[db] schema applied — checking migrations…");
 
     // Migrate existing installations: add columns if they don't exist yet
     const existingCols = sqlite
@@ -93,9 +131,11 @@ export function initDatabase(): void {
       .all()
       .map((c: Record<string, unknown>) => c["name"] as string);
     if (!existingCols.includes("onboarding_complete")) {
+      console.log("[db] migration: adding onboarding_complete column");
       sqlite.exec("ALTER TABLE settings ADD COLUMN onboarding_complete INTEGER NOT NULL DEFAULT 0");
     }
     if (!existingCols.includes("last_conversation_id")) {
+      console.log("[db] migration: adding last_conversation_id column");
       sqlite.exec("ALTER TABLE settings ADD COLUMN last_conversation_id TEXT");
     }
 
@@ -103,8 +143,12 @@ export function initDatabase(): void {
     _dbReady = true;
     console.log("[db] initialized successfully");
   } catch (err) {
-    _dbInitError = err instanceof Error ? err.message : String(err);
-    console.error("[db] initialization failed — path:", dbPath, "error:", err);
+    _dbInitError = errMsg(err);
+    console.error(
+      `[db] initialization FAILED (${dbEnvInfo()}) — path: ${dbPath}`,
+      "\n[db] error:", err,
+      "\n[db] hint: if the error mentions 'NODE_MODULE_VERSION' or 'invalid ELF' run: pnpm run rebuild:native",
+    );
     throw err;
   }
 }
