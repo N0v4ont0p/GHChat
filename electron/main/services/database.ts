@@ -1,7 +1,7 @@
 import initSqlJs from "sql.js";
 import type { Database as SqlJsDatabase } from "sql.js";
 import { drizzle } from "drizzle-orm/sql-js";
-import { text, integer, sqliteTable } from "drizzle-orm/sqlite-core";
+import { text, integer, real, sqliteTable } from "drizzle-orm/sqlite-core";
 import { eq } from "drizzle-orm";
 import { app } from "electron";
 import { join, dirname } from "path";
@@ -35,6 +35,66 @@ export const settingsTable = sqliteTable("settings", {
   lastConversationId: text("last_conversation_id"),
 });
 
+// ── Offline tables ─────────────────────────────────────────────────────────────
+
+/**
+ * Singleton row tracking the overall offline-mode installation state.
+ * Updated as the offline setup state machine advances.
+ */
+export const offlineInstallationTable = sqliteTable("offline_installation", {
+  id: text("id").primaryKey().default("app"),
+  /** Current OfflineSetupState value (stored as text). */
+  state: text("state").notNull().default("not-installed"),
+  /** Absolute path of the offline root resolved at setup time. */
+  offlineRoot: text("offline_root"),
+  /** Epoch ms when the installation first reached "installed" state. */
+  installedAt: integer("installed_at"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** One row per successfully installed offline model. */
+export const offlineModelsTable = sqliteTable("offline_models", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  sizeGb: real("size_gb").notNull(),
+  quantization: text("quantization"),
+  /** Absolute path to the model file(s) inside the models/ sub-directory. */
+  modelPath: text("model_path").notNull(),
+  /** Absolute path to the model's JSON manifest inside manifests/. */
+  manifestPath: text("manifest_path").notNull(),
+  installedAt: integer("installed_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** Singleton row for the local inference runtime. */
+export const offlineRuntimeTable = sqliteTable("offline_runtime", {
+  id: text("id").primaryKey().default("app"),
+  version: text("version"),
+  /** Absolute path to the runtime binary/bundle inside runtime/. */
+  runtimePath: text("runtime_path"),
+  installedAt: integer("installed_at"),
+  lastHealthCheck: integer("last_health_check"),
+  /** Short status string: "ok" | "error" | "unknown". */
+  healthStatus: text("health_status"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/**
+ * File ownership manifest — one row per file that GHchat manages as part
+ * of the offline installation.  Enables precise clean-up and integrity checks.
+ */
+export const offlineManifestsTable = sqliteTable("offline_manifests", {
+  id: text("id").primaryKey(),
+  /** "model" | "runtime" | "system" */
+  ownerType: text("owner_type").notNull(),
+  /** Catalog model ID, "runtime", or "system" */
+  ownerId: text("owner_id").notNull(),
+  /** Absolute path of the managed file. */
+  filePath: text("file_path").notNull(),
+  sizeBytes: integer("size_bytes"),
+  createdAt: integer("created_at").notNull(),
+});
+
 // ── Schema versioning ─────────────────────────────────────────────────────────
 // Increment SCHEMA_VERSION and add a new numbered migration block whenever the
 // DB schema changes.  Migrations are applied in ascending order; each step is
@@ -42,8 +102,10 @@ export const settingsTable = sqliteTable("settings", {
 //
 //  v1 — added onboarding_complete
 //  v2 — added last_conversation_id
+//  v3 — added offline_installation, offline_models, offline_runtime,
+//        offline_manifests tables
 //
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -254,6 +316,66 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v3 — add offline tables (offline_installation, offline_models,
+    //       offline_runtime, offline_manifests)
+    if (diskVersion < 3) {
+      console.log("[db] migration v3: creating offline tables…");
+      try {
+        sqliteDb.exec("BEGIN");
+        sqliteDb.exec(`
+          CREATE TABLE IF NOT EXISTS offline_installation (
+            id TEXT PRIMARY KEY DEFAULT 'app',
+            state TEXT NOT NULL DEFAULT 'not-installed',
+            offline_root TEXT,
+            installed_at INTEGER,
+            updated_at INTEGER NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS offline_models (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            size_gb REAL NOT NULL,
+            quantization TEXT,
+            model_path TEXT NOT NULL,
+            manifest_path TEXT NOT NULL,
+            installed_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS offline_runtime (
+            id TEXT PRIMARY KEY DEFAULT 'app',
+            version TEXT,
+            runtime_path TEXT,
+            installed_at INTEGER,
+            last_health_check INTEGER,
+            health_status TEXT,
+            updated_at INTEGER NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS offline_manifests (
+            id TEXT PRIMARY KEY,
+            owner_type TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER,
+            created_at INTEGER NOT NULL
+          );
+        `);
+        const now = Date.now();
+        sqliteDb.run(
+          "INSERT OR IGNORE INTO offline_installation (id, state, updated_at) VALUES ('app', 'not-installed', ?)",
+          [now],
+        );
+        sqliteDb.run(
+          "INSERT OR IGNORE INTO offline_runtime (id, updated_at) VALUES ('app', ?)",
+          [now],
+        );
+        sqliteDb.run("PRAGMA user_version = 3");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v3: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v3 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -416,3 +538,234 @@ export function clearAllData(): void {
   flushDb();
 }
 
+// ── Offline: record types ─────────────────────────────────────────────────────
+
+export interface OfflineInstallationRecord {
+  id: string;
+  state: string;
+  offlineRoot: string | null;
+  installedAt: number | null;
+  updatedAt: number;
+}
+
+export interface OfflineModelRecord {
+  id: string;
+  name: string;
+  sizeGb: number;
+  quantization: string | null;
+  modelPath: string;
+  manifestPath: string;
+  installedAt: number;
+  updatedAt: number;
+}
+
+export interface OfflineRuntimeRecord {
+  id: string;
+  version: string | null;
+  runtimePath: string | null;
+  installedAt: number | null;
+  lastHealthCheck: number | null;
+  healthStatus: string | null;
+  updatedAt: number;
+}
+
+export interface OfflineManifestRecord {
+  id: string;
+  ownerType: string;
+  ownerId: string;
+  filePath: string;
+  sizeBytes: number | null;
+  createdAt: number;
+}
+
+// ── Offline: installation singleton ──────────────────────────────────────────
+
+export function getOfflineInstallation(): OfflineInstallationRecord | null {
+  const row = getDb()
+    .select()
+    .from(offlineInstallationTable)
+    .where(eq(offlineInstallationTable.id, "app"))
+    .get();
+  return row ?? null;
+}
+
+export function upsertOfflineInstallation(
+  partial: Partial<Pick<OfflineInstallationRecord, "state" | "offlineRoot" | "installedAt">>,
+): void {
+  const now = Date.now();
+  getDb()
+    .update(offlineInstallationTable)
+    .set({
+      ...(partial.state !== undefined && { state: partial.state }),
+      ...(partial.offlineRoot !== undefined && { offlineRoot: partial.offlineRoot }),
+      ...(partial.installedAt !== undefined && { installedAt: partial.installedAt }),
+      updatedAt: now,
+    })
+    .where(eq(offlineInstallationTable.id, "app"))
+    .run();
+  flushDb();
+}
+
+// ── Offline: models ───────────────────────────────────────────────────────────
+
+export function listOfflineModels(): OfflineModelRecord[] {
+  return getDb()
+    .select()
+    .from(offlineModelsTable)
+    .orderBy(offlineModelsTable.installedAt)
+    .all()
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      sizeGb: r.sizeGb,
+      quantization: r.quantization ?? null,
+      modelPath: r.modelPath,
+      manifestPath: r.manifestPath,
+      installedAt: r.installedAt,
+      updatedAt: r.updatedAt,
+    }));
+}
+
+export function getOfflineModel(id: string): OfflineModelRecord | null {
+  const row = getDb()
+    .select()
+    .from(offlineModelsTable)
+    .where(eq(offlineModelsTable.id, id))
+    .get();
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    sizeGb: row.sizeGb,
+    quantization: row.quantization ?? null,
+    modelPath: row.modelPath,
+    manifestPath: row.manifestPath,
+    installedAt: row.installedAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function upsertOfflineModel(
+  model: Pick<OfflineModelRecord, "id" | "name" | "sizeGb" | "modelPath" | "manifestPath"> &
+    Partial<Pick<OfflineModelRecord, "quantization">>,
+): OfflineModelRecord {
+  const now = Date.now();
+  const values = {
+    id: model.id,
+    name: model.name,
+    sizeGb: model.sizeGb,
+    quantization: model.quantization ?? null,
+    modelPath: model.modelPath,
+    manifestPath: model.manifestPath,
+    installedAt: now,
+    updatedAt: now,
+  };
+  getDb()
+    .insert(offlineModelsTable)
+    .values(values)
+    .onConflictDoUpdate({
+      target: offlineModelsTable.id,
+      set: {
+        name: model.name,
+        sizeGb: model.sizeGb,
+        quantization: model.quantization ?? null,
+        modelPath: model.modelPath,
+        manifestPath: model.manifestPath,
+        updatedAt: now,
+      },
+    })
+    .run();
+  flushDb();
+  return getOfflineModel(model.id)!;
+}
+
+export function deleteOfflineModel(id: string): void {
+  // Remove all manifest entries owned by this model first.
+  getDb()
+    .delete(offlineManifestsTable)
+    .where(eq(offlineManifestsTable.ownerId, id))
+    .run();
+  getDb().delete(offlineModelsTable).where(eq(offlineModelsTable.id, id)).run();
+  flushDb();
+}
+
+// ── Offline: runtime singleton ────────────────────────────────────────────────
+
+export function getOfflineRuntime(): OfflineRuntimeRecord | null {
+  const row = getDb()
+    .select()
+    .from(offlineRuntimeTable)
+    .where(eq(offlineRuntimeTable.id, "app"))
+    .get();
+  return row ?? null;
+}
+
+export function upsertOfflineRuntime(
+  partial: Partial<
+    Pick<
+      OfflineRuntimeRecord,
+      "version" | "runtimePath" | "installedAt" | "lastHealthCheck" | "healthStatus"
+    >
+  >,
+): void {
+  const now = Date.now();
+  getDb()
+    .update(offlineRuntimeTable)
+    .set({
+      ...(partial.version !== undefined && { version: partial.version }),
+      ...(partial.runtimePath !== undefined && { runtimePath: partial.runtimePath }),
+      ...(partial.installedAt !== undefined && { installedAt: partial.installedAt }),
+      ...(partial.lastHealthCheck !== undefined && { lastHealthCheck: partial.lastHealthCheck }),
+      ...(partial.healthStatus !== undefined && { healthStatus: partial.healthStatus }),
+      updatedAt: now,
+    })
+    .where(eq(offlineRuntimeTable.id, "app"))
+    .run();
+  flushDb();
+}
+
+// ── Offline: manifests ────────────────────────────────────────────────────────
+
+export function listOfflineManifests(ownerId?: string): OfflineManifestRecord[] {
+  const query = getDb().select().from(offlineManifestsTable);
+  const rows = ownerId
+    ? query.where(eq(offlineManifestsTable.ownerId, ownerId)).all()
+    : query.all();
+  return rows.map((r) => ({
+    id: r.id,
+    ownerType: r.ownerType,
+    ownerId: r.ownerId,
+    filePath: r.filePath,
+    sizeBytes: r.sizeBytes ?? null,
+    createdAt: r.createdAt,
+  }));
+}
+
+export function addOfflineManifestEntry(
+  entry: Pick<OfflineManifestRecord, "ownerType" | "ownerId" | "filePath"> &
+    Partial<Pick<OfflineManifestRecord, "sizeBytes">>,
+): OfflineManifestRecord {
+  const id = randomUUID();
+  const createdAt = Date.now();
+  getDb()
+    .insert(offlineManifestsTable)
+    .values({
+      id,
+      ownerType: entry.ownerType,
+      ownerId: entry.ownerId,
+      filePath: entry.filePath,
+      sizeBytes: entry.sizeBytes ?? null,
+      createdAt,
+    })
+    .run();
+  flushDb();
+  return { id, ownerType: entry.ownerType, ownerId: entry.ownerId, filePath: entry.filePath, sizeBytes: entry.sizeBytes ?? null, createdAt };
+}
+
+export function deleteOfflineManifests(ownerId: string): void {
+  getDb()
+    .delete(offlineManifestsTable)
+    .where(eq(offlineManifestsTable.ownerId, ownerId))
+    .run();
+  flushDb();
+}

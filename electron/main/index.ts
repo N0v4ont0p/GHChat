@@ -4,6 +4,7 @@ import { registerAllIpcHandlers } from "./ipc";
 import { createMainWindow, revealMainWindow } from "./window";
 import { getApiKey } from "./services/keychain";
 import { openRouterProvider } from "./providers";
+import { storageService } from "./services/offline";
 
 // Surface any uncaught errors so they appear in Electron's log instead of
 // disappearing silently (which would leave the app running with no window).
@@ -25,6 +26,16 @@ app.whenReady().then(async () => {
     console.log("[main] database init OK");
   } catch (err) {
     console.error("[main] database init FAILED:", err);
+  }
+
+  // Ensure the GHchat-managed offline directory tree exists under the
+  // platform-specific persistent root (Application Support / LocalAppData).
+  // This is a no-op if the directories were already created on a previous run.
+  try {
+    storageService.ensureDirectories();
+    console.log("[main] offline storage dirs ensured at:", storageService.getOfflineRoot());
+  } catch (err) {
+    console.error("[main] offline storage dir creation FAILED:", err);
   }
 
   try {
@@ -64,3 +75,4 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
