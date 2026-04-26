@@ -17,8 +17,9 @@ export type OfflineSubdir = (typeof OFFLINE_SUBDIRS)[number];
  * Resolve the platform-specific persistent offline root directory.
  *
  * macOS : ~/Library/Application Support/GHChat/offline
- * Windows: %LOCALAPPDATA%\GHChat\offline  (falls back to %APPDATA% if
- *           LOCALAPPDATA is not set — should not happen in practice)
+ * Windows: %LOCALAPPDATA%\GHChat\offline  (falls back through
+ *           app.getPath("appData") which maps to %APPDATA% when
+ *           LOCALAPPDATA is not set in the process environment)
  * Linux  : ~/.config/GHChat/offline  (via app.getPath("appData"))
  *
  * All offline-owned files must stay under this root so that GHchat can
@@ -28,6 +29,7 @@ function resolveOfflineRoot(): string {
   if (process.platform === "win32") {
     const localAppData = process.env.LOCALAPPDATA;
     if (localAppData) return join(localAppData, "GHChat", "offline");
+    // Fallback: LOCALAPPDATA is missing (unusual) — use appData (%APPDATA%).
   }
   return join(app.getPath("appData"), "GHChat", "offline");
 }
@@ -70,6 +72,9 @@ export const storageService = {
   /**
    * Return available disk space in gigabytes at the offline root.
    * Returns 0 when the query fails (e.g. unsupported OS or path error).
+   *
+   * Declared async for API consistency: callers can await it uniformly,
+   * and future implementations may use async fs APIs or IPC bridges.
    */
   async availableSpaceGb(): Promise<number> {
     const root = resolveOfflineRoot();

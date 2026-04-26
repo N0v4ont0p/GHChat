@@ -512,8 +512,10 @@ export function OfflineSetupFlow() {
   const handleInstall = () => setOfflineState("installing");
   const handleRetry = () => setOfflineState("analyzing-system");
   const handleEnterChat = () => {
-    // State is already "installed"; just keep current mode (offline/auto).
-    // If mode is still "online", push to offline so the chat window shows.
+    // State is already "installed". Ensure the mode is set to "offline" (or
+    // "auto") so that AppShell routes to the chat window instead of the setup
+    // flow. We unconditionally set "offline" here because the user explicitly
+    // chose to enter offline chat.
     setMode("offline");
   };
 

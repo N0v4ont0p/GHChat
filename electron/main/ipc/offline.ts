@@ -57,14 +57,22 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
 /**
  * Update the offline readiness state from within the main process and
  * persist it to the database so it survives app restarts.
+ *
+ * `installedAt` is written only on the first transition to "installed"
+ * and is left untouched on subsequent calls so the original timestamp
+ * is preserved.
  */
 export function setOfflineReadiness(readiness: OfflineReadiness): void {
   _offlineReadiness = readiness;
   if (isDatabaseReady()) {
     try {
+      const existing = getOfflineInstallation();
       upsertOfflineInstallation({
         state: readiness.state,
-        ...(readiness.state === "installed" && { installedAt: Date.now() }),
+        // Only record installedAt the very first time we reach "installed".
+        ...(readiness.state === "installed" && existing?.installedAt == null && {
+          installedAt: Date.now(),
+        }),
       });
     } catch (err) {
       console.error("[offline] failed to persist offline state to DB:", err);
