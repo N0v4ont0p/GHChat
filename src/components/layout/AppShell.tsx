@@ -25,7 +25,9 @@ export function AppShell() {
   useEffect(() => {
     ipc.getOfflineStatus()
       .then((r) => setOfflineState(r.state))
-      .catch(() => {/* offline IPC not critical; keep store default */});
+      .catch(() => {
+        console.debug("[AppShell] offline status unavailable, using default");
+      });
   }, [setOfflineState]);
 
   // Auto-select the most recent conversation when conversations load
