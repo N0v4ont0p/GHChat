@@ -157,6 +157,8 @@ export interface AppSettings {
   onboardingComplete?: boolean;
   /** ID of the last active conversation, restored on next launch */
   lastConversationId?: string | null;
+  /** Last selected app mode, restored on next launch */
+  currentMode?: AppMode;
 }
 
 export interface ModelInfo {

@@ -7,6 +7,8 @@ import {
   getOfflineInstallation,
   upsertOfflineInstallation,
   listOfflineModels,
+  getSettings,
+  updateSettings,
 } from "../services/database";
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
@@ -16,13 +18,27 @@ import { storageService } from "../services/offline/storage";
 import type { ChatMessage } from "../services/offline/runtime-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
-// AppMode is kept in-memory (it resets to "online" on restart — future work
-// could persist it to the settings table).
+// AppMode is persisted to the settings table so it survives restarts.
+// It is loaded from the DB in registerOfflineHandlers() which is called
+// after initDatabase() has completed.
 //
 // OfflineReadiness is DB-backed: the state machine position is loaded from
 // `offline_installation` on first IPC call and persisted on every change.
 
 let _currentMode: AppMode = "online";
+
+/** Load the persisted app mode from settings; falls back to "online". */
+function loadCurrentModeFromDb(): AppMode {
+  if (!isDatabaseReady()) return "online";
+  try {
+    const settings = getSettings();
+    const m = settings.currentMode;
+    if (m === "online" || m === "offline" || m === "auto") return m;
+  } catch {
+    // ignore
+  }
+  return "online";
+}
 
 /** Load the current offline state from the DB; falls back to "not-installed". */
 function loadOfflineStateFromDb(): OfflineSetupState {
@@ -40,10 +56,21 @@ let _offlineReadiness: OfflineReadiness = {
 };
 
 export function registerOfflineHandlers(ipcMain: IpcMain): void {
+  // Restore the persisted mode choice on every startup.
+  _currentMode = loadCurrentModeFromDb();
+
   ipcMain.handle(IPC.MODE_GET, (): AppMode => _currentMode);
 
   ipcMain.handle(IPC.MODE_SET, (_event, mode: AppMode): AppMode => {
     _currentMode = mode;
+    // Persist so the choice survives restarts.
+    if (isDatabaseReady()) {
+      try {
+        updateSettings({ currentMode: mode });
+      } catch (err) {
+        console.error("[offline] failed to persist mode to settings:", err);
+      }
+    }
     return _currentMode;
   });
 

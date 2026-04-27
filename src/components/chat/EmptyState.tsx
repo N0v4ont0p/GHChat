@@ -1,10 +1,11 @@
 import { motion } from "framer-motion";
-import { Sparkles, Code2, Lightbulb, BookOpen, MessageSquarePlus, EyeOff } from "lucide-react";
+import { Sparkles, Code2, Lightbulb, BookOpen, MessageSquarePlus, EyeOff, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCreateConversation } from "@/hooks/useConversations";
 import { getPreset, CATEGORY_META } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
 import { cn } from "@/lib/utils";
 
@@ -44,10 +45,19 @@ export function EmptyState() {
   const selectedModel = useSettingsStore((s) => s.selectedModel);
   const { setDraft, incognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
+  const { currentMode, offlineState, offlineRecommendation } = useModeStore();
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
   const categoryMeta = CATEGORY_META[category] ?? CATEGORY_META.general;
+
+  const isLocalMode =
+    currentMode === "offline" ||
+    (currentMode === "auto" && offlineState === "installed");
+
+  const localModelName = offlineRecommendation
+    ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
+    : "Gemma 4 · Local";
 
   const handlePromptClick = async (prompt: string) => {
     await createConversation.mutateAsync();
@@ -68,15 +78,21 @@ export function EmptyState() {
       >
         <div className={cn(
           "absolute inset-0 rounded-3xl ring-1",
-          incognitoMode ? "bg-amber-500/10 ring-amber-500/20" : "bg-primary/10 ring-primary/20",
+          incognitoMode ? "bg-amber-500/10 ring-amber-500/20"
+            : isLocalMode ? "bg-emerald-500/10 ring-emerald-500/20"
+            : "bg-primary/10 ring-primary/20",
         )} />
         <div className={cn(
           "absolute inset-0 rounded-3xl blur-xl",
-          incognitoMode ? "bg-amber-500/5" : "bg-primary/5",
+          incognitoMode ? "bg-amber-500/5"
+            : isLocalMode ? "bg-emerald-500/5"
+            : "bg-primary/5",
         )} />
         {incognitoMode
           ? <EyeOff className="relative h-9 w-9 text-amber-400" />
-          : <Sparkles className="relative h-9 w-9 text-primary" />
+          : isLocalMode
+            ? <Cpu className="relative h-9 w-9 text-emerald-400" />
+            : <Sparkles className="relative h-9 w-9 text-primary" />
         }
       </motion.div>
 
@@ -94,7 +110,14 @@ export function EmptyState() {
           <p className="text-sm text-amber-400/80 leading-relaxed">
             Messages won't be saved to your local database.
             <br />
-            <span className="text-muted-foreground">Chat with <span className="font-medium text-foreground">{modelName}</span> privately.</span>
+            <span className="text-muted-foreground">Chat with <span className="font-medium text-foreground">{isLocalMode ? localModelName : modelName}</span> privately.</span>
+          </p>
+        ) : isLocalMode ? (
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Chat with{" "}
+            <span className="font-medium text-foreground">{localModelName}</span>
+            {" "}running locally on your device.{" "}
+            <span className="text-emerald-400/80 text-[12px]">No internet required.</span>
           </p>
         ) : (
           <p className="text-sm text-muted-foreground leading-relaxed">

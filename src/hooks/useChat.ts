@@ -79,7 +79,7 @@ export function useChat(conversationId: string | null) {
     addIncognitoMessage,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineRecommendation } = useModeStore();
+  const { currentMode, offlineState, offlineRecommendation } = useModeStore();
 
   // The installed offline model ID — falls back to OFFLINE_MODEL_ID sentinel
   // if no recommendation is available (e.g. after an install with no reco step).
@@ -300,8 +300,8 @@ export function useChat(conversationId: string | null) {
       setLastStreamError(null);
       setRoutingInfo(null);
 
-      if (currentMode === "offline") {
-        // ── Offline path: route to the local llama.cpp runtime ──────────────
+      if (currentMode === "offline" || (currentMode === "auto" && offlineState === "installed")) {
+        // ── Offline / Auto-with-offline path: local llama.cpp runtime ──────
         // No API key required; the runtime manager handles the rest.
         setStreamState("streaming");
         ipc.sendOfflineChatStream({
@@ -332,7 +332,7 @@ export function useChat(conversationId: string | null) {
       });
       setStreamState("streaming");
     },
-    [currentMode, offlineModelId, setStreaming, setStreamState, setLastStreamError, setRoutingInfo, advancedParams],
+    [currentMode, offlineState, offlineModelId, setStreaming, setStreamState, setLastStreamError, setRoutingInfo, advancedParams],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
@@ -342,7 +342,11 @@ export function useChat(conversationId: string | null) {
 
       try {
         // Only require an API key for online (OpenRouter) mode.
-        if (currentMode !== "offline") {
+        // Auto mode may also use online as a fallback when offline is not installed.
+        const needsApiKey =
+          currentMode === "online" ||
+          (currentMode === "auto" && offlineState !== "installed");
+        if (needsApiKey) {
           const apiKey = await ipc.getApiKey();
           if (!apiKey) {
             toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
@@ -396,7 +400,7 @@ export function useChat(conversationId: string | null) {
         resetStreaming();
       }
     },
-    [conversationId, isStreaming, currentMode, selectedModel, dispatchStream, qc, setStreamState,
+    [conversationId, isStreaming, currentMode, offlineState, selectedModel, dispatchStream, qc, setStreamState,
      setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage],
   );
 
@@ -405,13 +409,16 @@ export function useChat(conversationId: string | null) {
     const id = activeRequestId.current;
     if (!id) return;
     setStreamState("stopping");
-    if (currentMode === "offline") {
+    const usingOffline =
+      currentMode === "offline" ||
+      (currentMode === "auto" && offlineState === "installed");
+    if (usingOffline) {
       ipc.stopOfflineStream(id);
     } else {
       ipc.stopStream(id);
     }
     // The main process sends the appropriate *_CHAT_END after aborting
-  }, [currentMode, setStreamState]);
+  }, [currentMode, offlineState, setStreamState]);
 
   // ── Regenerate the last assistant reply ────────────────────────────────────
   const regenerate = useCallback(async () => {

@@ -50,9 +50,11 @@ export function AppShell() {
   }, [selectedConversationId, incognitoMode, dbAvailable]);
 
   // Determine whether offline setup is required.
-  // Offline mode routes to the setup flow until a model is installed.
+  // Only "offline" mode explicitly requests offline — when not installed it
+  // routes through the setup flow.  "auto" mode falls back to online silently
+  // when offline is not ready, so it never forces the setup flow.
   const needsOfflineSetup =
-    (currentMode === "offline" || currentMode === "auto") &&
+    currentMode === "offline" &&
     offlineState !== "installed";
 
   return (

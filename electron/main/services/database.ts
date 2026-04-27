@@ -33,6 +33,7 @@ export const settingsTable = sqliteTable("settings", {
   theme: text("theme").notNull().default("dark"),
   onboardingComplete: integer("onboarding_complete", { mode: "boolean" }).notNull().default(false),
   lastConversationId: text("last_conversation_id"),
+  currentMode: text("current_mode").default("online"),
 });
 
 // ── Offline tables ─────────────────────────────────────────────────────────────
@@ -104,8 +105,9 @@ export const offlineManifestsTable = sqliteTable("offline_manifests", {
 //  v2 — added last_conversation_id
 //  v3 — added offline_installation, offline_models, offline_runtime,
 //        offline_manifests tables
+//  v4 — added current_mode to settings
 //
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -223,9 +225,10 @@ export async function initDatabase(): Promise<void> {
         default_model TEXT NOT NULL DEFAULT '${DEFAULT_MODEL}',
         theme TEXT NOT NULL DEFAULT 'dark',
         onboarding_complete INTEGER NOT NULL DEFAULT 0,
-        last_conversation_id TEXT
+        last_conversation_id TEXT,
+        current_mode TEXT DEFAULT 'online'
       );
-      INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL);
+      INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id, current_mode) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL, 'online');
     `);
     console.log("[db] schema creation done — checking migration version…");
 
@@ -376,6 +379,28 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v4 — add current_mode to settings
+    if (diskVersion < 4) {
+      console.log("[db] migration v4: ensuring current_mode column in settings…");
+      try {
+        const cols = tableColumns("settings");
+        sqliteDb.exec("BEGIN");
+        if (!cols.includes("current_mode")) {
+          sqliteDb.run("ALTER TABLE settings ADD COLUMN current_mode TEXT DEFAULT 'online'");
+          sqliteDb.run("UPDATE settings SET current_mode = 'online' WHERE current_mode IS NULL");
+          console.log("[db] migration v4: current_mode column added and backfilled");
+        } else {
+          console.log("[db] migration v4: current_mode already present");
+        }
+        sqliteDb.run("PRAGMA user_version = 4");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v4: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v4 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -502,6 +527,7 @@ export function getSettings(): AppSettings {
     theme: (row?.theme ?? "dark") as AppSettings["theme"],
     onboardingComplete: row?.onboardingComplete ?? false,
     lastConversationId: row?.lastConversationId ?? null,
+    currentMode: (row?.currentMode ?? "online") as AppSettings["currentMode"],
   };
 }
 
@@ -513,6 +539,7 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
       ...(partial.theme !== undefined && { theme: partial.theme }),
       ...(partial.onboardingComplete !== undefined && { onboardingComplete: partial.onboardingComplete }),
       ...(partial.lastConversationId !== undefined && { lastConversationId: partial.lastConversationId }),
+      ...(partial.currentMode !== undefined && { currentMode: partial.currentMode }),
     })
     .where(eq(settingsTable.id, "app"))
     .run();
