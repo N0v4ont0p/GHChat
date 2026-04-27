@@ -126,9 +126,8 @@ export const recommendationService = {
         profile.totalRamGb < 32
           ? fits.filter((e) => !e.id.startsWith("gemma4-27b"))
           : fits;
-      chosen = (capped.length > 0 ? capped : fits)[
-        (capped.length > 0 ? capped : fits).length - 1
-      ];
+      const candidates = capped.length > 0 ? capped : fits;
+      chosen = candidates[candidates.length - 1];
     }
 
     const reason = buildReason(chosen, profile, isFallback);

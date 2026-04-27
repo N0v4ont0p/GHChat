@@ -74,7 +74,7 @@ function IntroScreen({ onContinue }: { onContinue: () => void }) {
             color: "text-emerald-400",
             bg: "bg-emerald-500/10 ring-emerald-500/20",
             title: "One-time setup",
-            body: "Download once (~3.5 GB). After that, offline chat works instantly.",
+            body: "Download once (a few GB). After that, offline chat works instantly.",
           },
         ].map(({ icon: Icon, color, bg, title, body }) => (
           <div

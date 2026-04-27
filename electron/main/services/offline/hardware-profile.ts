@@ -24,6 +24,9 @@ export interface HardwareProfile {
   gpuVramGb?: number;
 }
 
+/** Bytes in one gigabyte. */
+const BYTES_PER_GB = 1024 ** 3;
+
 /**
  * Hardware profiler — detects RAM, CPU, disk, and platform characteristics
  * to inform offline model recommendations.
@@ -35,7 +38,7 @@ export interface HardwareProfile {
 export const hardwareProfile = {
   /** Detect the current machine's hardware profile. */
   async detect(): Promise<HardwareProfile> {
-    const totalRamGb = os.totalmem() / (1024 ** 3);
+    const totalRamGb = os.totalmem() / BYTES_PER_GB;
     const cpuCores = os.cpus().length;
     const platform = os.platform() as NodeJS.Platform;
     const arch = os.arch();

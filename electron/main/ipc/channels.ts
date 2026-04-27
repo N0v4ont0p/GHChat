@@ -31,4 +31,10 @@ export const IPC = {
   MODE_SET: "mode:set",
   /** Returns OfflineReadiness — current offline state machine position */
   OFFLINE_STATUS: "offline:status",
+  /**
+   * Runs hardware profiling + recommendation logic.
+   * Transitions state → "recommendation-ready" and returns OfflineReadiness
+   * (with the recommendation field populated).
+   */
+  OFFLINE_ANALYZE: "offline:analyze",
 } as const;
