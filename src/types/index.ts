@@ -336,6 +336,28 @@ export interface OfflineInstallProgress {
 }
 
 
+/** Information about a fully installed offline setup, returned by OFFLINE_GET_INFO. */
+export interface OfflineInfo {
+  /** Catalog model ID of the installed model (e.g. "gemma4-4b-q4km"). */
+  modelId: string;
+  /** Human-readable model name (e.g. "Gemma 4 4B"). */
+  modelName: string;
+  /** Short variant label (e.g. "4B · Q4_K_M"). */
+  variantLabel: string;
+  /** Quantization string (e.g. "Q4_K_M"). */
+  quantization: string;
+  /** Declared model size in GB from the catalog. */
+  sizeGb: number;
+  /** Total bytes consumed on disk by all offline assets (runtime + model + manifests). */
+  storageBytesUsed: number;
+  /** Absolute path to the offline root directory. */
+  installPath: string;
+  /** Epoch ms when the model was first installed; null before first install. */
+  installedAt: number | null;
+  /** Whether the runtime subprocess is currently alive and responding. */
+  isRuntimeRunning: boolean;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -418,4 +440,21 @@ export const IPC = {
   OFFLINE_CHAT_END: "offline:chat:end",
   /** Push (main → renderer): stream error. Payload: { requestId, error } */
   OFFLINE_CHAT_ERROR: "offline:chat:error",
+  /**
+   * Returns OfflineInfo — installed package details, storage used, install path,
+   * and whether the runtime process is currently alive.
+   */
+  OFFLINE_GET_INFO: "offline:get-info",
+  /**
+   * Fully removes the offline installation — runtime binary, model files,
+   * downloads/tmp cache, manifests, and DB records.
+   * Online chats, API keys, and app settings are untouched.
+   * Returns OfflineReadiness with state="not-installed" on success.
+   */
+  OFFLINE_REMOVE: "offline:remove",
+  /**
+   * Opens the offline root directory in the OS file manager
+   * (Finder on macOS, Explorer on Windows, file manager on Linux).
+   */
+  OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
 } as const;

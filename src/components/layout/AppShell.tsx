@@ -4,6 +4,7 @@ import { Sidebar } from "./Sidebar";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { SettingsModal } from "@/components/settings/SettingsModal";
 import { OfflineSetupFlow } from "@/components/offline/OfflineSetupFlow";
+import { OfflineManagementModal } from "@/components/offline/OfflineManagementModal";
 import { useConversations } from "@/hooks/useConversations";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -64,6 +65,7 @@ export function AppShell() {
         </main>
       </div>
       <SettingsModal />
+      <OfflineManagementModal />
     </div>
   );
 }

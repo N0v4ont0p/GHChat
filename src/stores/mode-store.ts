@@ -20,10 +20,13 @@ interface ModeState {
    * Null before or after an install attempt.
    */
   installProgress: OfflineInstallProgress | null;
+  /** Whether the offline management modal is open. */
+  offlineManagementOpen: boolean;
   setMode: (mode: AppMode) => void;
   setOfflineState: (state: OfflineSetupState) => void;
   setOfflineRecommendation: (rec: OfflineRecommendation | null) => void;
   setInstallProgress: (progress: OfflineInstallProgress | null) => void;
+  setOfflineManagementOpen: (open: boolean) => void;
 }
 
 export const useModeStore = create<ModeState>((set) => ({
@@ -31,8 +34,10 @@ export const useModeStore = create<ModeState>((set) => ({
   offlineState: "not-installed",
   offlineRecommendation: null,
   installProgress: null,
+  offlineManagementOpen: false,
   setMode: (currentMode) => set({ currentMode }),
   setOfflineState: (offlineState) => set({ offlineState }),
   setOfflineRecommendation: (offlineRecommendation) => set({ offlineRecommendation }),
   setInstallProgress: (installProgress) => set({ installProgress }),
+  setOfflineManagementOpen: (offlineManagementOpen) => set({ offlineManagementOpen }),
 }));

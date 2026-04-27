@@ -769,3 +769,34 @@ export function deleteOfflineManifests(ownerId: string): void {
     .run();
   flushDb();
 }
+
+/**
+ * Reset all offline-related DB state without touching conversations, messages,
+ * API keys, or app settings.  Called when the user removes Offline Mode.
+ *
+ * - Deletes every row from offline_models, offline_manifests
+ * - Resets offline_installation to state="not-installed" (keeps the row)
+ * - Resets offline_runtime to empty/unknown (keeps the row)
+ */
+export function clearOfflineData(): void {
+  if (!isDatabaseReady()) return;
+  const d = getDb();
+  d.delete(offlineManifestsTable).run();
+  d.delete(offlineModelsTable).run();
+  d.update(offlineInstallationTable)
+    .set({ state: "not-installed", offlineRoot: null, installedAt: null, updatedAt: Date.now() })
+    .where(eq(offlineInstallationTable.id, "app"))
+    .run();
+  d.update(offlineRuntimeTable)
+    .set({
+      version: null,
+      runtimePath: null,
+      installedAt: null,
+      lastHealthCheck: null,
+      healthStatus: null,
+      updatedAt: Date.now(),
+    })
+    .where(eq(offlineRuntimeTable.id, "app"))
+    .run();
+  flushDb();
+}

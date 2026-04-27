@@ -1,15 +1,18 @@
 import type { IpcMain, IpcMainEvent } from "electron";
+import { shell } from "electron";
 import { IPC } from "../../../src/types";
 import type { AppMode, OfflineReadiness, OfflineSetupState } from "../../../src/types";
 import {
   isDatabaseReady,
   getOfflineInstallation,
   upsertOfflineInstallation,
+  listOfflineModels,
 } from "../services/database";
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
 import { runtimeManager } from "../services/offline/runtime-manager";
+import { storageService } from "../services/offline/storage";
 import type { ChatMessage } from "../services/offline/runtime-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
@@ -158,6 +161,64 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       activeStreams.delete(requestId);
     },
   );
+
+  // ── Offline management ──────────────────────────────────────────────────────
+
+  ipcMain.handle(IPC.OFFLINE_GET_INFO, async () => {
+    const installRoot = storageService.getOfflineRoot();
+    const storageBytesUsed = storageService.computeUsedBytes();
+
+    // Pull the first (and normally only) installed model record.
+    const models = isDatabaseReady() ? listOfflineModels() : [];
+    const model = models[0] ?? null;
+
+    // Pull install timestamp from the installation record.
+    const installation = isDatabaseReady() ? getOfflineInstallation() : null;
+
+    // Determine whether the runtime subprocess is alive by checking its
+    // internal state (the runtime manager tracks this without extra IPC).
+    const isRuntimeRunning = runtimeManager.isRunning();
+
+    return {
+      modelId: model?.id ?? "",
+      modelName: model?.name ?? "Gemma 4",
+      variantLabel: model?.name ?? "Gemma 4",
+      quantization: model?.quantization ?? "",
+      sizeGb: model?.sizeGb ?? 0,
+      storageBytesUsed,
+      installPath: installRoot,
+      installedAt: installation?.installedAt ?? null,
+      isRuntimeRunning,
+    };
+  });
+
+  ipcMain.handle(IPC.OFFLINE_REMOVE, async (): Promise<OfflineReadiness> => {
+    try {
+      // Stop the runtime before deleting its binary (required on Windows to
+      // avoid file-in-use errors).
+      await runtimeManager.stop();
+
+      // Delete all offline assets and clear offline DB state.
+      await installManager.removeAll();
+
+      const removed: OfflineReadiness = { state: "not-installed" };
+      setOfflineReadiness(removed);
+      // Also switch mode back to online so the renderer leaves offline mode.
+      _currentMode = "online";
+      return removed;
+    } catch (err) {
+      console.error("[offline] remove failed:", err);
+      return {
+        state: "install-failed",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  ipcMain.handle(IPC.OFFLINE_REVEAL_FOLDER, async (): Promise<void> => {
+    const dir = storageService.getOfflineRoot();
+    await shell.openPath(dir);
+  });
 }
 
 /**

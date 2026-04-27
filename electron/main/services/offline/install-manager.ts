@@ -25,7 +25,7 @@ import {
   getRuntimePlatformTag,
   RUNTIME_BINARY_NAME,
 } from "./runtime-catalog";
-import { addOfflineManifestEntry, isDatabaseReady } from "../database";
+import { addOfflineManifestEntry, clearOfflineData, isDatabaseReady } from "../database";
 import type { OfflineInstallPhase, OfflineInstallProgress } from "../../../../src/types";
 
 const execFileAsync = promisify(execFile);
@@ -548,5 +548,36 @@ export const installManager = {
     }
 
     modelRegistry.unregister(modelId);
+  },
+
+  /**
+   * Fully remove the entire offline installation — runtime binary, all model
+   * files, downloads/tmp/cache, manifests, and all offline DB state.
+   *
+   * Online chats, API keys, and unrelated app settings are NOT touched.
+   *
+   * The caller is responsible for stopping the runtime process before calling
+   * this method so that the binary is not locked on Windows.
+   */
+  async removeAll(): Promise<void> {
+    // 1. Uninstall every registered model (removes .gguf + manifest JSON from disk
+    //    and unregisters from DB).
+    const installed = modelRegistry.listInstalled();
+    for (const record of installed) {
+      await installManager.uninstall(record.id);
+    }
+
+    // 2. Remove entire runtime, downloads, and tmp subdirectories.
+    for (const subdir of ["runtime", "downloads", "tmp", "manifests"] as const) {
+      const dir = storageService.getSubdir(subdir);
+      try {
+        if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.error(`[installManager] failed to remove offline subdir ${subdir}:`, err);
+      }
+    }
+
+    // 3. Clear all offline-related DB records without touching online data.
+    clearOfflineData();
   },
 };

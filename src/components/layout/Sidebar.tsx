@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle } from "lucide-react";
+import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import {
 } from "@/hooks/useConversations";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModeStore } from "@/stores/mode-store";
 import type { Conversation } from "@/types";
 
 /** Error keywords that indicate a native module ABI mismatch requiring a rebuild. */
@@ -149,7 +150,10 @@ export function Sidebar() {
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
   const dbAvailable = useSettingsStore((s) => s.dbAvailable);
   const dbInitError = useSettingsStore((s) => s.dbInitError);
+  const { currentMode, offlineState, setOfflineManagementOpen } = useModeStore();
   const [searchQuery, setSearchQuery] = useState("");
+
+  const isOfflineInstalled = currentMode === "offline" && offlineState === "installed";
 
   const newChatDisabled = createConversation.isPending || !dbAvailable;
   const newChatTooltip = !dbAvailable
@@ -303,6 +307,20 @@ export function Sidebar() {
               {incognitoMode ? "Disable incognito mode" : "Enable incognito — messages won't be saved"}
             </TooltipContent>
           </Tooltip>
+          {isOfflineInstalled && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setOfflineManagementOpen(true)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-emerald-400/80 hover:bg-emerald-500/10 hover:text-emerald-400 transition-colors"
+                >
+                  <Cpu className="h-3.5 w-3.5" />
+                  Offline Mode
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Manage Offline Mode</TooltipContent>
+            </Tooltip>
+          )}
           <button
             onClick={() => setSettingsOpen(true)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-colors"

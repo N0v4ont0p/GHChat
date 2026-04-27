@@ -1,6 +1,6 @@
 import { app } from "electron";
 import { join } from "path";
-import { mkdirSync, statfsSync } from "fs";
+import { mkdirSync, statfsSync, readdirSync, lstatSync } from "fs";
 
 /** Sub-directories managed inside the GHchat offline root. */
 export const OFFLINE_SUBDIRS = [
@@ -86,6 +86,37 @@ export const storageService = {
     } catch {
       return 0;
     }
+  },
+
+  /**
+   * Recursively sum the sizes of all files under the offline root.
+   * Returns 0 when the root does not exist or any stat call fails.
+   */
+  computeUsedBytes(): number {
+    function walk(dir: string): number {
+      let total = 0;
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const fullPath = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            total += walk(fullPath);
+          } else if (entry.isFile() || entry.isSymbolicLink()) {
+            try {
+              // Use lstatSync to measure the symlink itself rather than following
+              // it — avoids double-counting when a symlink points to a file that
+              // is already accounted for elsewhere in the tree.
+              total += lstatSync(fullPath).size;
+            } catch {
+              // File may have been removed between readdir and stat — skip it.
+            }
+          }
+        }
+      } catch {
+        // Directory may not exist or may be unreadable — return 0.
+      }
+      return total;
+    }
+    return walk(resolveOfflineRoot());
   },
 };
 

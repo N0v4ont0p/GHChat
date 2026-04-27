@@ -8,7 +8,6 @@ import { useChatStore } from "@/stores/chat-store";
 import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
 import type { ModelVerificationStatus, ModelPreset } from "@/types";
-
 const CATEGORY_COLORS: Record<string, string> = {
   auto: "bg-cyan-500/15 text-cyan-400",
   general: "bg-blue-500/15 text-blue-400",
@@ -88,7 +87,7 @@ export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
-  const { currentMode, offlineRecommendation } = useModeStore();
+  const { currentMode, offlineRecommendation, setOfflineManagementOpen } = useModeStore();
 
   const isOffline = currentMode === "offline";
 
@@ -126,10 +125,18 @@ export function ChatHeader() {
             </span>
           )}
           {isOffline && (
-            <span className="flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
-              <Cpu className="h-2.5 w-2.5" />
-              Offline
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setOfflineManagementOpen(true)}
+                  className="flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+                >
+                  <Cpu className="h-2.5 w-2.5" />
+                  Offline
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Manage Offline Mode</TooltipContent>
+            </Tooltip>
           )}
           <Tooltip>
             <TooltipTrigger asChild>

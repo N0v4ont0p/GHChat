@@ -9,6 +9,7 @@ import type {
   AppMode,
   OfflineReadiness,
   OfflineInstallProgress,
+  OfflineInfo,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -108,4 +109,22 @@ export const ipc = {
   /** Cancel an in-progress offline chat stream. */
   stopOfflineStream: (requestId: string) =>
     api().send(IPC.OFFLINE_CHAT_STOP, { requestId }),
+
+  /**
+   * Retrieve details about the installed offline package: model info, disk
+   * usage, install path, and whether the runtime is currently running.
+   */
+  getOfflineInfo: () => api().invoke<OfflineInfo>(IPC.OFFLINE_GET_INFO),
+
+  /**
+   * Fully remove the offline installation — runtime binary, model files,
+   * downloads/tmp cache, manifests, and DB state.
+   * Online data is untouched.  Returns the new OfflineReadiness (state = "not-installed").
+   */
+  removeOfflineMode: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_REMOVE),
+
+  /**
+   * Open the offline root directory in the OS file manager.
+   */
+  revealOfflineFolder: () => api().invoke<void>(IPC.OFFLINE_REVEAL_FOLDER),
 };
