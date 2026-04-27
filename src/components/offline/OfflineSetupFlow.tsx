@@ -12,11 +12,13 @@ import {
   RotateCcw,
   AlertTriangle,
   Loader2,
+  ShieldCheck,
+  PackageCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
-import type { OfflineRecommendation } from "@/types";
+import type { OfflineInstallProgress, OfflineRecommendation } from "@/types";
 
 // ── Animation variants ────────────────────────────────────────────────────────
 
@@ -269,40 +271,170 @@ function RecommendationScreen({
   );
 }
 
+// ── Installing screen helpers ─────────────────────────────────────────────────
+
+/**
+ * Format a byte count as a human-readable string: "X.X MB" or "X.XX GB".
+ */
+function fmtBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+}
+
+/**
+ * Format bytes/second as a human-readable speed string.
+ */
+function fmtSpeed(bps: number): string {
+  if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  if (bps >= 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
+  return `${bps.toFixed(0)} B/s`;
+}
+
+/**
+ * Format an ETA in seconds as a human-readable string.
+ */
+function fmtEta(sec: number): string {
+  if (sec < 60) return "< 1 min";
+  const mins = Math.round(sec / 60);
+  if (mins < 60) return `~${mins} min`;
+  const hrs = (sec / 3600).toFixed(1);
+  return `~${hrs} hr`;
+}
+
+interface PhaseInfo {
+  label: string;
+  Icon: React.ComponentType<{ className?: string }>;
+  color: string;
+  ring: string;
+  bg: string;
+}
+
+function getPhaseInfo(phase: OfflineInstallProgress["phase"] | undefined): PhaseInfo {
+  switch (phase) {
+    case "preflight":
+      return {
+        label: "Checking system",
+        Icon: Loader2,
+        color: "text-primary",
+        ring: "ring-primary/20",
+        bg: "bg-primary/10",
+      };
+    case "downloading-model":
+      return {
+        label: "Downloading model",
+        Icon: Download,
+        color: "text-primary",
+        ring: "ring-primary/20",
+        bg: "bg-primary/10",
+      };
+    case "verifying-model":
+      return {
+        label: "Verifying integrity",
+        Icon: ShieldCheck,
+        color: "text-amber-400",
+        ring: "ring-amber-500/20",
+        bg: "bg-amber-500/10",
+      };
+    case "finalizing":
+      return {
+        label: "Finalizing install",
+        Icon: PackageCheck,
+        color: "text-violet-400",
+        ring: "ring-violet-500/20",
+        bg: "bg-violet-500/10",
+      };
+    case "smoke-test":
+      return {
+        label: "Running readiness check",
+        Icon: CheckCircle2,
+        color: "text-emerald-400",
+        ring: "ring-emerald-500/20",
+        bg: "bg-emerald-500/10",
+      };
+    default:
+      return {
+        label: "Preparing…",
+        Icon: Loader2,
+        color: "text-primary",
+        ring: "ring-primary/20",
+        bg: "bg-primary/10",
+      };
+  }
+}
+
 // ── Installing screen ─────────────────────────────────────────────────────────
 
 interface InstallingScreenProps {
-  progress: number;
-  step: string;
+  progress: OfflineInstallProgress | null;
+  modelLabel: string;
 }
 
-function InstallingScreen({ progress, step }: InstallingScreenProps) {
+function InstallingScreen({ progress, modelLabel }: InstallingScreenProps) {
+  const pct = progress?.pct ?? 0;
+  const step = progress?.step ?? "Preparing…";
+  const phaseInfo = getPhaseInfo(progress?.phase);
+  const { Icon } = phaseInfo;
+
+  const isDownloading = progress?.phase === "downloading-model";
+  const hasBytes =
+    isDownloading &&
+    progress?.downloadedBytes != null &&
+    progress.downloadedBytes > 0;
+  const hasTotal = hasBytes && progress?.totalBytes != null && progress.totalBytes > 0;
+  const hasSpeed = isDownloading && progress?.speedBps != null && progress.speedBps > 0;
+  const hasEta = hasSpeed && progress?.etaSec != null;
+
   return (
     <motion.div
       key="installing"
       {...SLIDE}
-      className="flex flex-1 flex-col items-center justify-center gap-8 px-8 py-10 text-center max-w-sm mx-auto w-full"
+      className="flex flex-1 flex-col items-center justify-center gap-7 px-8 py-10 text-center max-w-sm mx-auto w-full"
     >
-      {/* Icon */}
+      {/* Phase icon */}
       <div className="relative flex h-20 w-20 items-center justify-center">
-        <div className="absolute inset-0 rounded-3xl bg-primary/10 ring-1 ring-primary/20" />
-        <Download className="relative h-9 w-9 text-primary" />
+        <div className={`absolute inset-0 rounded-3xl ${phaseInfo.bg} ring-1 ${phaseInfo.ring}`} />
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={progress?.phase ?? "idle"}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            transition={{ duration: 0.2 }}
+            className="relative"
+          >
+            <Icon
+              className={`h-9 w-9 ${phaseInfo.color} ${progress?.phase === "preflight" || progress?.phase === undefined ? "animate-spin" : ""}`}
+            />
+          </motion.div>
+        </AnimatePresence>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <h2 className="text-2xl font-bold tracking-tight">Installing Gemma 4</h2>
-        <p className="text-sm text-muted-foreground">
-          This may take a few minutes depending on your connection.
-        </p>
+        <p className="text-sm text-muted-foreground">{modelLabel}</p>
       </div>
+
+      {/* Phase pill */}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={progress?.phase ?? "idle"}
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 6 }}
+          transition={{ duration: 0.18 }}
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 ${phaseInfo.bg} ${phaseInfo.ring} ${phaseInfo.color}`}
+        >
+          {phaseInfo.label}
+        </motion.div>
+      </AnimatePresence>
 
       {/* Progress bar */}
       <div className="w-full space-y-2">
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
           <motion.div
             className="h-full rounded-full bg-primary"
-            style={{ width: `${progress}%` }}
-            transition={{ duration: 0.15, ease: "linear" }}
+            style={{ width: `${pct}%` }}
+            transition={{ duration: 0.25, ease: "linear" }}
           />
         </div>
         <div className="flex items-center justify-between">
@@ -313,16 +445,60 @@ function InstallingScreen({ progress, step }: InstallingScreenProps) {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.18 }}
-              className="text-xs text-muted-foreground"
+              className="text-xs text-muted-foreground text-left"
             >
-              {step || "Preparing…"}
+              {step}
             </motion.p>
           </AnimatePresence>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {Math.round(progress)}%
+          <span className="text-xs text-muted-foreground tabular-nums shrink-0 ml-3">
+            {Math.round(pct)}%
           </span>
         </div>
       </div>
+
+      {/* Download stats — only shown during model download */}
+      <AnimatePresence>
+        {isDownloading && (hasBytes || hasSpeed) && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.22 }}
+            className="w-full overflow-hidden"
+          >
+            <div className="rounded-xl bg-muted/60 ring-1 ring-border/50 px-4 py-3 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+              {/* Bytes received */}
+              <div className="flex flex-col items-start gap-0.5 min-w-0">
+                <span className="text-foreground/80 font-medium tabular-nums">
+                  {hasBytes ? fmtBytes(progress!.downloadedBytes!) : "—"}
+                  {hasTotal ? <> <span className="text-muted-foreground font-normal">/ {fmtBytes(progress!.totalBytes!)}</span></> : null}
+                </span>
+                <span>downloaded</span>
+              </div>
+
+              {/* Speed */}
+              {hasSpeed && (
+                <div className="flex flex-col items-center gap-0.5">
+                  <span className="text-foreground/80 font-medium tabular-nums">
+                    {fmtSpeed(progress!.speedBps!)}
+                  </span>
+                  <span>speed</span>
+                </div>
+              )}
+
+              {/* ETA */}
+              {hasEta && (
+                <div className="flex flex-col items-end gap-0.5">
+                  <span className="text-foreground/80 font-medium tabular-nums">
+                    {fmtEta(progress!.etaSec!)}
+                  </span>
+                  <span>remaining</span>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <p className="text-xs text-muted-foreground/50">
         GHchat will notify you when Offline Mode is ready.
@@ -401,9 +577,11 @@ function SuccessScreen({ onEnterChat }: { onEnterChat: () => void }) {
 
 function ErrorScreen({
   state,
+  errorMessage,
   onRetry,
 }: {
   state: "install-failed" | "repair-needed";
+  errorMessage?: string;
   onRetry: () => void;
 }) {
   const isRepair = state === "repair-needed";
@@ -428,6 +606,11 @@ function ErrorScreen({
             ? "Some Gemma 4 files appear to be missing or corrupted. A repair will re-download only what's needed."
             : "Something went wrong during the Gemma 4 install. Make sure you have enough disk space and a stable connection, then try again."}
         </p>
+        {errorMessage && (
+          <p className="text-xs text-muted-foreground/60 mt-1 font-mono break-words leading-relaxed">
+            {errorMessage}
+          </p>
+        )}
       </div>
 
       <div className="flex flex-col items-center gap-3 w-full">
@@ -468,6 +651,9 @@ export function OfflineSetupFlow() {
   const installProgress = useModeStore((s) => s.installProgress);
   const setInstallProgress = useModeStore((s) => s.setInstallProgress);
   const setMode = useModeStore((s) => s.setMode);
+
+  // Error message from the last failed install attempt — shown in ErrorScreen.
+  const [installErrorMessage, setInstallErrorMessage] = useState<string | null>(null);
 
   // ── Transitions ──────────────────────────────────────────────────────────────
 
@@ -533,25 +719,36 @@ export function OfflineSetupFlow() {
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
-  const handleStartSetup = () => setOfflineState("analyzing-system");
+  const handleStartSetup = () => {
+    setInstallErrorMessage(null);
+    setOfflineState("analyzing-system");
+  };
 
   const handleInstall = () => {
     if (!offlineRecommendation) return;
     const modelId = offlineRecommendation.modelId;
+    setInstallErrorMessage(null);
     // Transition to "installing" immediately for instant feedback.
     setOfflineState("installing");
     ipc
       .startInstall(modelId)
       .then((readiness) => {
+        if (readiness.state === "install-failed" && readiness.message) {
+          setInstallErrorMessage(readiness.message);
+        }
         // Final state from the main process — "installed" or "install-failed".
         setOfflineState(readiness.state);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        setInstallErrorMessage(err instanceof Error ? err.message : String(err));
         setOfflineState("install-failed");
       });
   };
 
-  const handleRetry = () => setOfflineState("analyzing-system");
+  const handleRetry = () => {
+    setInstallErrorMessage(null);
+    setOfflineState("analyzing-system");
+  };
 
   const handleEnterChat = () => {
     setMode("offline");
@@ -585,8 +782,8 @@ export function OfflineSetupFlow() {
         {offlineState === "installing" && (
           <InstallingScreen
             key="installing"
-            progress={installProgress?.pct ?? 0}
-            step={installProgress?.step ?? "Preparing…"}
+            progress={installProgress}
+            modelLabel={offlineRecommendation?.variantLabel ?? "Gemma 4"}
           />
         )}
         {offlineState === "installed" && (
@@ -597,6 +794,7 @@ export function OfflineSetupFlow() {
           <ErrorScreen
             key="error"
             state={offlineState as "install-failed" | "repair-needed"}
+            errorMessage={installErrorMessage ?? undefined}
             onRetry={handleRetry}
           />
         )}

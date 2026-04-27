@@ -149,8 +149,13 @@ export const installManager = {
     }
     _installing = true;
 
-    const report = (phase: OfflineInstallPhase, step: string, pct: number) => {
-      onProgress?.({ phase, step, pct });
+    const report = (
+      phase: OfflineInstallPhase,
+      step: string,
+      pct: number,
+      extra?: Pick<OfflineInstallProgress, "downloadedBytes" | "totalBytes" | "speedBps" | "etaSec">,
+    ) => {
+      onProgress?.({ phase, step, pct, ...extra });
     };
 
     try {
@@ -192,21 +197,41 @@ export const installManager = {
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
 
       // ── 3. Download ──────────────────────────────────────────────────────────
-      report("downloading", "Connecting to download server…", 8);
+      report("downloading-model", "Connecting to download server…", 8);
 
+      const downloadStartMs = Date.now();
       await downloadFile(entry.downloadUrl, tmpPath, (received, total) => {
         // Map download progress to the 8–80 % range.
         const dlPct = total > 0 ? received / total : 0;
         const pct = 8 + Math.round(dlPct * 72);
         const mb = (received / (1024 * 1024)).toFixed(0);
         const totalMb = total > 0 ? ` / ${(total / (1024 * 1024)).toFixed(0)} MB` : "";
-        report("downloading", `Downloading model weights… ${mb} MB${totalMb}`, pct);
+
+        // Speed and ETA — computed from elapsed wall time since download started.
+        const elapsedSec = Math.max((Date.now() - downloadStartMs) / 1000, 0.001);
+        const speedBps = received / elapsedSec;
+        const etaSec =
+          speedBps > 0 && total > received
+            ? Math.round((total - received) / speedBps)
+            : undefined;
+
+        report(
+          "downloading-model",
+          `Downloading ${entry.name}… ${mb} MB${totalMb}`,
+          pct,
+          {
+            downloadedBytes: received,
+            totalBytes: total > 0 ? total : undefined,
+            speedBps,
+            etaSec,
+          },
+        );
       });
 
-      report("downloading", "Download complete", 80);
+      report("downloading-model", "Download complete", 80);
 
       // ── 4. Verify checksum ───────────────────────────────────────────────────
-      report("verifying", "Verifying file integrity…", 82);
+      report("verifying-model", "Verifying file integrity…", 82);
 
       if (entry.sha256 !== "pending") {
         const actualHash = await computeSha256(tmpPath);
@@ -221,17 +246,17 @@ export const installManager = {
       }
       // When sha256 = "pending" we skip the check and trust the download.
 
-      report("verifying", "Integrity check passed", 85);
+      report("verifying-model", "Integrity check passed", 85);
 
       // ── 5. Move to managed storage ───────────────────────────────────────────
-      report("registering", "Installing model file…", 87);
+      report("finalizing", "Installing model file…", 87);
 
       // Remove any pre-existing model file (handles reinstall / repair case).
       if (existsSync(modelPath)) unlinkSync(modelPath);
       renameSync(tmpPath, modelPath);
 
       // ── 6. Write manifest JSON ───────────────────────────────────────────────
-      report("registering", "Writing install manifest…", 90);
+      report("finalizing", "Writing install manifest…", 90);
 
       const manifest = {
         id: entry.id,
@@ -246,7 +271,7 @@ export const installManager = {
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
       // ── 7. Register in DB ────────────────────────────────────────────────────
-      report("registering", "Registering model in database…", 93);
+      report("finalizing", "Registering model in database…", 93);
 
       modelRegistry.register({
         id: entry.id,

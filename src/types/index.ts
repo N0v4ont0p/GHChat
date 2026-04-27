@@ -300,17 +300,17 @@ export interface KeyValidationResult {
 /**
  * Phase labels for the offline install pipeline.
  *
- * preflight    – checking disk space, platform compatibility, directories
- * downloading  – fetching the GGUF file from the download URL
- * verifying    – computing and comparing the SHA-256 checksum
- * registering  – moving file to managed storage, writing manifest, updating DB
- * smoke-test   – confirming the installed file is usable
+ * preflight          – checking disk space, platform compatibility, directories
+ * downloading-model  – fetching the GGUF file from the download URL
+ * verifying-model    – computing and comparing the SHA-256 checksum
+ * finalizing         – moving file to managed storage, writing manifest, updating DB
+ * smoke-test         – confirming the installed file is usable
  */
 export type OfflineInstallPhase =
   | "preflight"
-  | "downloading"
-  | "verifying"
-  | "registering"
+  | "downloading-model"
+  | "verifying-model"
+  | "finalizing"
   | "smoke-test";
 
 /** Live progress snapshot pushed from the main-process installer to the renderer. */
@@ -321,6 +321,14 @@ export interface OfflineInstallProgress {
   step: string;
   /** Overall percent complete (0–100). */
   pct: number;
+  /** Bytes received so far (populated during downloading-model phase). */
+  downloadedBytes?: number;
+  /** Total expected bytes (populated during downloading-model when Content-Length is known). */
+  totalBytes?: number;
+  /** Current download speed in bytes/second (populated during downloading-model). */
+  speedBps?: number;
+  /** Estimated seconds remaining in the current download (populated during downloading-model). */
+  etaSec?: number;
 }
 
 
