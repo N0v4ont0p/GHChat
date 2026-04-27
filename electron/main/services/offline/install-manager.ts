@@ -207,13 +207,19 @@ export const installManager = {
         const mb = (received / (1024 * 1024)).toFixed(0);
         const totalMb = total > 0 ? ` / ${(total / (1024 * 1024)).toFixed(0)} MB` : "";
 
-        // Speed and ETA — computed from elapsed wall time since download started.
-        const elapsedSec = Math.max((Date.now() - downloadStartMs) / 1000, 0.001);
-        const speedBps = received / elapsedSec;
-        const etaSec =
-          speedBps > 0 && total > received
-            ? Math.round((total - received) / speedBps)
-            : undefined;
+        // Speed and ETA — only meaningful once at least 500 ms have elapsed and
+        // 64 KB have arrived, to avoid wildly inflated estimates at startup.
+        const elapsedSec = (Date.now() - downloadStartMs) / 1000;
+        const minElapsedSec = 0.5;
+        const minReceivedBytes = 64 * 1024;
+        let speedBps: number | undefined;
+        let etaSec: number | undefined;
+        if (elapsedSec >= minElapsedSec && received >= minReceivedBytes) {
+          speedBps = received / elapsedSec;
+          if (speedBps > 0 && total > received) {
+            etaSec = Math.round((total - received) / speedBps);
+          }
+        }
 
         report(
           "downloading-model",

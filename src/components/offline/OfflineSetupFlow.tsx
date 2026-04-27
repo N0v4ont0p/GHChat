@@ -273,19 +273,24 @@ function RecommendationScreen({
 
 // ── Installing screen helpers ─────────────────────────────────────────────────
 
+const BYTES_PER_MB = 1024 * 1024;
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 3600;
+
 /**
  * Format a byte count as a human-readable string: "X.X MB" or "X.XX GB".
  */
 function fmtBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+  if (bytes >= BYTES_PER_GB) return `${(bytes / BYTES_PER_GB).toFixed(2)} GB`;
+  return `${(bytes / BYTES_PER_MB).toFixed(0)} MB`;
 }
 
 /**
  * Format bytes/second as a human-readable speed string.
  */
 function fmtSpeed(bps: number): string {
-  if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  if (bps >= BYTES_PER_MB) return `${(bps / BYTES_PER_MB).toFixed(1)} MB/s`;
   if (bps >= 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
   return `${bps.toFixed(0)} B/s`;
 }
@@ -294,10 +299,10 @@ function fmtSpeed(bps: number): string {
  * Format an ETA in seconds as a human-readable string.
  */
 function fmtEta(sec: number): string {
-  if (sec < 60) return "< 1 min";
-  const mins = Math.round(sec / 60);
-  if (mins < 60) return `~${mins} min`;
-  const hrs = (sec / 3600).toFixed(1);
+  if (sec < SECONDS_PER_MINUTE) return "< 1 min";
+  const mins = Math.round(sec / SECONDS_PER_MINUTE);
+  if (mins < SECONDS_PER_MINUTE) return `~${mins} min`;
+  const hrs = (sec / SECONDS_PER_HOUR).toFixed(1);
   return `~${hrs} hr`;
 }
 
