@@ -130,4 +130,3 @@ export function setOfflineReadiness(readiness: OfflineReadiness): void {
     }
   }
 }
-

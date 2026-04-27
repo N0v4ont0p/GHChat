@@ -160,4 +160,3 @@ export const recommendationService = {
     return [{ model, reason }];
   },
 };
-

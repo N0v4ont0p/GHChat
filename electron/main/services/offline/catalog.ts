@@ -29,6 +29,9 @@ export interface OfflineModelEntry {
   /**
    * Expected SHA-256 hex digest of the downloaded file.
    * NOTE: placeholder — must be updated once official artifacts ship.
+   * TODO: Update checksums when Gemma 4 GGUF artifacts are published on
+   *       HuggingFace. Until then, integrity verification is skipped at
+   *       install time (see install-manager.ts).
    */
   sha256: string;
 }
@@ -138,4 +141,3 @@ export const offlineCatalog = {
     return CATALOG.find((e) => e.id === id);
   },
 };
-
