@@ -8,15 +8,26 @@ import {
   unlinkSync,
   writeFileSync,
   mkdirSync,
+  chmodSync,
+  readdirSync,
 } from "fs";
 import { createHash } from "crypto";
+import { exec } from "child_process";
+import { promisify } from "util";
 import * as https from "https";
 import * as http from "http";
 import { offlineCatalog } from "./catalog";
 import { storageService } from "./storage";
 import { modelRegistry } from "./model-registry";
+import {
+  fetchLatestRuntimeRelease,
+  getRuntimePlatformTag,
+  RUNTIME_BINARY_NAME,
+} from "./runtime-catalog";
 import { addOfflineManifestEntry, isDatabaseReady } from "../database";
 import type { OfflineInstallPhase, OfflineInstallProgress } from "../../../../src/types";
+
+const execAsync = promisify(exec);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -109,6 +120,47 @@ function computeSha256(filePath: string): Promise<string> {
   });
 }
 
+/**
+ * Extract a ZIP archive to `targetDir`.
+ *
+ * On macOS/Linux we shell out to the system `unzip` utility.
+ * On Windows we use PowerShell's built-in `Expand-Archive` cmdlet.
+ * Both are available on all supported platforms without extra dependencies.
+ */
+async function extractZip(zipPath: string, targetDir: string): Promise<void> {
+  mkdirSync(targetDir, { recursive: true });
+  if (process.platform === "win32") {
+    await execAsync(
+      `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${targetDir}' -Force"`,
+    );
+  } else {
+    await execAsync(`unzip -o "${zipPath}" -d "${targetDir}"`);
+  }
+}
+
+/**
+ * Recursively walk `dir` and return the first file whose base name matches
+ * `name` (case-sensitive).  Returns `null` when nothing is found.
+ */
+function findFileRecursive(dir: string, name: string): string | null {
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = findFileRecursive(fullPath, name);
+      if (found) return found;
+    } else if (entry.name === name) {
+      return fullPath;
+    }
+  }
+  return null;
+}
+
 // ── Install lock ──────────────────────────────────────────────────────────────
 
 /** True while an install is in progress — prevents concurrent installs. */
@@ -120,15 +172,17 @@ let _installing = false;
  * Install manager — the single authoritative implementation of the GHchat
  * offline install pipeline.
  *
- * Pipeline (8 phases):
- *  1. Preflight     — validate catalog entry, platform, disk space
- *  2. Directories   — ensure all offline sub-directories exist
- *  3. Download      — stream GGUF file to `downloads/{id}.gguf.tmp`
- *  4. Verify        — SHA-256 checksum (skipped when sha256 = "pending")
- *  5. Move          — atomic rename tmp → `models/{id}.gguf`
- *  6. Manifest      — write `manifests/{id}.json` with install metadata
- *  7. Register      — persist to DB (offline_models + offline_manifests tables)
- *  8. Smoke test    — confirm file present and size within 50 % of expected
+ * Pipeline (10 phases):
+ *  1. Preflight           — validate catalog entry, platform, disk space
+ *  2. Directories         — ensure all offline sub-directories exist
+ *  3. Runtime download    — fetch platform llama.cpp server binary (zip) from GitHub
+ *  4. Runtime verify      — confirm extracted binary exists and is executable
+ *  5. Model download      — stream GGUF file to `downloads/{id}.gguf.tmp`
+ *  6. Model verify        — SHA-256 checksum (skipped when sha256 = "pending")
+ *  7. Move                — atomic rename tmp → `models/{id}.gguf`
+ *  8. Manifest            — write `manifests/{id}.json` with install metadata
+ *  9. Register            — persist to DB (offline_models + offline_manifests tables)
+ * 10. Smoke test          — confirm file present and size within 50 % of expected
  *
  * Progress (0–100 %) is reported at every meaningful step via `onProgress`.
  * Only one install runs at a time; concurrent calls throw immediately.
@@ -160,7 +214,7 @@ export const installManager = {
 
     try {
       // ── 1. Preflight ─────────────────────────────────────────────────────────
-      report("preflight", "Checking system requirements…", 2);
+      report("preflight", "Checking system requirements…", 1);
 
       const entry = offlineCatalog.getById(modelId);
       if (!entry) throw new Error(`Unknown catalog model: ${modelId}`);
@@ -180,30 +234,151 @@ export const installManager = {
         );
       }
 
-      report("preflight", "System check passed", 5);
+      report("preflight", "System check passed", 3);
 
       // ── 2. Directories ───────────────────────────────────────────────────────
       storageService.ensureDirectories();
 
+      const runtimeDir = storageService.getSubdir("runtime");
       const modelsDir = storageService.getSubdir("models");
       const downloadsDir = storageService.getSubdir("downloads");
       const manifestsDir = storageService.getSubdir("manifests");
+      const tmpDir = storageService.getSubdir("tmp");
+
+      const runtimeBinPath = join(runtimeDir, RUNTIME_BINARY_NAME);
+      const runtimeZipTmp = join(downloadsDir, "llama-server.zip.tmp");
+      const runtimeExtractDir = join(tmpDir, "llama-extract");
 
       const tmpPath = join(downloadsDir, `${modelId}.gguf.tmp`);
       const modelPath = join(modelsDir, `${modelId}.gguf`);
       const manifestPath = join(manifestsDir, `${modelId}.json`);
 
+      // ── 3. Download runtime binary ───────────────────────────────────────────
+      // Skip if the binary is already present (e.g. re-install of a model).
+      if (!existsSync(runtimeBinPath)) {
+        report("downloading-runtime", "Looking up latest llama.cpp release…", 4);
+
+        let runtimeDownloadUrl: string;
+        let runtimeSizeBytes: number;
+        try {
+          const release = await fetchLatestRuntimeRelease();
+          runtimeDownloadUrl = release.downloadUrl;
+          runtimeSizeBytes = release.sizeBytes;
+          report(
+            "downloading-runtime",
+            `Downloading runtime (${getRuntimePlatformTag()})…`,
+            5,
+          );
+        } catch (err) {
+          throw new Error(
+            `Failed to locate llama.cpp runtime release: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+
+        // Clean up any partial previous download.
+        if (existsSync(runtimeZipTmp)) unlinkSync(runtimeZipTmp);
+
+        const rtDownloadStart = Date.now();
+        await downloadFile(runtimeDownloadUrl, runtimeZipTmp, (received, total) => {
+          // Runtime download maps to 5–22 % range.
+          const dlPct = total > 0 ? received / total : 0;
+          const pct = 5 + Math.round(dlPct * 17);
+          const kb = (received / 1024).toFixed(0);
+          const totalKb =
+            total > 0 ? ` / ${Math.round(total / 1024)} KB` : "";
+
+          const elapsedSec = (Date.now() - rtDownloadStart) / 1000;
+          let speedBps: number | undefined;
+          let etaSec: number | undefined;
+          if (elapsedSec >= 0.5 && received >= 64 * 1024) {
+            speedBps = received / elapsedSec;
+            if (speedBps > 0 && total > received) {
+              etaSec = Math.round((total - received) / speedBps);
+            }
+          }
+
+          report(
+            "downloading-runtime",
+            `Downloading runtime… ${kb} KB${totalKb}`,
+            pct,
+            {
+              downloadedBytes: received,
+              totalBytes: total > 0 ? total : runtimeSizeBytes || undefined,
+              speedBps,
+              etaSec,
+            },
+          );
+        });
+
+        report("downloading-runtime", "Runtime download complete", 22);
+
+        // ── 4. Extract and verify runtime binary ─────────────────────────────────
+        report("verifying-runtime", "Extracting runtime…", 23);
+
+        await extractZip(runtimeZipTmp, runtimeExtractDir);
+
+        const extractedBin = findFileRecursive(runtimeExtractDir, RUNTIME_BINARY_NAME);
+        if (!extractedBin) {
+          throw new Error(
+            `llama-server binary not found inside the downloaded archive. ` +
+              `This may indicate a release asset naming change — please file a bug.`,
+          );
+        }
+
+        // Move the binary to the managed runtime dir.
+        if (existsSync(runtimeBinPath)) unlinkSync(runtimeBinPath);
+        renameSync(extractedBin, runtimeBinPath);
+
+        // Make it executable on Unix.
+        if (process.platform !== "win32") {
+          chmodSync(runtimeBinPath, 0o755);
+        }
+
+        // On macOS, remove the quarantine extended attribute that Gatekeeper
+        // adds to files downloaded from the internet.  Without this the OS
+        // would refuse to run the unsigned binary or prompt the user.
+        if (process.platform === "darwin") {
+          try {
+            await execAsync(`xattr -dr com.apple.quarantine "${runtimeBinPath}"`);
+          } catch {
+            // Not fatal — the binary may still work if the user approved it.
+            console.warn(
+              "[installManager] could not remove quarantine attribute from llama-server",
+            );
+          }
+        }
+
+        // Clean up the zip and extract dir.
+        try {
+          if (existsSync(runtimeZipTmp)) unlinkSync(runtimeZipTmp);
+          await execAsync(
+            process.platform === "win32"
+              ? `rmdir /s /q "${runtimeExtractDir}"`
+              : `rm -rf "${runtimeExtractDir}"`,
+          );
+        } catch {
+          // Best-effort cleanup.
+        }
+
+        report("verifying-runtime", "Runtime ready", 25);
+      } else {
+        // Binary already present — skip the download but still report the phases
+        // so the UI phase list is consistent.
+        report("downloading-runtime", "Runtime already installed", 22);
+        report("verifying-runtime", "Runtime verified", 25);
+      }
+
+      // ── 5. Download model ────────────────────────────────────────────────────
       // Clean up any previous partial download.
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
 
-      // ── 3. Download ──────────────────────────────────────────────────────────
-      report("downloading-model", "Connecting to download server…", 8);
+      report("downloading-model", "Connecting to download server…", 27);
 
       const downloadStartMs = Date.now();
       await downloadFile(entry.downloadUrl, tmpPath, (received, total) => {
-        // Map download progress to the 8–80 % range.
+        // Map download progress to the 27–88 % range.
         const dlPct = total > 0 ? received / total : 0;
-        const pct = 8 + Math.round(dlPct * 72);
+        const pct = 27 + Math.round(dlPct * 61);
         const mb = (received / (1024 * 1024)).toFixed(0);
         const totalMb = total > 0 ? ` / ${(total / (1024 * 1024)).toFixed(0)} MB` : "";
 
@@ -234,10 +409,10 @@ export const installManager = {
         );
       });
 
-      report("downloading-model", "Download complete", 80);
+      report("downloading-model", "Download complete", 88);
 
-      // ── 4. Verify checksum ───────────────────────────────────────────────────
-      report("verifying-model", "Verifying file integrity…", 82);
+      // ── 6. Verify model checksum ─────────────────────────────────────────────
+      report("verifying-model", "Verifying file integrity…", 89);
 
       if (entry.sha256 !== "pending") {
         const actualHash = await computeSha256(tmpPath);
@@ -252,17 +427,17 @@ export const installManager = {
       }
       // When sha256 = "pending" we skip the check and trust the download.
 
-      report("verifying-model", "Integrity check passed", 85);
+      report("verifying-model", "Integrity check passed", 91);
 
-      // ── 5. Move to managed storage ───────────────────────────────────────────
-      report("finalizing", "Installing model file…", 87);
+      // ── 7. Move to managed storage ───────────────────────────────────────────
+      report("finalizing", "Installing model file…", 92);
 
       // Remove any pre-existing model file (handles reinstall / repair case).
       if (existsSync(modelPath)) unlinkSync(modelPath);
       renameSync(tmpPath, modelPath);
 
-      // ── 6. Write manifest JSON ───────────────────────────────────────────────
-      report("finalizing", "Writing install manifest…", 90);
+      // ── 8. Write manifest JSON ───────────────────────────────────────────────
+      report("finalizing", "Writing install manifest…", 93);
 
       const manifest = {
         id: entry.id,
@@ -276,8 +451,8 @@ export const installManager = {
       };
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
-      // ── 7. Register in DB ────────────────────────────────────────────────────
-      report("finalizing", "Registering model in database…", 93);
+      // ── 9. Register in DB ────────────────────────────────────────────────────
+      report("finalizing", "Registering model in database…", 95);
 
       modelRegistry.register({
         id: entry.id,
@@ -309,7 +484,7 @@ export const installManager = {
         }
       }
 
-      // ── 8. Smoke test ────────────────────────────────────────────────────────
+      // ── 10. Smoke test ───────────────────────────────────────────────────────
       report("smoke-test", "Verifying install…", 97);
 
       if (!existsSync(modelPath)) {
@@ -324,6 +499,13 @@ export const installManager = {
         throw new Error(
           `Model file appears incomplete: expected ~${entry.sizeGb.toFixed(1)} GB, ` +
             `found ${installedGb.toFixed(1)} GB`,
+        );
+      }
+
+      // Verify the runtime binary is present and executable.
+      if (!existsSync(runtimeBinPath)) {
+        throw new Error(
+          "Runtime binary is missing after installation — please retry the install.",
         );
       }
 

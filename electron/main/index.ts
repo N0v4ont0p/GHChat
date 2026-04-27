@@ -5,6 +5,7 @@ import { createMainWindow, revealMainWindow } from "./window";
 import { getApiKey } from "./services/keychain";
 import { openRouterProvider } from "./providers";
 import { storageService } from "./services/offline";
+import { runtimeManager } from "./services/offline/runtime-manager";
 
 // Surface any uncaught errors so they appear in Electron's log instead of
 // disappearing silently (which would leave the app running with no window).
@@ -74,5 +75,12 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  // Gracefully shut down the local inference server before the process exits.
+  runtimeManager.stop().catch((err: unknown) => {
+    console.error("[main] runtime stop on quit failed:", err);
+  });
 });
 

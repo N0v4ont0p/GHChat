@@ -1,4 +1,4 @@
-import type { IpcMain } from "electron";
+import type { IpcMain, IpcMainEvent } from "electron";
 import { IPC } from "../../../src/types";
 import type { AppMode, OfflineReadiness, OfflineSetupState } from "../../../src/types";
 import {
@@ -9,6 +9,8 @@ import {
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
+import { runtimeManager } from "../services/offline/runtime-manager";
+import type { ChatMessage } from "../services/offline/runtime-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
 // AppMode is kept in-memory (it resets to "online" on restart — future work
@@ -101,6 +103,59 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         setOfflineReadiness(failed);
         return failed;
       }
+    },
+  );
+
+  // ── Offline chat streaming ──────────────────────────────────────────────────
+
+  const activeStreams = new Map<string, AbortController>();
+
+  ipcMain.on(
+    IPC.OFFLINE_CHAT_STREAM,
+    async (
+      event: IpcMainEvent,
+      {
+        requestId,
+        modelId,
+        messages,
+      }: { requestId: string; modelId: string; messages: ChatMessage[] },
+    ) => {
+      const controller = new AbortController();
+      activeStreams.set(requestId, controller);
+
+      const send = (channel: string, payload: unknown) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(channel, payload);
+        }
+      };
+
+      try {
+        await runtimeManager.streamChat(
+          modelId,
+          messages,
+          (token) => send(IPC.OFFLINE_CHAT_TOKEN, { requestId, token }),
+          controller.signal,
+        );
+        send(IPC.OFFLINE_CHAT_END, { requestId });
+      } catch (err) {
+        if (controller.signal.aborted) {
+          send(IPC.OFFLINE_CHAT_END, { requestId });
+        } else {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[offline] chat stream error:", err);
+          send(IPC.OFFLINE_CHAT_ERROR, { requestId, error: message });
+        }
+      } finally {
+        activeStreams.delete(requestId);
+      }
+    },
+  );
+
+  ipcMain.on(
+    IPC.OFFLINE_CHAT_STOP,
+    (_e, { requestId }: { requestId: string }) => {
+      activeStreams.get(requestId)?.abort();
+      activeStreams.delete(requestId);
     },
   );
 }

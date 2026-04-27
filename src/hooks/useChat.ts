@@ -6,6 +6,7 @@ import { IPC } from "@/types";
 import { AUTO_MODEL_ID } from "@/lib/models";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModeStore } from "@/stores/mode-store";
 import type { IpcRendererEvent } from "electron";
 import type { ChatErrorRecoveryAction, StructuredChatError, ChatFailureKind, Message } from "@/types";
 
@@ -37,6 +38,9 @@ interface RoutingPayload {
   isAuto: boolean;
   isFallback: boolean;
 }
+
+/** The local-model ID used for offline chat streaming. */
+const OFFLINE_MODEL_ID = "offline-local";
 
 /** Derive a short conversation title from the first user message */
 function deriveTitleFromMessage(content: string): string {
@@ -75,6 +79,11 @@ export function useChat(conversationId: string | null) {
     addIncognitoMessage,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
+  const { currentMode, offlineRecommendation } = useModeStore();
+
+  // The installed offline model ID — falls back to OFFLINE_MODEL_ID sentinel
+  // if no recommendation is available (e.g. after an install with no reco step).
+  const offlineModelId = offlineRecommendation?.modelId ?? OFFLINE_MODEL_ID;
 
   const activeRequestId = useRef<string | null>(null);
   // Mirror of streamingText in a ref so event callbacks see the latest value
@@ -90,6 +99,7 @@ export function useChat(conversationId: string | null) {
 
   // ── IPC listeners ──────────────────────────────────────────────────────────
   useEffect(() => {
+    // ── OpenRouter listeners ────────────────────────────────────────────────
     const offToken = window.ghchat.on(
       IPC.OR_CHAT_TOKEN,
       (_e: IpcRendererEvent, payload: unknown) => {
@@ -190,11 +200,91 @@ export function useChat(conversationId: string | null) {
       },
     );
 
+    // ── Offline (local) chat listeners ──────────────────────────────────────
+    const offOfflineToken = window.ghchat.on(
+      IPC.OFFLINE_CHAT_TOKEN,
+      (_e: IpcRendererEvent, payload: unknown) => {
+        const { requestId, token } = payload as TokenPayload;
+        if (requestId === activeRequestId.current) {
+          appendStreamingToken(token);
+        }
+      },
+    );
+
+    const offOfflineEnd = window.ghchat.on(
+      IPC.OFFLINE_CHAT_END,
+      (_e: IpcRendererEvent, payload: unknown) => {
+        const { requestId } = payload as EndPayload;
+        if (requestId !== activeRequestId.current) return;
+
+        const fullText = streamingTextRef.current;
+        activeRequestId.current = null;
+
+        if (!fullText.trim()) {
+          setStreamState("completed");
+          resetStreaming();
+          return;
+        }
+
+        const convId = conversationIdRef.current;
+
+        if (incognitoModeRef.current) {
+          if (convId) {
+            addIncognitoMessageRef.current(
+              makeIncognitoMessage(convId, "assistant", fullText),
+            );
+          }
+          setStreamState("completed");
+          resetStreaming();
+          return;
+        }
+
+        if (!convId) {
+          setStreamState("completed");
+          resetStreaming();
+          return;
+        }
+
+        ipc
+          .appendMessage({ conversationId: convId, role: "assistant", content: fullText })
+          .then(() => {
+            qc.invalidateQueries({ queryKey: ["messages", convId] });
+            setStreamState("completed");
+            resetStreaming();
+          })
+          .catch(() => {
+            setStreamState("failed");
+            resetStreaming();
+          });
+      },
+    );
+
+    const offOfflineError = window.ghchat.on(
+      IPC.OFFLINE_CHAT_ERROR,
+      (_e: IpcRendererEvent, payload: unknown) => {
+        const p = payload as { requestId: string; error: string };
+        if (p.requestId !== activeRequestId.current) return;
+        activeRequestId.current = null;
+        setStreamState("failed");
+        resetStreaming();
+
+        const structuredError: StructuredChatError = {
+          message: p.error,
+          actions: ["retry"],
+        };
+        setLastStreamError(structuredError);
+        toast.error(`Offline model error: ${p.error}`, { duration: 4000 });
+      },
+    );
+
     return () => {
       offToken();
       offRouting();
       offEnd();
       offError();
+      offOfflineToken();
+      offOfflineEnd();
+      offOfflineError();
     };
   }, [appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState]);
 
@@ -202,6 +292,27 @@ export function useChat(conversationId: string | null) {
   const dispatchStream = useCallback(
     async (modelId: string, messages: Array<{ role: string; content: string }>) => {
       setStreamState("validating");
+
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      activeRequestId.current = requestId;
+      setStreaming(true);
+      setStreamState("routing");
+      setLastStreamError(null);
+      setRoutingInfo(null);
+
+      if (currentMode === "offline") {
+        // ── Offline path: route to the local llama.cpp runtime ──────────────
+        // No API key required; the runtime manager handles the rest.
+        setStreamState("streaming");
+        ipc.sendOfflineChatStream({
+          requestId,
+          modelId: offlineModelId,
+          messages: messages as Array<{ role: "user" | "assistant" | "system"; content: string }>,
+        });
+        return;
+      }
+
+      // ── Online path: route to OpenRouter ────────────────────────────────
       const apiKey = await ipc.getApiKey();
       if (!apiKey) {
         toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
@@ -210,12 +321,6 @@ export function useChat(conversationId: string | null) {
         setStreamState("failed");
         return;
       }
-      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      activeRequestId.current = requestId;
-      setStreaming(true);
-      setStreamState("routing");
-      setLastStreamError(null);
-      setRoutingInfo(null);
       window.ghchat.send(IPC.OR_CHAT_STREAM, {
         requestId,
         model: modelId,
@@ -227,7 +332,7 @@ export function useChat(conversationId: string | null) {
       });
       setStreamState("streaming");
     },
-    [setStreaming, setStreamState, setLastStreamError, setRoutingInfo, advancedParams],
+    [currentMode, offlineModelId, setStreaming, setStreamState, setLastStreamError, setRoutingInfo, advancedParams],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
@@ -236,14 +341,17 @@ export function useChat(conversationId: string | null) {
       if (!conversationId || isStreaming || !content.trim()) return;
 
       try {
-        const apiKey = await ipc.getApiKey();
-        if (!apiKey) {
-          toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
-            duration: 5000,
-            action: { label: "Open Settings", onClick: () => {} },
-          });
-          setStreamState("failed");
-          return;
+        // Only require an API key for online (OpenRouter) mode.
+        if (currentMode !== "offline") {
+          const apiKey = await ipc.getApiKey();
+          if (!apiKey) {
+            toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
+              duration: 5000,
+              action: { label: "Open Settings", onClick: () => {} },
+            });
+            setStreamState("failed");
+            return;
+          }
         }
 
         // Signal the message list to scroll to bottom immediately
@@ -288,7 +396,7 @@ export function useChat(conversationId: string | null) {
         resetStreaming();
       }
     },
-    [conversationId, isStreaming, selectedModel, dispatchStream, qc, setStreamState,
+    [conversationId, isStreaming, currentMode, selectedModel, dispatchStream, qc, setStreamState,
      setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage],
   );
 
@@ -297,9 +405,13 @@ export function useChat(conversationId: string | null) {
     const id = activeRequestId.current;
     if (!id) return;
     setStreamState("stopping");
-    ipc.stopStream(id);
-    // The main process sends OR_CHAT_END after aborting, which cleans up state
-  }, [setStreamState]);
+    if (currentMode === "offline") {
+      ipc.stopOfflineStream(id);
+    } else {
+      ipc.stopStream(id);
+    }
+    // The main process sends the appropriate *_CHAT_END after aborting
+  }, [currentMode, setStreamState]);
 
   // ── Regenerate the last assistant reply ────────────────────────────────────
   const regenerate = useCallback(async () => {

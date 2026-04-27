@@ -324,6 +324,22 @@ function getPhaseInfo(phase: OfflineInstallProgress["phase"] | undefined): Phase
         ring: "ring-primary/20",
         bg: "bg-primary/10",
       };
+    case "downloading-runtime":
+      return {
+        label: "Downloading runtime",
+        Icon: Cpu,
+        color: "text-sky-400",
+        ring: "ring-sky-500/20",
+        bg: "bg-sky-500/10",
+      };
+    case "verifying-runtime":
+      return {
+        label: "Verifying runtime",
+        Icon: ShieldCheck,
+        color: "text-sky-400",
+        ring: "ring-sky-500/20",
+        bg: "bg-sky-500/10",
+      };
     case "downloading-model":
       return {
         label: "Downloading model",
@@ -380,14 +396,23 @@ function InstallingScreen({ progress, modelLabel }: InstallingScreenProps) {
   const phaseInfo = getPhaseInfo(progress?.phase);
   const { Icon } = phaseInfo;
 
-  const isDownloading = progress?.phase === "downloading-model";
+  // Show download stats during both runtime and model downloads.
+  const isAnyDownload =
+    progress?.phase === "downloading-runtime" ||
+    progress?.phase === "downloading-model";
   const hasBytes =
-    isDownloading &&
+    isAnyDownload &&
     progress?.downloadedBytes != null &&
     progress.downloadedBytes > 0;
   const hasTotal = hasBytes && progress?.totalBytes != null && progress.totalBytes > 0;
-  const hasSpeed = isDownloading && progress?.speedBps != null && progress.speedBps > 0;
+  const hasSpeed = isAnyDownload && progress?.speedBps != null && progress.speedBps > 0;
   const hasEta = hasSpeed && progress?.etaSec != null;
+
+  // Spin the icon during setup phases.
+  const shouldSpin =
+    progress?.phase === "preflight" ||
+    progress?.phase === "verifying-runtime" ||
+    progress?.phase === undefined;
 
   return (
     <motion.div
@@ -408,7 +433,7 @@ function InstallingScreen({ progress, modelLabel }: InstallingScreenProps) {
             className="relative"
           >
             <Icon
-              className={`h-9 w-9 ${phaseInfo.color} ${progress?.phase === "preflight" || progress?.phase === undefined ? "animate-spin" : ""}`}
+              className={`h-9 w-9 ${phaseInfo.color} ${shouldSpin ? "animate-spin" : ""}`}
             />
           </motion.div>
         </AnimatePresence>
@@ -461,9 +486,9 @@ function InstallingScreen({ progress, modelLabel }: InstallingScreenProps) {
         </div>
       </div>
 
-      {/* Download stats — only shown during model download */}
+      {/* Download stats — shown during runtime and model downloads */}
       <AnimatePresence>
-        {isDownloading && (hasBytes || hasSpeed) && (
+        {isAnyDownload && (hasBytes || hasSpeed) && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}

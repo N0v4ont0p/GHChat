@@ -93,4 +93,19 @@ export const ipc = {
     api().on(IPC.OFFLINE_INSTALL_PROGRESS, (_event: IpcRendererEvent, progress: OfflineInstallProgress) =>
       cb(progress),
     ),
+
+  /**
+   * Send a local-inference chat stream request (offline mode).
+   * Tokens are delivered via the OFFLINE_CHAT_TOKEN, OFFLINE_CHAT_END,
+   * and OFFLINE_CHAT_ERROR push events.
+   */
+  sendOfflineChatStream: (payload: {
+    requestId: string;
+    modelId: string;
+    messages: Array<{ role: string; content: string }>;
+  }) => api().send(IPC.OFFLINE_CHAT_STREAM, payload),
+
+  /** Cancel an in-progress offline chat stream. */
+  stopOfflineStream: (requestId: string) =>
+    api().send(IPC.OFFLINE_CHAT_STOP, { requestId }),
 };

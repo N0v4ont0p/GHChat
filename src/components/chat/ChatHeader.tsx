@@ -1,10 +1,11 @@
-import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye } from "lucide-react";
+import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getPreset, CATEGORY_META, AUTO_MODEL_ID } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
+import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
 import type { ModelVerificationStatus, ModelPreset } from "@/types";
 
@@ -87,11 +88,20 @@ export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
+  const { currentMode, offlineRecommendation } = useModeStore();
+
+  const isOffline = currentMode === "offline";
+
+  // In offline mode show the installed model name; fall back to a generic label.
+  const offlineModelLabel =
+    offlineRecommendation
+      ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
+      : "Gemma 4 · Local";
 
   const preset = getPreset(models, selectedModel);
-  const displayName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
-  const vendor = preset?.vendor;
-  const category = preset?.category ?? "general";
+  const displayName = isOffline ? offlineModelLabel : (preset?.name ?? selectedModel.split("/").pop() ?? selectedModel);
+  const vendor = isOffline ? "Local" : preset?.vendor;
+  const category = isOffline ? "general" : (preset?.category ?? "general");
   const verifiedStatus = preset?.verifiedStatus ?? "unknown";
   const healthTags = preset?.healthTags ?? [];
   const categoryMeta = CATEGORY_META[category] ?? CATEGORY_META.general;
@@ -115,17 +125,27 @@ export function ChatHeader() {
               Incognito
             </span>
           )}
+          {isOffline && (
+            <span className="flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+              <Cpu className="h-2.5 w-2.5" />
+              Offline
+            </span>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => !isOffline && setSettingsOpen(true)}
                 className={cn(
                   "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-all",
-                  "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+                  isOffline
+                    ? "text-muted-foreground cursor-default"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
                 )}
               >
                 {isStreaming ? (
                   <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-primary animate-glow-pulse" />
+                ) : isOffline ? (
+                  <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-emerald-400/80" />
                 ) : (
                   <HealthIndicator status={verifiedStatus} modelId={selectedModel} />
                 )}
@@ -135,31 +155,44 @@ export function ChatHeader() {
                     {vendor}
                   </span>
                 )}
-                <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
-                  {categoryMeta.emoji} {categoryMeta.label}
-                </span>
-                {!isStreaming && <CapabilityBadges preset={preset} />}
+                {!isOffline && (
+                  <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
+                    {categoryMeta.emoji} {categoryMeta.label}
+                  </span>
+                )}
+                {!isStreaming && !isOffline && <CapabilityBadges preset={preset} />}
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="space-y-0.5 max-w-[240px]">
-              <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
-              {!isStreaming && (
+              {isOffline ? (
                 <>
-                  <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
-                  {vendor && (
-                    <p className="text-[11px] text-muted-foreground">Provider: {vendor}</p>
+                  <p>Local inference — no internet required</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Running on-device via llama.cpp
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>{isStreaming ? "Generating…" : "Click to change model"}</p>
+                  {!isStreaming && (
+                    <>
+                      <p className="text-[11px] text-muted-foreground">{healthTooltip(verifiedStatus, selectedModel)}</p>
+                      {vendor && (
+                        <p className="text-[11px] text-muted-foreground">Provider: {vendor}</p>
+                      )}
+                      {preset?.contextWindow && (
+                        <p className="text-[11px] text-muted-foreground">Context: {preset.contextWindow}</p>
+                      )}
+                      {healthTags.length > 0 && (
+                        <p className="text-[11px] text-muted-foreground">
+                          {healthTags.join(" · ")}
+                        </p>
+                      )}
+                    </>
                   )}
-                  {preset?.contextWindow && (
-                    <p className="text-[11px] text-muted-foreground">Context: {preset.contextWindow}</p>
-                  )}
-                  {healthTags.length > 0 && (
-                    <p className="text-[11px] text-muted-foreground">
-                      {healthTags.join(" · ")}
-                    </p>
-                  )}
+                  <p className="font-mono text-[11px] text-muted-foreground">{selectedModel}</p>
                 </>
               )}
-              <p className="font-mono text-[11px] text-muted-foreground">{selectedModel}</p>
             </TooltipContent>
           </Tooltip>
         </div>

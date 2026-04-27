@@ -48,4 +48,21 @@ export const IPC = {
    * Fired repeatedly while an install is in progress.
    */
   OFFLINE_INSTALL_PROGRESS: "offline:install:progress",
+  /**
+   * Start a local-inference chat stream for offline mode.
+   * Sent from renderer to main via `window.ghchat.send()`.
+   * Payload: { requestId, messages }
+   */
+  OFFLINE_CHAT_STREAM: "offline:chat:stream",
+  /**
+   * Cancel an in-progress offline chat stream.
+   * Sent from renderer to main.  Payload: { requestId }
+   */
+  OFFLINE_CHAT_STOP: "offline:chat:stop",
+  /** Push (main → renderer): incremental token from local inference. Payload: { requestId, token } */
+  OFFLINE_CHAT_TOKEN: "offline:chat:token",
+  /** Push (main → renderer): stream complete. Payload: { requestId } */
+  OFFLINE_CHAT_END: "offline:chat:end",
+  /** Push (main → renderer): stream error. Payload: { requestId, error } */
+  OFFLINE_CHAT_ERROR: "offline:chat:error",
 } as const;
