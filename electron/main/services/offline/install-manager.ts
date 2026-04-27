@@ -10,9 +10,10 @@ import {
   mkdirSync,
   chmodSync,
   readdirSync,
+  rmSync,
 } from "fs";
 import { createHash } from "crypto";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import * as https from "https";
 import * as http from "http";
@@ -27,7 +28,7 @@ import {
 import { addOfflineManifestEntry, isDatabaseReady } from "../database";
 import type { OfflineInstallPhase, OfflineInstallProgress } from "../../../../src/types";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -123,18 +124,27 @@ function computeSha256(filePath: string): Promise<string> {
 /**
  * Extract a ZIP archive to `targetDir`.
  *
- * On macOS/Linux we shell out to the system `unzip` utility.
- * On Windows we use PowerShell's built-in `Expand-Archive` cmdlet.
- * Both are available on all supported platforms without extra dependencies.
+ * We use `execFile` (not `exec`) to avoid shell interpretation — each
+ * argument is passed directly to the child process without shell expansion,
+ * which prevents path-injection attacks even if a path contains special chars.
+ *
+ * On macOS/Linux we call the system `unzip` utility.
+ * On Windows we call `powershell.exe` with `Expand-Archive`.
  */
 async function extractZip(zipPath: string, targetDir: string): Promise<void> {
   mkdirSync(targetDir, { recursive: true });
   if (process.platform === "win32") {
-    await execAsync(
-      `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${targetDir}' -Force"`,
-    );
+    // execFile with powershell: pass -Command as a single string arg,
+    // but construct the command so paths are only expanded by PS, not the shell.
+    await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${targetDir.replace(/'/g, "''")}' -Force`,
+    ]);
   } else {
-    await execAsync(`unzip -o "${zipPath}" -d "${targetDir}"`);
+    // unzip: pass -o (overwrite), then zipPath and destination as separate args.
+    await execFileAsync("unzip", ["-o", zipPath, "-d", targetDir]);
   }
 }
 
@@ -339,7 +349,8 @@ export const installManager = {
         // would refuse to run the unsigned binary or prompt the user.
         if (process.platform === "darwin") {
           try {
-            await execAsync(`xattr -dr com.apple.quarantine "${runtimeBinPath}"`);
+            // execFile: no shell — args passed directly, no injection risk.
+            await execFileAsync("xattr", ["-dr", "com.apple.quarantine", runtimeBinPath]);
           } catch {
             // Not fatal — the binary may still work if the user approved it.
             console.warn(
@@ -348,14 +359,12 @@ export const installManager = {
           }
         }
 
-        // Clean up the zip and extract dir.
+        // Clean up the zip and extract dir using Node.js fs (no shell needed).
         try {
           if (existsSync(runtimeZipTmp)) unlinkSync(runtimeZipTmp);
-          await execAsync(
-            process.platform === "win32"
-              ? `rmdir /s /q "${runtimeExtractDir}"`
-              : `rm -rf "${runtimeExtractDir}"`,
-          );
+          if (existsSync(runtimeExtractDir)) {
+            rmSync(runtimeExtractDir, { recursive: true, force: true });
+          }
         } catch {
           // Best-effort cleanup.
         }
