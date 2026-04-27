@@ -8,6 +8,7 @@ import {
 } from "../services/database";
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
+import { installManager } from "../services/offline/install-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
 // AppMode is kept in-memory (it resets to "online" on restart — future work
@@ -73,6 +74,35 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       return fallback;
     }
   });
+
+  ipcMain.handle(
+    IPC.OFFLINE_INSTALL,
+    async (event, modelId: string): Promise<OfflineReadiness> => {
+      // Transition to "installing" immediately so status polls are correct.
+      setOfflineReadiness({ state: "installing" });
+
+      try {
+        await installManager.install(modelId, (progress) => {
+          // Push progress events to the renderer window that triggered the install.
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(IPC.OFFLINE_INSTALL_PROGRESS, progress);
+          }
+        });
+
+        const installed: OfflineReadiness = { state: "installed" };
+        setOfflineReadiness(installed);
+        return installed;
+      } catch (err) {
+        console.error("[offline] install failed:", err);
+        const failed: OfflineReadiness = {
+          state: "install-failed",
+          message: err instanceof Error ? err.message : String(err),
+        };
+        setOfflineReadiness(failed);
+        return failed;
+      }
+    },
+  );
 }
 
 /**

@@ -8,7 +8,9 @@ import type {
   OpenRouterDiagnostics,
   AppMode,
   OfflineReadiness,
+  OfflineInstallProgress,
 } from "@/types";
+import type { IpcRendererEvent } from "electron";
 
 function api() {
   if (typeof window === "undefined" || !window.ghchat) {
@@ -76,4 +78,19 @@ export const ipc = {
    * recommendation field, or state="not-installed" on failure.
    */
   analyzeSystem: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_ANALYZE),
+  /**
+   * Start the full offline install pipeline for the given catalog model ID.
+   * Returns the final OfflineReadiness (state = "installed" or "install-failed").
+   * Live progress is delivered via onInstallProgress.
+   */
+  startInstall: (modelId: string) =>
+    api().invoke<OfflineReadiness>(IPC.OFFLINE_INSTALL, modelId),
+  /**
+   * Subscribe to install progress events.
+   * Returns an unsubscribe function — call it when the component unmounts.
+   */
+  onInstallProgress: (cb: (progress: OfflineInstallProgress) => void) =>
+    api().on(IPC.OFFLINE_INSTALL_PROGRESS, (_event: IpcRendererEvent, progress: OfflineInstallProgress) =>
+      cb(progress),
+    ),
 };

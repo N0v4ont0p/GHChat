@@ -37,4 +37,15 @@ export const IPC = {
    * (with the recommendation field populated).
    */
   OFFLINE_ANALYZE: "offline:analyze",
+  /**
+   * Starts the full offline install pipeline for a given catalog model ID.
+   * Returns OfflineReadiness — state is "installed" on success or
+   * "install-failed" on error.  Live progress is pushed via OFFLINE_INSTALL_PROGRESS.
+   */
+  OFFLINE_INSTALL: "offline:install",
+  /**
+   * Push event (main → renderer) carrying OfflineInstallProgress.
+   * Fired repeatedly while an install is in progress.
+   */
+  OFFLINE_INSTALL_PROGRESS: "offline:install:progress",
 } as const;

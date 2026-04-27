@@ -297,6 +297,33 @@ export interface KeyValidationResult {
   diagnostics?: OpenRouterDiagnostics;
 }
 
+/**
+ * Phase labels for the offline install pipeline.
+ *
+ * preflight    – checking disk space, platform compatibility, directories
+ * downloading  – fetching the GGUF file from the download URL
+ * verifying    – computing and comparing the SHA-256 checksum
+ * registering  – moving file to managed storage, writing manifest, updating DB
+ * smoke-test   – confirming the installed file is usable
+ */
+export type OfflineInstallPhase =
+  | "preflight"
+  | "downloading"
+  | "verifying"
+  | "registering"
+  | "smoke-test";
+
+/** Live progress snapshot pushed from the main-process installer to the renderer. */
+export interface OfflineInstallProgress {
+  /** Current pipeline phase. */
+  phase: OfflineInstallPhase;
+  /** Short human-readable description of the current step. */
+  step: string;
+  /** Overall percent complete (0–100). */
+  pct: number;
+}
+
+
 export interface Conversation {
   id: string;
   title: string;
@@ -351,4 +378,15 @@ export const IPC = {
    * (with the recommendation field populated).
    */
   OFFLINE_ANALYZE: "offline:analyze",
+  /**
+   * Starts the full offline install pipeline for a given catalog model ID.
+   * Returns OfflineReadiness — state is "installed" on success or
+   * "install-failed" on error.  Live progress is pushed via OFFLINE_INSTALL_PROGRESS.
+   */
+  OFFLINE_INSTALL: "offline:install",
+  /**
+   * Push event (main → renderer) carrying OfflineInstallProgress.
+   * Fired repeatedly while an install is in progress.
+   */
+  OFFLINE_INSTALL_PROGRESS: "offline:install:progress",
 } as const;

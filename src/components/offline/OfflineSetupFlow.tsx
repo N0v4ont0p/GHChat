@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   WifiOff,
@@ -271,41 +271,12 @@ function RecommendationScreen({
 
 // ── Installing screen ─────────────────────────────────────────────────────────
 
-const INSTALL_STEPS = [
-  "Preparing download…",
-  "Downloading model weights…",
-  "Verifying checksums…",
-  "Installing runtime…",
-  "Finalizing setup…",
-];
+interface InstallingScreenProps {
+  progress: number;
+  step: string;
+}
 
-function InstallingScreen() {
-  const [progress, setProgress] = useState(0);
-  const [stepIndex, setStepIndex] = useState(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    // Advance progress smoothly, driven by ticks every 80 ms.
-    // Progress slows near each step boundary to feel realistic.
-    intervalRef.current = setInterval(() => {
-      setProgress((prev) => {
-        const target = ((stepIndex + 1) / INSTALL_STEPS.length) * 100;
-        const next = prev + (target - prev) * 0.06 + 0.2;
-        return Math.min(next, 99); // Never auto-complete — that's driven by the parent
-      });
-    }, 80);
-
-    // Advance step label every ~1.8s
-    const stepTimer = setInterval(() => {
-      setStepIndex((i) => Math.min(i + 1, INSTALL_STEPS.length - 1));
-    }, 1800);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      clearInterval(stepTimer);
-    };
-  }, [stepIndex]);
-
+function InstallingScreen({ progress, step }: InstallingScreenProps) {
   return (
     <motion.div
       key="installing"
@@ -337,14 +308,14 @@ function InstallingScreen() {
         <div className="flex items-center justify-between">
           <AnimatePresence mode="wait">
             <motion.p
-              key={stepIndex}
+              key={step}
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.18 }}
               className="text-xs text-muted-foreground"
             >
-              {INSTALL_STEPS[stepIndex]}
+              {step || "Preparing…"}
             </motion.p>
           </AnimatePresence>
           <span className="text-xs text-muted-foreground tabular-nums">
@@ -489,14 +460,13 @@ function BackToOnlineButton() {
 /** Minimum time (ms) to show the analyzing screen for UX continuity. */
 const ANALYSIS_MIN_DISPLAY_MS = 1800;
 
-/** How long (ms) to simulate the install before advancing to "installed". */
-const INSTALL_SIMULATION_MS = 9000;
-
 export function OfflineSetupFlow() {
   const offlineState = useModeStore((s) => s.offlineState);
   const setOfflineState = useModeStore((s) => s.setOfflineState);
   const offlineRecommendation = useModeStore((s) => s.offlineRecommendation);
   const setOfflineRecommendation = useModeStore((s) => s.setOfflineRecommendation);
+  const installProgress = useModeStore((s) => s.installProgress);
+  const setInstallProgress = useModeStore((s) => s.setInstallProgress);
   const setMode = useModeStore((s) => s.setMode);
 
   // ── Transitions ──────────────────────────────────────────────────────────────
@@ -512,11 +482,9 @@ export function OfflineSetupFlow() {
     ipc.analyzeSystem()
       .then((readiness) => {
         if (cancelled) return;
-        // Store the recommendation regardless of state returned.
         if (readiness.recommendation) {
           setOfflineRecommendation(readiness.recommendation);
         }
-        // Respect the minimum display time for the analyze animation.
         const elapsed = Date.now() - start;
         const remaining = Math.max(0, ANALYSIS_MIN_DISPLAY_MS - elapsed);
         setTimeout(() => {
@@ -543,26 +511,49 @@ export function OfflineSetupFlow() {
     };
   }, [offlineState, setOfflineState, setOfflineRecommendation]);
 
-  // installing → installed after INSTALL_SIMULATION_MS
+  // installing: subscribe to progress events + await IPC result.
+  // handleInstall calls ipc.startInstall() which is fire-and-await — when it
+  // resolves, the main process has already persisted the final state; we just
+  // apply that state to the store here.
   useEffect(() => {
-    if (offlineState !== "installing") return;
-    const t = setTimeout(
-      () => setOfflineState("installed"),
-      INSTALL_SIMULATION_MS,
-    );
-    return () => clearTimeout(t);
-  }, [offlineState, setOfflineState]);
+    if (offlineState !== "installing") {
+      setInstallProgress(null);
+      return;
+    }
+
+    // Subscribe to push progress events.
+    const unsubscribe = ipc.onInstallProgress((progress) => {
+      setInstallProgress(progress);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [offlineState, setInstallProgress]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
   const handleStartSetup = () => setOfflineState("analyzing-system");
-  const handleInstall = () => setOfflineState("installing");
+
+  const handleInstall = () => {
+    if (!offlineRecommendation) return;
+    const modelId = offlineRecommendation.modelId;
+    // Transition to "installing" immediately for instant feedback.
+    setOfflineState("installing");
+    ipc
+      .startInstall(modelId)
+      .then((readiness) => {
+        // Final state from the main process — "installed" or "install-failed".
+        setOfflineState(readiness.state);
+      })
+      .catch(() => {
+        setOfflineState("install-failed");
+      });
+  };
+
   const handleRetry = () => setOfflineState("analyzing-system");
+
   const handleEnterChat = () => {
-    // State is already "installed". Ensure the mode is set to "offline" (or
-    // "auto") so that AppShell routes to the chat window instead of the setup
-    // flow. We unconditionally set "offline" here because the user explicitly
-    // chose to enter offline chat.
     setMode("offline");
   };
 
@@ -585,8 +576,6 @@ export function OfflineSetupFlow() {
           />
         )}
         {offlineState === "recommendation-ready" && !offlineRecommendation && (
-          // Fallback: recommendation-ready but no recommendation data — show
-          // a minimal retry screen so the user is never stuck.
           <ErrorScreen
             key="rec-missing"
             state="install-failed"
@@ -594,7 +583,11 @@ export function OfflineSetupFlow() {
           />
         )}
         {offlineState === "installing" && (
-          <InstallingScreen key="installing" />
+          <InstallingScreen
+            key="installing"
+            progress={installProgress?.pct ?? 0}
+            step={installProgress?.step ?? "Preparing…"}
+          />
         )}
         {offlineState === "installed" && (
           <SuccessScreen key="success" onEnterChat={handleEnterChat} />
@@ -611,4 +604,3 @@ export function OfflineSetupFlow() {
     </div>
   );
 }
-
