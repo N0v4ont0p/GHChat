@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from "child_process";
 import * as net from "net";
+import * as os from "os";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
 
@@ -125,7 +126,7 @@ export const runtimeManager = {
       "--host", "127.0.0.1",
       "--ctx-size", "4096",
       "--n-predict", "-1",
-      "--threads", String(Math.max(1, Math.floor(require("os").cpus().length / 2))),
+      "--threads", String(Math.max(1, Math.floor(os.cpus().length / 2))),
       "--no-display-prompt",
       "--log-disable",
     ];

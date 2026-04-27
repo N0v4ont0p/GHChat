@@ -146,6 +146,24 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         } else {
           const message = err instanceof Error ? err.message : String(err);
           console.error("[offline] chat stream error:", err);
+
+          // If the state was "installed" but the stream failed (e.g. binary
+          // missing or runtime process crashed), run an integrity check.  When
+          // files are actually gone we proactively transition to repair-needed
+          // so the user sees the repair screen rather than a generic chat error.
+          if (_offlineReadiness.state === "installed") {
+            const check = installManager.verifyIntegrity();
+            if (!check.ok) {
+              console.warn(
+                `[offline] runtime failure + integrity check failed: ${check.reason} — repair-needed`,
+              );
+              setOfflineReadiness({
+                state: "repair-needed",
+                message: check.reason ?? "Runtime failed and installation appears corrupt.",
+              });
+            }
+          }
+
           send(IPC.OFFLINE_CHAT_ERROR, { requestId, error: message });
         }
       } finally {
@@ -243,6 +261,61 @@ export function setOfflineReadiness(readiness: OfflineReadiness): void {
       });
     } catch (err) {
       console.error("[offline] failed to persist offline state to DB:", err);
+    }
+  }
+}
+
+/**
+ * Run on every app startup (after DB and IPC handlers are ready).
+ *
+ * Detects two critical failure scenarios and automatically transitions the
+ * offline state to "repair-needed" so the UI can guide the user:
+ *
+ * 1. `"installing"` on disk — the app was quit during an install.  The
+ *    partial download/extract is left on disk; the state is marked as
+ *    repair-needed so the user is prompted to re-install rather than
+ *    silently being stuck in a phantom "installing" state forever.
+ *
+ * 2. `"installed"` on disk but files are missing/corrupt — the model .gguf
+ *    or runtime binary was removed or is truncated (e.g. manual deletion,
+ *    a failed download whose temp file was mistakenly renamed, or a disk
+ *    error).  The user is shown the repair screen instead of a cryptic
+ *    runtime start failure mid-chat.
+ *
+ * All other states (not-installed, recommendation-ready, install-failed,
+ * repair-needed) are left unchanged — they already represent a known-broken
+ * or pre-install condition.
+ */
+export function checkAndRepairOnStartup(): void {
+  if (!isDatabaseReady()) return;
+
+  const state = loadOfflineStateFromDb();
+
+  if (state === "installing") {
+    // The app was quit or crashed while an install was in progress.
+    // The _installing lock was never cleared because the process exited.
+    // Treat this as a partial install that needs repair.
+    console.warn(
+      "[offline] detected interrupted install on startup — transitioning to repair-needed",
+    );
+    setOfflineReadiness({
+      state: "repair-needed",
+      message: "Installation was interrupted. Please repair to continue.",
+    });
+    return;
+  }
+
+  if (state === "installed") {
+    // Verify that the files the "installed" state relies on are still intact.
+    const check = installManager.verifyIntegrity();
+    if (!check.ok) {
+      console.warn(
+        `[offline] install integrity check failed on startup: ${check.reason} — transitioning to repair-needed`,
+      );
+      setOfflineReadiness({
+        state: "repair-needed",
+        message: check.reason ?? "Offline files appear to be missing or corrupt.",
+      });
     }
   }
 }

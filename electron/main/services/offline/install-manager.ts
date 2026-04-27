@@ -525,6 +525,66 @@ export const installManager = {
   },
 
   /**
+   * Check whether the current offline installation is intact.
+   *
+   * Verifies:
+   *  - At least one model is registered in the DB
+   *  - The model `.gguf` file exists and is ≥ 50 % of its declared size
+   *  - The runtime binary exists on disk
+   *
+   * Returns `{ok: true}` on success, or `{ok: false, reason}` when something
+   * is wrong so callers can branch without catching exceptions.
+   *
+   * Safe to call at any time; never throws.
+   */
+  verifyIntegrity(): { ok: boolean; reason?: string } {
+    try {
+      if (!isDatabaseReady()) {
+        return { ok: false, reason: "Database not available" };
+      }
+
+      // Must have at least one registered model.
+      const models = modelRegistry.listInstalled();
+      if (models.length === 0) {
+        return { ok: false, reason: "No offline model registered in database" };
+      }
+
+      const model = models[0];
+
+      // Model file must exist.
+      if (!existsSync(model.modelPath)) {
+        return { ok: false, reason: `Model file missing: ${model.modelPath}` };
+      }
+
+      // Model file must be at least 50 % of the declared size to rule out
+      // a truncated / interrupted download that was never cleaned up.
+      const modelStat = statSync(model.modelPath);
+      const minBytes = model.sizeGb * BYTES_PER_GB * 0.5;
+      if (modelStat.size < minBytes) {
+        return {
+          ok: false,
+          reason:
+            `Model file appears incomplete: expected ~${model.sizeGb.toFixed(1)} GB, ` +
+            `found ${(modelStat.size / BYTES_PER_GB).toFixed(1)} GB`,
+        };
+      }
+
+      // Runtime binary must exist.
+      const runtimeBinPath = join(storageService.getSubdir("runtime"), RUNTIME_BINARY_NAME);
+      if (!existsSync(runtimeBinPath)) {
+        return { ok: false, reason: "Runtime binary missing — the runtime must be reinstalled" };
+      }
+
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `Integrity check error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  },
+
+  /**
    * Remove all files associated with `modelId` and unregister it from the DB.
    * Safe to call even if some files are missing.
    */

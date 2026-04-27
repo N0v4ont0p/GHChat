@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from "electron";
 import { initDatabase } from "./services/database";
 import { registerAllIpcHandlers } from "./ipc";
+import { checkAndRepairOnStartup } from "./ipc/offline";
 import { createMainWindow, revealMainWindow } from "./window";
 import { getApiKey } from "./services/keychain";
 import { openRouterProvider } from "./providers";
@@ -44,6 +45,22 @@ app.whenReady().then(async () => {
     console.log("[main] IPC handlers registered");
   } catch (err) {
     console.error("[main] IPC handler registration FAILED:", err);
+  }
+
+  // Check whether the persisted offline state is still valid.  This must run
+  // after IPC handlers are registered (which initialises the in-memory offline
+  // state from the DB) and before the renderer window is created (so the very
+  // first OFFLINE_STATUS call from the renderer already returns the corrected
+  // state).
+  //
+  // Two failure modes are detected and automatically recovered:
+  //   - "installing" on disk → app was quit during install → repair-needed
+  //   - "installed" on disk but files missing/corrupt → repair-needed
+  try {
+    checkAndRepairOnStartup();
+    console.log("[main] offline integrity check complete");
+  } catch (err) {
+    console.error("[main] offline integrity check error:", err);
   }
 
   const apiKey = getApiKey();
