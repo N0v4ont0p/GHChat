@@ -42,6 +42,22 @@ interface RoutingPayload {
 /** The local-model ID used for offline chat streaming. */
 const OFFLINE_MODEL_ID = "offline-local";
 
+/**
+ * Returns true when a chat request should be routed to the local llama.cpp
+ * runtime rather than OpenRouter.
+ * - "offline" mode: always use local runtime.
+ * - "auto" mode: use local runtime only when a model is installed.
+ */
+function shouldUseOfflineBackend(
+  currentMode: string,
+  offlineState: string,
+): boolean {
+  return (
+    currentMode === "offline" ||
+    (currentMode === "auto" && offlineState === "installed")
+  );
+}
+
 /** Derive a short conversation title from the first user message */
 function deriveTitleFromMessage(content: string): string {
   const trimmed = content.trim().replace(/\s+/g, " ");
@@ -300,7 +316,7 @@ export function useChat(conversationId: string | null) {
       setLastStreamError(null);
       setRoutingInfo(null);
 
-      if (currentMode === "offline" || (currentMode === "auto" && offlineState === "installed")) {
+      if (shouldUseOfflineBackend(currentMode, offlineState)) {
         // ── Offline / Auto-with-offline path: local llama.cpp runtime ──────
         // No API key required; the runtime manager handles the rest.
         setStreamState("streaming");
@@ -343,10 +359,7 @@ export function useChat(conversationId: string | null) {
       try {
         // Only require an API key for online (OpenRouter) mode.
         // Auto mode may also use online as a fallback when offline is not installed.
-        const needsApiKey =
-          currentMode === "online" ||
-          (currentMode === "auto" && offlineState !== "installed");
-        if (needsApiKey) {
+        if (!shouldUseOfflineBackend(currentMode, offlineState)) {
           const apiKey = await ipc.getApiKey();
           if (!apiKey) {
             toast.error("No API key set. Open Settings to add your OpenRouter API key.", {
@@ -409,9 +422,7 @@ export function useChat(conversationId: string | null) {
     const id = activeRequestId.current;
     if (!id) return;
     setStreamState("stopping");
-    const usingOffline =
-      currentMode === "offline" ||
-      (currentMode === "auto" && offlineState === "installed");
+    const usingOffline = shouldUseOfflineBackend(currentMode, offlineState);
     if (usingOffline) {
       ipc.stopOfflineStream(id);
     } else {
