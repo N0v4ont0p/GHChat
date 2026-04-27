@@ -25,12 +25,55 @@ export type OfflineSetupState =
   | "install-failed"
   | "repair-needed";
 
+/**
+ * Minimal hardware profile summary included in an offline recommendation.
+ * Mirrors the main-process HardwareProfile but stripped to renderer-safe fields.
+ */
+export interface OfflineProfileSummary {
+  totalRamGb: number;
+  freeDiskGb: number;
+  /** Node.js platform string, e.g. "darwin", "win32", "linux". */
+  platform: string;
+  /** CPU architecture, e.g. "arm64", "x64". */
+  arch: string;
+  /** True when running on an Apple Silicon Mac (arm64 + darwin). */
+  isAppleSilicon: boolean;
+  cpuCores: number;
+}
+
+/**
+ * Offline model recommendation returned by the main-process analyze step.
+ * Contains everything the renderer needs to display the recommendation screen.
+ */
+export interface OfflineRecommendation {
+  /** Catalog model ID, e.g. "gemma4-4b-q4km". */
+  modelId: string;
+  /** Human-readable model family label, e.g. "Gemma 4 4B". */
+  label: string;
+  /** Variant label combining size and quantization, e.g. "4B · Q4_K_M". */
+  variantLabel: string;
+  /** Approximate download / disk size in gigabytes. */
+  sizeGb: number;
+  /** Quality/speed tier. */
+  tier: "balanced" | "quality" | "fast";
+  /** Human-readable explanation of why this variant was chosen. */
+  reason: string;
+  /** Hardware profile that drove the recommendation. */
+  profile: OfflineProfileSummary;
+}
+
 /** Current offline readiness returned by the main process. */
 export interface OfflineReadiness {
   /** Current position in the offline setup state machine. */
   state: OfflineSetupState;
   /** Human-readable status message (progress, error detail, etc.). */
   message?: string;
+  /**
+   * Populated when state is "recommendation-ready".
+   * Contains the recommended Gemma 4 variant and the hardware profile used
+   * to derive it.
+   */
+  recommendation?: OfflineRecommendation;
 }
 
 export type ModelCategory =
@@ -302,4 +345,10 @@ export const IPC = {
   MODE_SET: "mode:set",
   /** Returns OfflineReadiness — current offline state machine position */
   OFFLINE_STATUS: "offline:status",
+  /**
+   * Runs hardware profiling + recommendation logic.
+   * Transitions state → "recommendation-ready" and returns OfflineReadiness
+   * (with the recommendation field populated).
+   */
+  OFFLINE_ANALYZE: "offline:analyze",
 } as const;

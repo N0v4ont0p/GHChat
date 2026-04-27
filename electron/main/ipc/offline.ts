@@ -6,6 +6,8 @@ import {
   getOfflineInstallation,
   upsertOfflineInstallation,
 } from "../services/database";
+import { hardwareProfile } from "../services/offline/hardware-profile";
+import { recommendationService } from "../services/offline/recommendation";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
 // AppMode is kept in-memory (it resets to "online" on restart — future work
@@ -51,6 +53,25 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       }
     }
     return _offlineReadiness;
+  });
+
+  ipcMain.handle(IPC.OFFLINE_ANALYZE, async (): Promise<OfflineReadiness> => {
+    try {
+      const profile = await hardwareProfile.detect();
+      const { offlineRecommendation } = recommendationService.recommend(profile);
+      const readiness: OfflineReadiness = {
+        state: "recommendation-ready",
+        recommendation: offlineRecommendation,
+      };
+      setOfflineReadiness(readiness);
+      return readiness;
+    } catch (err) {
+      console.error("[offline] analyze failed:", err);
+      // Return a safe fallback so the renderer is never stuck.
+      const fallback: OfflineReadiness = { state: "not-installed", message: String(err) };
+      setOfflineReadiness(fallback);
+      return fallback;
+    }
   });
 }
 

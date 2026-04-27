@@ -70,4 +70,10 @@ export const ipc = {
   getMode: () => api().invoke<AppMode>(IPC.MODE_GET),
   setMode: (mode: AppMode) => api().invoke<AppMode>(IPC.MODE_SET, mode),
   getOfflineStatus: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_STATUS),
+  /**
+   * Runs hardware profiling and recommendation logic in the main process.
+   * Returns OfflineReadiness with state="recommendation-ready" and a populated
+   * recommendation field, or state="not-installed" on failure.
+   */
+  analyzeSystem: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_ANALYZE),
 };

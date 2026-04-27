@@ -15,16 +15,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useModeStore } from "@/stores/mode-store";
-
-// ── Gemma 4 model constants ───────────────────────────────────────────────────
-
-const GEMMA4_NAME = "Gemma 4";
-const GEMMA4_VARIANT = "4B · Q4_K_M";
-const GEMMA4_SIZE_GB = "3.5 GB";
-const GEMMA4_DESCRIPTION =
-  "Google's latest on-device model — fast, private, and capable. Runs entirely on your machine with no internet required.";
-const GEMMA4_WHY =
-  "Chosen for your device's available memory and storage. It delivers the best balance of response quality and speed for local inference.";
+import { ipc } from "@/lib/ipc";
+import type { OfflineRecommendation } from "@/types";
 
 // ── Animation variants ────────────────────────────────────────────────────────
 
@@ -184,7 +176,14 @@ function AnalyzingScreen() {
 
 // ── Recommendation screen ─────────────────────────────────────────────────────
 
-function RecommendationScreen({ onInstall }: { onInstall: () => void }) {
+function RecommendationScreen({
+  rec,
+  onInstall,
+}: {
+  rec: OfflineRecommendation;
+  onInstall: () => void;
+}) {
+  const sizeLabel = `${rec.sizeGb.toFixed(1)} GB`;
   return (
     <motion.div
       key="recommendation"
@@ -201,9 +200,10 @@ function RecommendationScreen({ onInstall }: { onInstall: () => void }) {
         <p className="text-xs font-medium uppercase tracking-widest text-primary/70">
           Recommended for your device
         </p>
-        <h2 className="text-2xl font-bold tracking-tight">{GEMMA4_NAME}</h2>
+        <h2 className="text-2xl font-bold tracking-tight">{rec.label}</h2>
         <p className="text-sm text-muted-foreground leading-relaxed">
-          {GEMMA4_DESCRIPTION}
+          Google's latest on-device model — fast, private, and capable. Runs
+          entirely on your machine with no internet required.
         </p>
       </div>
 
@@ -213,7 +213,7 @@ function RecommendationScreen({ onInstall }: { onInstall: () => void }) {
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted-foreground">Variant</span>
           <span className="text-xs font-mono font-medium rounded bg-secondary px-2 py-0.5">
-            {GEMMA4_VARIANT}
+            {rec.variantLabel}
           </span>
         </div>
         <div className="h-px bg-border" />
@@ -223,7 +223,7 @@ function RecommendationScreen({ onInstall }: { onInstall: () => void }) {
           <span className="text-xs text-muted-foreground">Download size</span>
           <div className="flex items-center gap-1.5">
             <Download className="h-3 w-3 text-muted-foreground" />
-            <span className="text-xs font-medium">{GEMMA4_SIZE_GB}</span>
+            <span className="text-xs font-medium">{sizeLabel}</span>
           </div>
         </div>
         <div className="h-px bg-border" />
@@ -233,22 +233,35 @@ function RecommendationScreen({ onInstall }: { onInstall: () => void }) {
           <span className="text-xs text-muted-foreground">Storage required</span>
           <div className="flex items-center gap-1.5">
             <HardDrive className="h-3 w-3 text-muted-foreground" />
-            <span className="text-xs font-medium">{GEMMA4_SIZE_GB}</span>
+            <span className="text-xs font-medium">{sizeLabel}</span>
           </div>
         </div>
+
+        {/* Apple Silicon badge */}
+        {rec.profile.isAppleSilicon && (
+          <>
+            <div className="h-px bg-border" />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Acceleration</span>
+              <span className="text-xs font-medium text-violet-400">
+                Apple Silicon · Metal GPU
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Why this model */}
       <div className="w-full rounded-xl border border-border/60 bg-primary/5 px-4 py-3 text-left">
-        <p className="text-xs text-primary/80 font-medium mb-1">Why Gemma 4?</p>
-        <p className="text-xs text-muted-foreground leading-relaxed">{GEMMA4_WHY}</p>
+        <p className="text-xs text-primary/80 font-medium mb-1">Why {rec.label}?</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
       </div>
 
       {/* CTA */}
       <div className="flex flex-col items-center gap-3 w-full">
         <Button className="w-full gap-2" onClick={onInstall}>
           <Download className="h-4 w-4" />
-          Install Gemma 4 · {GEMMA4_SIZE_GB}
+          Install {rec.variantLabel} · {sizeLabel}
         </Button>
         <BackToOnlineButton />
       </div>
@@ -473,8 +486,8 @@ function BackToOnlineButton() {
 
 // ── Orchestrator ──────────────────────────────────────────────────────────────
 
-/** How long (ms) to stay on the "analyzing" screen before advancing. */
-const ANALYSIS_DURATION_MS = 2200;
+/** Minimum time (ms) to show the analyzing screen for UX continuity. */
+const ANALYSIS_MIN_DISPLAY_MS = 1800;
 
 /** How long (ms) to simulate the install before advancing to "installed". */
 const INSTALL_SIMULATION_MS = 9000;
@@ -482,19 +495,53 @@ const INSTALL_SIMULATION_MS = 9000;
 export function OfflineSetupFlow() {
   const offlineState = useModeStore((s) => s.offlineState);
   const setOfflineState = useModeStore((s) => s.setOfflineState);
+  const offlineRecommendation = useModeStore((s) => s.offlineRecommendation);
+  const setOfflineRecommendation = useModeStore((s) => s.setOfflineRecommendation);
   const setMode = useModeStore((s) => s.setMode);
 
   // ── Transitions ──────────────────────────────────────────────────────────────
 
-  // analyzing-system → recommendation-ready after ANALYSIS_DURATION_MS
+  // analyzing-system → recommendation-ready: call real IPC + enforce a minimum
+  // display time so the analyzing screen never flashes by instantly.
   useEffect(() => {
     if (offlineState !== "analyzing-system") return;
-    const t = setTimeout(
-      () => setOfflineState("recommendation-ready"),
-      ANALYSIS_DURATION_MS,
-    );
-    return () => clearTimeout(t);
-  }, [offlineState, setOfflineState]);
+
+    let cancelled = false;
+    const start = Date.now();
+
+    ipc.analyzeSystem()
+      .then((readiness) => {
+        if (cancelled) return;
+        // Store the recommendation regardless of state returned.
+        if (readiness.recommendation) {
+          setOfflineRecommendation(readiness.recommendation);
+        }
+        // Respect the minimum display time for the analyze animation.
+        const elapsed = Date.now() - start;
+        const remaining = Math.max(0, ANALYSIS_MIN_DISPLAY_MS - elapsed);
+        setTimeout(() => {
+          if (!cancelled) {
+            setOfflineState(
+              readiness.state === "recommendation-ready"
+                ? "recommendation-ready"
+                : "not-installed",
+            );
+          }
+        }, remaining);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const elapsed = Date.now() - start;
+        const remaining = Math.max(0, ANALYSIS_MIN_DISPLAY_MS - elapsed);
+        setTimeout(() => {
+          if (!cancelled) setOfflineState("not-installed");
+        }, remaining);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [offlineState, setOfflineState, setOfflineRecommendation]);
 
   // installing → installed after INSTALL_SIMULATION_MS
   useEffect(() => {
@@ -530,8 +577,21 @@ export function OfflineSetupFlow() {
         {offlineState === "analyzing-system" && (
           <AnalyzingScreen key="analyzing" />
         )}
-        {offlineState === "recommendation-ready" && (
-          <RecommendationScreen key="recommendation" onInstall={handleInstall} />
+        {offlineState === "recommendation-ready" && offlineRecommendation && (
+          <RecommendationScreen
+            key="recommendation"
+            rec={offlineRecommendation}
+            onInstall={handleInstall}
+          />
+        )}
+        {offlineState === "recommendation-ready" && !offlineRecommendation && (
+          // Fallback: recommendation-ready but no recommendation data — show
+          // a minimal retry screen so the user is never stuck.
+          <ErrorScreen
+            key="rec-missing"
+            state="install-failed"
+            onRetry={handleRetry}
+          />
         )}
         {offlineState === "installing" && (
           <InstallingScreen key="installing" />
