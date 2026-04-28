@@ -157,22 +157,33 @@ function flushDb(): void {
  * Resolve the path to the sql.js WASM file.
  *
  * In development the file lives in node_modules/sql.js/dist/.
- * In a packaged app it is placed outside the asar archive via
- * electron-builder's asarUnpack rule so it can be read from the filesystem.
+ * In a packaged app, electron-builder copies the WASM via extraResources
+ * directly into the Resources directory so it can be read from the filesystem
+ * without needing an unpacked asar entry.  The JS wrapper is bundled into
+ * out/main/index.js by Vite; only the WASM binary needs a filesystem path.
  */
 function locateSqlJsWasm(file: string): string {
+  let resolved: string;
   if (app.isPackaged) {
-    return join(
-      process.resourcesPath,
-      "app.asar.unpacked",
-      "node_modules",
-      "sql.js",
-      "dist",
-      file,
-    );
+    // extraResources places files directly in the platform Resources directory
+    // (e.g. GHchat.app/Contents/Resources/ on macOS).
+    resolved = join(process.resourcesPath, file);
+  } else {
+    // app.getAppPath() returns the project root in development mode.
+    resolved = join(app.getAppPath(), "node_modules", "sql.js", "dist", file);
   }
-  // app.getAppPath() returns the project root in development mode.
-  return join(app.getAppPath(), "node_modules", "sql.js", "dist", file);
+  console.log(
+    `[db] locateSqlJsWasm: ${file} → ${resolved} (packaged: ${app.isPackaged})`,
+  );
+  if (!existsSync(resolved)) {
+    const msg =
+      `[db] sql.js WASM asset missing: ${resolved}\n` +
+      `     resourcesPath=${process.resourcesPath} appPath=${app.getAppPath()}\n` +
+      `     Packaged build must include sql-wasm.wasm via electron-builder extraResources.`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+  return resolved;
 }
 
 export async function initDatabase(): Promise<void> {

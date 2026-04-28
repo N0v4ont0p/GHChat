@@ -13,7 +13,12 @@ const OUT_RENDERER = "out/renderer";
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // sql.js and drizzle-orm must be bundled into the main-process output so
+    // that the packaged app does not need a node_modules directory at runtime.
+    // The sql-wasm.wasm binary is handled separately via electron-builder's
+    // extraResources (see electron-builder.yml) and resolved at runtime by
+    // locateSqlJsWasm() in database.ts.
+    plugins: [externalizeDepsPlugin({ exclude: ["sql.js", "drizzle-orm"] })],
     build: {
       outDir: OUT_MAIN,
       rollupOptions: {

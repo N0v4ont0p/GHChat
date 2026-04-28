@@ -6,8 +6,13 @@ directories:
 files:
   - out/**/*
   - package.json
-asarUnpack:
-  - node_modules/sql.js/dist/sql-wasm.wasm
+# sql-wasm.wasm cannot live inside the asar archive because it must be read
+# directly from the filesystem at runtime.  extraResources copies it next to
+# the asar archive (into Contents/Resources/ on macOS) so that locateSqlJsWasm()
+# in database.ts can resolve it via process.resourcesPath.
+extraResources:
+  - from: node_modules/sql.js/dist/sql-wasm.wasm
+    to: sql-wasm.wasm
 mac:
   identity: null
   category: public.app-category.productivity
