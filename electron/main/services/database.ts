@@ -204,17 +204,35 @@ export async function initDatabase(): Promise<void> {
   try {
     mkdirSync(dirname(_dbPath), { recursive: true });
 
-    console.log("[db] loading sql.js (WASM-based SQLite, no native compilation)…");
-    const SQL = await initSqlJs({ locateFile: locateSqlJsWasm });
+    console.log("[db] step 1/4 — loading sql.js (WASM-based SQLite, no native compilation)…");
+    let SQL: Awaited<ReturnType<typeof initSqlJs>>;
+    try {
+      SQL = await initSqlJs({ locateFile: locateSqlJsWasm });
+    } catch (sqlJsErr) {
+      const msg = errMsg(sqlJsErr);
+      console.error(
+        "[db] step 1/4 FAILED — sql.js / WASM initialisation error.",
+        "\n  message:", msg,
+        "\n  stack:", sqlJsErr instanceof Error ? sqlJsErr.stack : "(no stack)",
+        "\n  This is often caused by a bundling incompatibility (Rollup CJS plugin stripping",
+        "\n  typeof-module guards) or a missing sql-wasm.wasm at the resolved path.",
+        "\n  dbEnv:", dbEnvInfo(),
+      );
+      throw sqlJsErr;
+    }
+    console.log("[db] step 1/4 done — sql.js WASM module loaded");
 
+    console.log("[db] step 2/4 — opening SQLite database file…");
     if (existsSync(_dbPath)) {
-      console.log("[db] loading existing database from", _dbPath);
+      console.log("[db] step 2/4a — loading existing database from", _dbPath);
       sqliteDb = new SQL.Database(readFileSync(_dbPath));
     } else {
-      console.log("[db] creating new database at", _dbPath);
+      console.log("[db] step 2/4b — creating new database at", _dbPath);
       sqliteDb = new SQL.Database();
     }
-    console.log("[db] database opened — running schema creation…");
+    console.log("[db] step 2/4 done — database opened");
+
+    console.log("[db] step 3/4 — running schema creation…");
 
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS conversations (
@@ -241,8 +259,9 @@ export async function initDatabase(): Promise<void> {
       );
       INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id, current_mode) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL, 'online');
     `);
-    console.log("[db] schema creation done — checking migration version…");
+    console.log("[db] step 3/4 done — schema tables created");
 
+    console.log("[db] step 4/4 — checking migration version…");
     // ── Schema migrations ────────────────────────────────────────────────────
     // `PRAGMA user_version` is a free integer stored in the DB header.  We use
     // it to track which migrations have already run so each migration is applied
@@ -423,6 +442,7 @@ export async function initDatabase(): Promise<void> {
 
     // Persist the freshly initialised/migrated database immediately.
     flushDb();
+    console.log("[db] step 4/4 done — migrations complete; database ready at", _dbPath);
     console.log("[db] initialized successfully");
   } catch (err) {
     _dbInitError = errMsg(err);
