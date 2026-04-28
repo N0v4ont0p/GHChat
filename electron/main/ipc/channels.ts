@@ -25,4 +25,61 @@ export const IPC = {
   OR_CHAT_ERROR: "or:chat:error",
   /** Emitted before streaming starts; tells the renderer which model was chosen and why */
   OR_CHAT_ROUTING: "or:chat:routing",
+  /** Returns the current AppMode */
+  MODE_GET: "mode:get",
+  /** Sets the current AppMode; returns the updated AppMode */
+  MODE_SET: "mode:set",
+  /** Returns OfflineReadiness — current offline state machine position */
+  OFFLINE_STATUS: "offline:status",
+  /**
+   * Runs hardware profiling + recommendation logic.
+   * Transitions state → "recommendation-ready" and returns OfflineReadiness
+   * (with the recommendation field populated).
+   */
+  OFFLINE_ANALYZE: "offline:analyze",
+  /**
+   * Starts the full offline install pipeline for a given catalog model ID.
+   * Returns OfflineReadiness — state is "installed" on success or
+   * "install-failed" on error.  Live progress is pushed via OFFLINE_INSTALL_PROGRESS.
+   */
+  OFFLINE_INSTALL: "offline:install",
+  /**
+   * Push event (main → renderer) carrying OfflineInstallProgress.
+   * Fired repeatedly while an install is in progress.
+   */
+  OFFLINE_INSTALL_PROGRESS: "offline:install:progress",
+  /**
+   * Start a local-inference chat stream for offline mode.
+   * Sent from renderer to main via `window.ghchat.send()`.
+   * Payload: { requestId, messages }
+   */
+  OFFLINE_CHAT_STREAM: "offline:chat:stream",
+  /**
+   * Cancel an in-progress offline chat stream.
+   * Sent from renderer to main.  Payload: { requestId }
+   */
+  OFFLINE_CHAT_STOP: "offline:chat:stop",
+  /** Push (main → renderer): incremental token from local inference. Payload: { requestId, token } */
+  OFFLINE_CHAT_TOKEN: "offline:chat:token",
+  /** Push (main → renderer): stream complete. Payload: { requestId } */
+  OFFLINE_CHAT_END: "offline:chat:end",
+  /** Push (main → renderer): stream error. Payload: { requestId, error } */
+  OFFLINE_CHAT_ERROR: "offline:chat:error",
+  /**
+   * Returns OfflineInfo — installed package details, storage used, install path,
+   * and whether the runtime process is currently alive.
+   */
+  OFFLINE_GET_INFO: "offline:get-info",
+  /**
+   * Fully removes the offline installation — runtime binary, model files,
+   * downloads/tmp cache, manifests, and DB records.
+   * Online chats, API keys, and app settings are untouched.
+   * Returns OfflineReadiness with state="not-installed" on success.
+   */
+  OFFLINE_REMOVE: "offline:remove",
+  /**
+   * Opens the offline root directory in the OS file manager
+   * (Finder on macOS, Explorer on Windows, file manager on Linux).
+   */
+  OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
 } as const;

@@ -4,6 +4,8 @@ import { OnboardingFlow } from "@/components/onboarding/OnboardingFlow";
 import { ipc } from "@/lib/ipc";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useModeStore } from "@/stores/mode-store";
+import type { AppMode } from "@/types";
 
 type AppState = "loading" | "onboarding" | "ready";
 
@@ -12,6 +14,7 @@ export default function App() {
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
   const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
   const setDbAvailable = useSettingsStore((s) => s.setDbAvailable);
+  const setMode = useModeStore((s) => s.setMode);
 
   useEffect(() => {
     // Safety-net: if IPC never responds, fall through to onboarding after 5 s
@@ -48,6 +51,14 @@ export default function App() {
         // Seed the store with the persisted model choice when available
         if (settings?.defaultModel) {
           setSelectedModel(settings.defaultModel);
+        }
+
+        // Restore the persisted mode choice (online / offline / auto).
+        // The main process already loaded this from the DB; we mirror it
+        // in the renderer store so AppShell's routing is correct before it
+        // mounts (avoids a flash of the wrong screen).
+        if (settings?.currentMode) {
+          setMode(settings.currentMode as AppMode);
         }
 
         // Skip onboarding when a key is stored AND either:

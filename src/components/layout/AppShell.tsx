@@ -3,9 +3,12 @@ import { TitleBar } from "./TitleBar";
 import { Sidebar } from "./Sidebar";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { SettingsModal } from "@/components/settings/SettingsModal";
+import { OfflineSetupFlow } from "@/components/offline/OfflineSetupFlow";
+import { OfflineManagementModal } from "@/components/offline/OfflineManagementModal";
 import { useConversations } from "@/hooks/useConversations";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 
 export function AppShell() {
@@ -14,6 +17,19 @@ export function AppShell() {
   const incognitoMode = useChatStore((s) => s.incognitoMode);
   const dbAvailable = useSettingsStore((s) => s.dbAvailable);
   const autoSelectedRef = useRef(false);
+
+  const currentMode = useModeStore((s) => s.currentMode);
+  const offlineState = useModeStore((s) => s.offlineState);
+  const setOfflineState = useModeStore((s) => s.setOfflineState);
+
+  // Sync offline readiness from the main process on mount.
+  useEffect(() => {
+    ipc.getOfflineStatus()
+      .then((r) => setOfflineState(r.state))
+      .catch(() => {
+        console.debug("[AppShell] offline status unavailable, using default");
+      });
+  }, [setOfflineState]);
 
   // Auto-select the most recent conversation when conversations load
   // and none is currently selected (e.g. on launch without a persisted lastConversationId)
@@ -33,16 +49,25 @@ export function AppShell() {
     }
   }, [selectedConversationId, incognitoMode, dbAvailable]);
 
+  // Determine whether offline setup is required.
+  // Only "offline" mode explicitly requests offline — when not installed it
+  // routes through the setup flow.  "auto" mode falls back to online silently
+  // when offline is not ready, so it never forces the setup flow.
+  const needsOfflineSetup =
+    currentMode === "offline" &&
+    offlineState !== "installed";
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
         <main className="flex flex-1 overflow-hidden">
-          <ChatWindow />
+          {needsOfflineSetup ? <OfflineSetupFlow /> : <ChatWindow />}
         </main>
       </div>
       <SettingsModal />
+      <OfflineManagementModal />
     </div>
   );
 }

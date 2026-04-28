@@ -1,5 +1,81 @@
 export type MessageRole = "user" | "assistant" | "system";
 
+// ── App mode ──────────────────────────────────────────────────────────────────
+
+/** Top-level operating mode for GHchat. */
+export type AppMode = "online" | "offline" | "auto";
+
+/**
+ * States of the offline setup state machine.
+ *
+ * not-installed      – no offline runtime or model has been set up
+ * analyzing-system   – hardware profile detection in progress
+ * recommendation-ready – hardware profile done; recommendations available
+ * installing         – model download / runtime install in progress
+ * installed          – offline runtime is ready and a model is available
+ * install-failed     – the last install attempt failed; user can retry
+ * repair-needed      – files are present but the runtime check failed
+ */
+export type OfflineSetupState =
+  | "not-installed"
+  | "analyzing-system"
+  | "recommendation-ready"
+  | "installing"
+  | "installed"
+  | "install-failed"
+  | "repair-needed";
+
+/**
+ * Minimal hardware profile summary included in an offline recommendation.
+ * Mirrors the main-process HardwareProfile but stripped to renderer-safe fields.
+ */
+export interface OfflineProfileSummary {
+  totalRamGb: number;
+  freeDiskGb: number;
+  /** Node.js platform string, e.g. "darwin", "win32", "linux". */
+  platform: string;
+  /** CPU architecture, e.g. "arm64", "x64". */
+  arch: string;
+  /** True when running on an Apple Silicon Mac (arm64 + darwin). */
+  isAppleSilicon: boolean;
+  cpuCores: number;
+}
+
+/**
+ * Offline model recommendation returned by the main-process analyze step.
+ * Contains everything the renderer needs to display the recommendation screen.
+ */
+export interface OfflineRecommendation {
+  /** Catalog model ID, e.g. "gemma4-4b-q4km". */
+  modelId: string;
+  /** Human-readable model family label, e.g. "Gemma 4 4B". */
+  label: string;
+  /** Variant label combining size and quantization, e.g. "4B · Q4_K_M". */
+  variantLabel: string;
+  /** Approximate download / disk size in gigabytes. */
+  sizeGb: number;
+  /** Quality/speed tier. */
+  tier: "balanced" | "quality" | "fast";
+  /** Human-readable explanation of why this variant was chosen. */
+  reason: string;
+  /** Hardware profile that drove the recommendation. */
+  profile: OfflineProfileSummary;
+}
+
+/** Current offline readiness returned by the main process. */
+export interface OfflineReadiness {
+  /** Current position in the offline setup state machine. */
+  state: OfflineSetupState;
+  /** Human-readable status message (progress, error detail, etc.). */
+  message?: string;
+  /**
+   * Populated when state is "recommendation-ready".
+   * Contains the recommended Gemma 4 variant and the hardware profile used
+   * to derive it.
+   */
+  recommendation?: OfflineRecommendation;
+}
+
 export type ModelCategory =
   | "auto"
   | "best"
@@ -81,6 +157,8 @@ export interface AppSettings {
   onboardingComplete?: boolean;
   /** ID of the last active conversation, restored on next launch */
   lastConversationId?: string | null;
+  /** Last selected app mode, restored on next launch */
+  currentMode?: AppMode;
 }
 
 export interface ModelInfo {
@@ -221,6 +299,67 @@ export interface KeyValidationResult {
   diagnostics?: OpenRouterDiagnostics;
 }
 
+/**
+ * Phase labels for the offline install pipeline.
+ *
+ * preflight           – checking disk space, platform compatibility, directories
+ * downloading-runtime – fetching the llama.cpp server binary
+ * verifying-runtime   – confirming the binary size/hash is sane
+ * downloading-model   – fetching the GGUF file from the download URL
+ * verifying-model     – computing and comparing the SHA-256 checksum
+ * finalizing          – moving file to managed storage, writing manifest, updating DB
+ * smoke-test          – confirming the installed file is usable
+ */
+export type OfflineInstallPhase =
+  | "preflight"
+  | "downloading-runtime"
+  | "verifying-runtime"
+  | "downloading-model"
+  | "verifying-model"
+  | "finalizing"
+  | "smoke-test";
+
+/** Live progress snapshot pushed from the main-process installer to the renderer. */
+export interface OfflineInstallProgress {
+  /** Current pipeline phase. */
+  phase: OfflineInstallPhase;
+  /** Short human-readable description of the current step. */
+  step: string;
+  /** Overall percent complete (0–100). */
+  pct: number;
+  /** Bytes received so far (populated during downloading-model phase). */
+  downloadedBytes?: number;
+  /** Total expected bytes (populated during downloading-model when Content-Length is known). */
+  totalBytes?: number;
+  /** Current download speed in bytes/second (populated during downloading-model). */
+  speedBps?: number;
+  /** Estimated seconds remaining in the current download (populated during downloading-model). */
+  etaSec?: number;
+}
+
+
+/** Information about a fully installed offline setup, returned by OFFLINE_GET_INFO. */
+export interface OfflineInfo {
+  /** Catalog model ID of the installed model (e.g. "gemma4-4b-q4km"). */
+  modelId: string;
+  /** Human-readable model name (e.g. "Gemma 4 4B"). */
+  modelName: string;
+  /** Short variant label (e.g. "4B · Q4_K_M"). */
+  variantLabel: string;
+  /** Quantization string (e.g. "Q4_K_M"). */
+  quantization: string;
+  /** Declared model size in GB from the catalog. */
+  sizeGb: number;
+  /** Total bytes consumed on disk by all offline assets (runtime + model + manifests). */
+  storageBytesUsed: number;
+  /** Absolute path to the offline root directory. */
+  installPath: string;
+  /** Epoch ms when the model was first installed; null before first install. */
+  installedAt: number | null;
+  /** Whether the runtime subprocess is currently alive and responding. */
+  isRuntimeRunning: boolean;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -263,4 +402,61 @@ export const IPC = {
   OR_CHAT_ERROR: "or:chat:error",
   /** Emitted before streaming starts; tells the renderer which model was chosen and why */
   OR_CHAT_ROUTING: "or:chat:routing",
+  /** Returns the current AppMode */
+  MODE_GET: "mode:get",
+  /** Sets the current AppMode; returns the updated AppMode */
+  MODE_SET: "mode:set",
+  /** Returns OfflineReadiness — current offline state machine position */
+  OFFLINE_STATUS: "offline:status",
+  /**
+   * Runs hardware profiling + recommendation logic.
+   * Transitions state → "recommendation-ready" and returns OfflineReadiness
+   * (with the recommendation field populated).
+   */
+  OFFLINE_ANALYZE: "offline:analyze",
+  /**
+   * Starts the full offline install pipeline for a given catalog model ID.
+   * Returns OfflineReadiness — state is "installed" on success or
+   * "install-failed" on error.  Live progress is pushed via OFFLINE_INSTALL_PROGRESS.
+   */
+  OFFLINE_INSTALL: "offline:install",
+  /**
+   * Push event (main → renderer) carrying OfflineInstallProgress.
+   * Fired repeatedly while an install is in progress.
+   */
+  OFFLINE_INSTALL_PROGRESS: "offline:install:progress",
+  /**
+   * Start a local-inference chat stream for offline mode.
+   * Sent from renderer to main via `window.ghchat.send()`.
+   * Payload: { requestId, messages }
+   */
+  OFFLINE_CHAT_STREAM: "offline:chat:stream",
+  /**
+   * Cancel an in-progress offline chat stream.
+   * Sent from renderer to main.  Payload: { requestId }
+   */
+  OFFLINE_CHAT_STOP: "offline:chat:stop",
+  /** Push (main → renderer): incremental token from local inference. Payload: { requestId, token } */
+  OFFLINE_CHAT_TOKEN: "offline:chat:token",
+  /** Push (main → renderer): stream complete. Payload: { requestId } */
+  OFFLINE_CHAT_END: "offline:chat:end",
+  /** Push (main → renderer): stream error. Payload: { requestId, error } */
+  OFFLINE_CHAT_ERROR: "offline:chat:error",
+  /**
+   * Returns OfflineInfo — installed package details, storage used, install path,
+   * and whether the runtime process is currently alive.
+   */
+  OFFLINE_GET_INFO: "offline:get-info",
+  /**
+   * Fully removes the offline installation — runtime binary, model files,
+   * downloads/tmp cache, manifests, and DB records.
+   * Online chats, API keys, and app settings are untouched.
+   * Returns OfflineReadiness with state="not-installed" on success.
+   */
+  OFFLINE_REMOVE: "offline:remove",
+  /**
+   * Opens the offline root directory in the OS file manager
+   * (Finder on macOS, Explorer on Windows, file manager on Linux).
+   */
+  OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
 } as const;

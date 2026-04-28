@@ -6,7 +6,12 @@ import type {
   ModelPreset,
   KeyValidationResult,
   OpenRouterDiagnostics,
+  AppMode,
+  OfflineReadiness,
+  OfflineInstallProgress,
+  OfflineInfo,
 } from "@/types";
+import type { IpcRendererEvent } from "electron";
 
 function api() {
   if (typeof window === "undefined" || !window.ghchat) {
@@ -63,4 +68,63 @@ export const ipc = {
   // Streaming
   stopStream: (requestId: string) =>
     api().send(IPC.OR_CHAT_STOP, { requestId }),
+
+  // Mode
+  getMode: () => api().invoke<AppMode>(IPC.MODE_GET),
+  setMode: (mode: AppMode) => api().invoke<AppMode>(IPC.MODE_SET, mode),
+  getOfflineStatus: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_STATUS),
+  /**
+   * Runs hardware profiling and recommendation logic in the main process.
+   * Returns OfflineReadiness with state="recommendation-ready" and a populated
+   * recommendation field, or state="not-installed" on failure.
+   */
+  analyzeSystem: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_ANALYZE),
+  /**
+   * Start the full offline install pipeline for the given catalog model ID.
+   * Returns the final OfflineReadiness (state = "installed" or "install-failed").
+   * Live progress is delivered via onInstallProgress.
+   */
+  startInstall: (modelId: string) =>
+    api().invoke<OfflineReadiness>(IPC.OFFLINE_INSTALL, modelId),
+  /**
+   * Subscribe to install progress events.
+   * Returns an unsubscribe function — call it when the component unmounts.
+   */
+  onInstallProgress: (cb: (progress: OfflineInstallProgress) => void) =>
+    api().on(IPC.OFFLINE_INSTALL_PROGRESS, (_event: IpcRendererEvent, progress: OfflineInstallProgress) =>
+      cb(progress),
+    ),
+
+  /**
+   * Send a local-inference chat stream request (offline mode).
+   * Tokens are delivered via the OFFLINE_CHAT_TOKEN, OFFLINE_CHAT_END,
+   * and OFFLINE_CHAT_ERROR push events.
+   */
+  sendOfflineChatStream: (payload: {
+    requestId: string;
+    modelId: string;
+    messages: Array<{ role: string; content: string }>;
+  }) => api().send(IPC.OFFLINE_CHAT_STREAM, payload),
+
+  /** Cancel an in-progress offline chat stream. */
+  stopOfflineStream: (requestId: string) =>
+    api().send(IPC.OFFLINE_CHAT_STOP, { requestId }),
+
+  /**
+   * Retrieve details about the installed offline package: model info, disk
+   * usage, install path, and whether the runtime is currently running.
+   */
+  getOfflineInfo: () => api().invoke<OfflineInfo>(IPC.OFFLINE_GET_INFO),
+
+  /**
+   * Fully remove the offline installation — runtime binary, model files,
+   * downloads/tmp cache, manifests, and DB state.
+   * Online data is untouched.  Returns the new OfflineReadiness (state = "not-installed").
+   */
+  removeOfflineMode: () => api().invoke<OfflineReadiness>(IPC.OFFLINE_REMOVE),
+
+  /**
+   * Open the offline root directory in the OS file manager.
+   */
+  revealOfflineFolder: () => api().invoke<void>(IPC.OFFLINE_REVEAL_FOLDER),
 };

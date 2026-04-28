@@ -1,9 +1,12 @@
 import { app, BrowserWindow } from "electron";
 import { initDatabase } from "./services/database";
 import { registerAllIpcHandlers } from "./ipc";
+import { checkAndRepairOnStartup } from "./ipc/offline";
 import { createMainWindow, revealMainWindow } from "./window";
 import { getApiKey } from "./services/keychain";
 import { openRouterProvider } from "./providers";
+import { storageService } from "./services/offline";
+import { runtimeManager } from "./services/offline/runtime-manager";
 
 // Surface any uncaught errors so they appear in Electron's log instead of
 // disappearing silently (which would leave the app running with no window).
@@ -27,11 +30,37 @@ app.whenReady().then(async () => {
     console.error("[main] database init FAILED:", err);
   }
 
+  // Ensure the GHchat-managed offline directory tree exists under the
+  // platform-specific persistent root (Application Support / LocalAppData).
+  // This is a no-op if the directories were already created on a previous run.
+  try {
+    storageService.ensureDirectories();
+    console.log("[main] offline storage dirs ensured at:", storageService.getOfflineRoot());
+  } catch (err) {
+    console.error("[main] offline storage dir creation FAILED:", err);
+  }
+
   try {
     registerAllIpcHandlers();
     console.log("[main] IPC handlers registered");
   } catch (err) {
     console.error("[main] IPC handler registration FAILED:", err);
+  }
+
+  // Check whether the persisted offline state is still valid.  This must run
+  // after IPC handlers are registered (which initialises the in-memory offline
+  // state from the DB) and before the renderer window is created (so the very
+  // first OFFLINE_STATUS call from the renderer already returns the corrected
+  // state).
+  //
+  // Two failure modes are detected and automatically recovered:
+  //   - "installing" on disk → app was quit during install → repair-needed
+  //   - "installed" on disk but files missing/corrupt → repair-needed
+  try {
+    checkAndRepairOnStartup();
+    console.log("[main] offline integrity check complete");
+  } catch (err) {
+    console.error("[main] offline integrity check error:", err);
   }
 
   const apiKey = getApiKey();
@@ -64,3 +93,11 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+app.on("before-quit", () => {
+  // Gracefully shut down the local inference server before the process exits.
+  runtimeManager.stop().catch((err: unknown) => {
+    console.error("[main] runtime stop on quit failed:", err);
+  });
+});
+
