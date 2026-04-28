@@ -172,15 +172,16 @@ function locateSqlJsWasm(file: string): string {
     // app.getAppPath() returns the project root in development mode.
     resolved = join(app.getAppPath(), "node_modules", "sql.js", "dist", file);
   }
-  const exists = existsSync(resolved);
   console.log(
-    `[db] locateSqlJsWasm: ${file} → ${resolved} (exists: ${exists}, packaged: ${app.isPackaged})`,
+    `[db] locateSqlJsWasm: ${file} → ${resolved} (packaged: ${app.isPackaged})`,
   );
-  if (!exists) {
-    console.error(
-      `[db] WASM asset not found at expected path: ${resolved}\n` +
-      `     resourcesPath=${process.resourcesPath} appPath=${app.getAppPath()}`,
-    );
+  if (!existsSync(resolved)) {
+    const msg =
+      `[db] sql.js WASM asset missing: ${resolved}\n` +
+      `     resourcesPath=${process.resourcesPath} appPath=${app.getAppPath()}\n` +
+      `     Packaged build must include sql-wasm.wasm via electron-builder extraResources.`;
+    console.error(msg);
+    throw new Error(msg);
   }
   return resolved;
 }
