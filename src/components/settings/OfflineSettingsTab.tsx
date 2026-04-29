@@ -44,6 +44,14 @@ function fmtBytes(bytes: number): string {
   return `${v.toFixed(v >= 100 || u <= 1 ? 0 : 1)} ${units[u]}`;
 }
 
+/**
+ * Heuristic threshold used by hardware-fit warnings: when an active
+ * model's on-disk size exceeds this fraction of the host's total RAM,
+ * we surface an amber diagnostic warning the user that streaming may
+ * be slow and recommending a smaller variant.
+ */
+const HEAVY_MODEL_RAM_RATIO = 0.6;
+
 const PRESET_META: Record<
   OfflinePerformancePreset,
   { label: string; description: string; icon: React.ComponentType<{ className?: string }> }
@@ -154,7 +162,7 @@ export function OfflineSettingsTab() {
 
   const activeModel = installedModels.find((m) => m.isActive);
   const heaviestThatFits = hwProfile
-    ? installedModels.find((m) => m.isActive && m.sizeBytes / 1024 ** 3 > hwProfile.totalRamGb * 0.6)
+    ? installedModels.find((m) => m.isActive && m.sizeOnDiskBytes / 1024 ** 3 > hwProfile.totalRamGb * HEAVY_MODEL_RAM_RATIO)
     : null;
 
   return (
@@ -185,7 +193,7 @@ export function OfflineSettingsTab() {
             <div className="mt-2 flex items-start gap-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-300">
               <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
               <span>
-                The active model <strong>{heaviestThatFits.name}</strong> ({fmtBytes(heaviestThatFits.sizeBytes)}) is
+                The active model <strong>{heaviestThatFits.name}</strong> ({fmtBytes(heaviestThatFits.sizeOnDiskBytes)}) is
                 large for this machine and may stream slowly. Try a smaller variant for faster responses.
               </span>
             </div>
@@ -220,7 +228,7 @@ export function OfflineSettingsTab() {
             <SelectContent>
               {installedModels.map((m) => (
                 <SelectItem key={m.id} value={m.id}>
-                  {m.name} ({fmtBytes(m.sizeBytes)})
+                  {m.name} ({fmtBytes(m.sizeOnDiskBytes)})
                   {m.health !== "ok" && " — needs repair"}
                 </SelectItem>
               ))}
@@ -526,7 +534,7 @@ export function OfflineSettingsTab() {
                     </span>
                   )}
                 </div>
-                <span className="text-muted-foreground">{fmtBytes(m.sizeBytes)}</span>
+                <span className="text-muted-foreground">{fmtBytes(m.sizeOnDiskBytes)}</span>
               </div>
             ))}
           </div>

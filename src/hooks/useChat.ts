@@ -43,6 +43,15 @@ interface RoutingPayload {
 const OFFLINE_MODEL_ID = "offline-local";
 
 /**
+ * How long after a user-initiated stop the renderer keeps the requestId
+ * in its `cancelledRequestIds` set so any late token events arriving
+ * from the runtime are still suppressed.  Slightly longer than the IPC
+ * cancel-watchdog (1500 ms default) so the watchdog has time to either
+ * drain or force-restart before we forget about the request.
+ */
+const CANCELLED_REQUEST_CLEANUP_DELAY_MS = 5_000;
+
+/**
  * Returns true when a chat request should be routed to the local llama.cpp
  * runtime rather than OpenRouter.
  * - "offline" mode: always use local runtime.
@@ -462,7 +471,7 @@ export function useChat(conversationId: string | null) {
         resetStreaming();
         // Drop the entry after a few seconds — long enough that any
         // late tokens from the runtime are still suppressed.
-        setTimeout(() => cancelledRequestIds.current.delete(id), 5_000);
+        setTimeout(() => cancelledRequestIds.current.delete(id), CANCELLED_REQUEST_CLEANUP_DELAY_MS);
       };
 
       if (!fullText.trim()) {
@@ -492,7 +501,7 @@ export function useChat(conversationId: string | null) {
         .catch(() => {
           setStreamState("failed");
           resetStreaming();
-          setTimeout(() => cancelledRequestIds.current.delete(id), 5_000);
+          setTimeout(() => cancelledRequestIds.current.delete(id), CANCELLED_REQUEST_CLEANUP_DELAY_MS);
         });
     } else {
       ipc.stopStream(id);

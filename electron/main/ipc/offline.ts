@@ -47,6 +47,14 @@ import * as os from "os";
  * before hard-restarting the runtime.  Picked so that on Apple Silicon
  * generating one token of Gemma 4 (~150–800 ms typical) has time to
  * complete cleanly, while not feeling indefinite to the user.
+ *
+ * Cross-platform note: Linux/Windows builds of llama.cpp behave the
+ * same way for HTTP cancellation — they detect a closed socket on the
+ * next emitted token and abort generation.  The 1500 ms ceiling is a
+ * safety net for the worst case (a model mid-batch on slow hardware);
+ * users on faster machines will rarely hit the timeout because the
+ * fetch unwinds first.  Users on very slow machines can raise this
+ * value via the Offline settings tab.
  */
 const DEFAULT_CANCEL_TIMEOUT_MS = 1500;
 

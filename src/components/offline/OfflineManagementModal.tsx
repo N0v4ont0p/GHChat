@@ -35,6 +35,15 @@ import type {
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
+/**
+ * Heuristic threshold used by the hardware-fit warning banner: when the
+ * active model's on-disk size exceeds this fraction of the host's total
+ * RAM, the runtime is likely to swap and stream slowly.
+ *
+ * Mirrors HEAVY_MODEL_RAM_RATIO in OfflineSettingsTab.tsx — keep in sync.
+ */
+const HEAVY_MODEL_RAM_RATIO = 0.6;
+
 function fmtBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -593,10 +602,10 @@ export function OfflineManagementModal() {
                 if (!hwProfile || !installed) return null;
                 const active = installed.find((m) => m.isActive);
                 if (!active) return null;
-                const sizeGb = active.sizeBytes / 1024 ** 3;
+                const sizeGb = active.sizeOnDiskBytes / 1024 ** 3;
                 // Heuristic: if model size > 60% of total RAM, the runtime
                 // is likely to swap and stream slowly on this machine.
-                const heavy = sizeGb > hwProfile.totalRamGb * 0.6;
+                const heavy = sizeGb > hwProfile.totalRamGb * HEAVY_MODEL_RAM_RATIO;
                 return (
                   <div
                     className={cn(
@@ -618,7 +627,7 @@ export function OfflineManagementModal() {
                       <p className="text-[10px] text-muted-foreground/80 leading-relaxed">
                         {heavy ? (
                           <>
-                            Your active model <strong>{active.name}</strong> ({fmtBytes(active.sizeBytes)})
+                            Your active model <strong>{active.name}</strong> ({fmtBytes(active.sizeOnDiskBytes)})
                             is large for this machine and may stream slowly. Activate a smaller variant
                             for faster responses.
                           </>
