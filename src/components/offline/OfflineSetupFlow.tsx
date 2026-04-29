@@ -666,6 +666,18 @@ function describeErrorCategory(
           "GitHub returned an unexpected error. The service may be temporarily " +
           "degraded — please try again in a few minutes.",
       };
+    case "auth-required":
+      return {
+        title: "Download requires sign-in",
+        summary:
+          "The model download server returned HTTP 401/403, meaning the " +
+          "asset is gated or requires authentication. The installer is " +
+          "configured to use an ungated public mirror by default — if you " +
+          "see this, the mirror may have moved. You can also set " +
+          "HF_TOKEN (or GHCHAT_HF_TOKEN) to your HuggingFace access token, " +
+          "or GHCHAT_OFFLINE_MODEL_BASE_URL to point at a different mirror, " +
+          "and try again.",
+      };
     case "install":
       return {
         title: "Installation failed",

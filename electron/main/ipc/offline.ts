@@ -16,7 +16,10 @@ import { installManager } from "../services/offline/install-manager";
 import { runtimeManager } from "../services/offline/runtime-manager";
 import { storageService } from "../services/offline/storage";
 import { formatErrorChain } from "../services/offline/runtime-catalog";
-import { RuntimeReleaseInstallError } from "../services/offline/install-manager";
+import {
+  RuntimeReleaseInstallError,
+  AssetDownloadInstallError,
+} from "../services/offline/install-manager";
 import type { ChatMessage } from "../services/offline/runtime-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
@@ -138,15 +141,24 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         // render an actionable message instead of raw network error text.
         // Falls back to "install" for non-network failures (disk space,
         // checksum mismatch, extraction error, etc.).
-        const errorCategory =
-          err instanceof RuntimeReleaseInstallError ? err.category : "install";
+        let errorCategory: OfflineReadiness["errorCategory"] = "install";
+        let errorDetails = causeChain;
+        if (err instanceof RuntimeReleaseInstallError) {
+          errorCategory = err.category;
+        } else if (err instanceof AssetDownloadInstallError) {
+          errorCategory = err.category;
+          // Prefer the pre-rendered diagnostic block (purpose/host/redirects/
+          // headers/body) over the bare error chain so the renderer's
+          // "Technical details" section is immediately useful.
+          errorDetails = `${err.causeChain}\n\n${causeChain}`;
+        }
         const topMessage = err instanceof Error ? err.message : String(err);
 
         const failed: OfflineReadiness = {
           state: "install-failed",
           message: topMessage,
           errorCategory,
-          errorDetails: causeChain,
+          errorDetails,
         };
         setOfflineReadiness(failed);
         return failed;

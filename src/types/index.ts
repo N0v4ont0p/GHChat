@@ -75,6 +75,7 @@ export type OfflineErrorCategory =
   | "rate-limited"
   | "tls-proxy"
   | "http-error"
+  | "auth-required"
   | "install"
   | "unknown";
 
