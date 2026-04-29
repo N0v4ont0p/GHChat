@@ -149,6 +149,39 @@ async function extractZip(zipPath: string, targetDir: string): Promise<void> {
 }
 
 /**
+ * Extract a gzip-compressed tar archive (.tar.gz / .tgz) to `targetDir`.
+ *
+ * Uses the system `tar` utility on every platform — it's available on
+ * macOS, Linux, and Windows 10 (1803)+ / Windows 11. Args are passed via
+ * `execFile` (no shell), avoiding any path-injection risk.
+ */
+async function extractTarGz(tarPath: string, targetDir: string): Promise<void> {
+  mkdirSync(targetDir, { recursive: true });
+  await execFileAsync("tar", ["-xzf", tarPath, "-C", targetDir]);
+}
+
+/**
+ * Dispatch to the correct extractor based on the archive extension we
+ * recorded when selecting the release asset.
+ */
+async function extractRuntimeArchive(
+  archivePath: string,
+  archiveExt: string,
+  targetDir: string,
+): Promise<void> {
+  if (archiveExt === ".zip") {
+    await extractZip(archivePath, targetDir);
+  } else if (archiveExt === ".tar.gz" || archiveExt === ".tgz") {
+    await extractTarGz(archivePath, targetDir);
+  } else {
+    throw new Error(
+      `Unsupported runtime archive extension "${archiveExt}". ` +
+        `Expected one of: .zip, .tar.gz, .tgz.`,
+    );
+  }
+}
+
+/**
  * Recursively walk `dir` and return the first file whose base name matches
  * `name` (case-sensitive).  Returns `null` when nothing is found.
  */
@@ -256,7 +289,10 @@ export const installManager = {
       const tmpDir = storageService.getSubdir("tmp");
 
       const runtimeBinPath = join(runtimeDir, RUNTIME_BINARY_NAME);
-      const runtimeZipTmp = join(downloadsDir, "llama-server.zip.tmp");
+      // Archive extension is decided dynamically per release (see runtime-catalog
+      // selection rule). The tmp filename is therefore generic; the real
+      // extension is recorded on the release info object below.
+      const runtimeArchiveTmp = join(downloadsDir, "llama-runtime.archive.tmp");
       const runtimeExtractDir = join(tmpDir, "llama-extract");
 
       const tmpPath = join(downloadsDir, `${modelId}.gguf.tmp`);
@@ -270,13 +306,17 @@ export const installManager = {
 
         let runtimeDownloadUrl: string;
         let runtimeSizeBytes: number;
+        let runtimeArchiveExt: string;
+        let runtimeAssetName: string;
         try {
           const release = await fetchLatestRuntimeRelease();
           runtimeDownloadUrl = release.downloadUrl;
           runtimeSizeBytes = release.sizeBytes;
+          runtimeArchiveExt = release.archiveExt;
+          runtimeAssetName = release.assetName;
           report(
             "downloading-runtime",
-            `Downloading runtime (${getRuntimePlatformTag()})…`,
+            `Downloading runtime ${release.tag} (${getRuntimePlatformTag()}: ${runtimeAssetName})…`,
             5,
           );
         } catch (err) {
@@ -286,10 +326,10 @@ export const installManager = {
         }
 
         // Clean up any partial previous download.
-        if (existsSync(runtimeZipTmp)) unlinkSync(runtimeZipTmp);
+        if (existsSync(runtimeArchiveTmp)) unlinkSync(runtimeArchiveTmp);
 
         const rtDownloadStart = Date.now();
-        await downloadFile(runtimeDownloadUrl, runtimeZipTmp, (received, total) => {
+        await downloadFile(runtimeDownloadUrl, runtimeArchiveTmp, (received, total) => {
           // Runtime download maps to 5–22 % range.
           const dlPct = total > 0 ? received / total : 0;
           const pct = 5 + Math.round(dlPct * 17);
@@ -325,7 +365,7 @@ export const installManager = {
         // ── 4. Extract and verify runtime binary ─────────────────────────────────
         report("verifying-runtime", "Extracting runtime…", 23);
 
-        await extractZip(runtimeZipTmp, runtimeExtractDir);
+        await extractRuntimeArchive(runtimeArchiveTmp, runtimeArchiveExt, runtimeExtractDir);
 
         const extractedBin = findFileRecursive(runtimeExtractDir, RUNTIME_BINARY_NAME);
         if (!extractedBin) {
@@ -359,9 +399,9 @@ export const installManager = {
           }
         }
 
-        // Clean up the zip and extract dir using Node.js fs (no shell needed).
+        // Clean up the archive and extract dir using Node.js fs (no shell needed).
         try {
-          if (existsSync(runtimeZipTmp)) unlinkSync(runtimeZipTmp);
+          if (existsSync(runtimeArchiveTmp)) unlinkSync(runtimeArchiveTmp);
           if (existsSync(runtimeExtractDir)) {
             rmSync(runtimeExtractDir, { recursive: true, force: true });
           }
