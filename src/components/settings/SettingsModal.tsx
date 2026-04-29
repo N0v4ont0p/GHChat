@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2, Search, SlidersHorizontal } from "lucide-react";
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2, Search, SlidersHorizontal, HardDrive } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -20,6 +20,8 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ModelCategory, ModelPreset, OpenRouterDiagnostics, ModelVerificationStatus, ValidationLayerState } from "@/types";
+import { OfflineSettingsTab } from "./OfflineSettingsTab";
+import { useModeStore } from "@/stores/mode-store";
 
 /** Compact verification badge used inside model cards */
 function VerificationBadge({ status }: { status: ModelVerificationStatus }) {
@@ -131,6 +133,8 @@ export function SettingsModal() {
   const { settingsOpen, setSettingsOpen, selectedModel, setSelectedModel } =
     useSettingsStore();
   const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
+  const offlineState = useModeStore((s) => s.offlineState);
+  const offlineAvailable = offlineState === "installed";
   const qc = useQueryClient();
 
   const [apiKey, setApiKey] = useState("");
@@ -142,7 +146,7 @@ export function SettingsModal() {
   const [saving, setSaving] = useState(false);
   const [removingKey, setRemovingKey] = useState(false);
   const [clearingData, setClearingData] = useState(false);
-  const [activeTab, setActiveTab] = useState<"apikey" | "model">("model");
+  const [activeTab, setActiveTab] = useState<"apikey" | "model" | "offline">("model");
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("best");
   const [modelSearch, setModelSearch] = useState("");
   const [sortBy, setSortBy] = useState<"default" | "context" | "name">("default");
@@ -268,7 +272,9 @@ export function SettingsModal() {
 
         {/* Tab navigation */}
         <div className="flex gap-0 border-b border-border/50 px-6">
-          {(["apikey", "model"] as const).map((tab) => (
+          {(
+            ["apikey", "model", ...(offlineAvailable ? (["offline"] as const) : [])] as const
+          ).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -279,8 +285,14 @@ export function SettingsModal() {
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {tab === "apikey" ? <Key className="h-3 w-3" /> : <Cpu className="h-3 w-3" />}
-              {tab === "apikey" ? "API Key" : "Models"}
+              {tab === "apikey" ? (
+                <Key className="h-3 w-3" />
+              ) : tab === "model" ? (
+                <Cpu className="h-3 w-3" />
+              ) : (
+                <HardDrive className="h-3 w-3" />
+              )}
+              {tab === "apikey" ? "API Key" : tab === "model" ? "Models" : "Offline"}
             </button>
           ))}
         </div>
@@ -738,19 +750,22 @@ export function SettingsModal() {
             </div>
               );
             })()}
+          {activeTab === "offline" && offlineAvailable && <OfflineSettingsTab />}
         </div>
 
         <DialogFooter className="px-6 py-4 border-t border-border/50">
           <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(false)}>
-            Cancel
+            {activeTab === "offline" ? "Close" : "Cancel"}
           </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={saving || (activeTab === "apikey" && storedKeyExists && !changingKey)}
-          >
-            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save changes"}
-          </Button>
+          {activeTab !== "offline" && (
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving || (activeTab === "apikey" && storedKeyExists && !changingKey)}
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save changes"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

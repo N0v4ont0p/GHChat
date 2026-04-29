@@ -341,23 +341,26 @@ export function OfflineManagementModal() {
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [installProgress, setInstallProgress] = useState<OfflineInstallProgress | null>(null);
+  const [hwProfile, setHwProfile] = useState<import("@/types").OfflineHardwareProfileSnapshot | null>(null);
 
   // ── Load data ─────────────────────────────────────────────────────────────
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [list, catalog, info, activeId] = await Promise.all([
+      const [list, catalog, info, activeId, hw] = await Promise.all([
         ipc.listInstalledOfflineModels(),
         ipc.listAvailableOfflineModels(),
         ipc.getOfflineInfo(),
         ipc.getActiveOfflineModel(),
+        ipc.getOfflineHardwareProfile().catch(() => null),
       ]);
       setInstalled(list);
       setAvailable(catalog);
       setStorageBytes(info.storageBytesUsed);
       setInstallPath(info.installPath);
       setActiveOfflineModelId(activeId);
+      setHwProfile(hw);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -581,6 +584,54 @@ export function OfflineManagementModal() {
                   Open folder
                 </Button>
               </div>
+
+              {/* Hardware-fit diagnostic banner.  Surfaces honestly when the
+                  user's active offline model is heavier than the local
+                  hardware profile recommends — the most common cause of
+                  "stuck streaming" complaints on lower-tier machines. */}
+              {(() => {
+                if (!hwProfile || !installed) return null;
+                const active = installed.find((m) => m.isActive);
+                if (!active) return null;
+                const sizeGb = active.sizeBytes / 1024 ** 3;
+                // Heuristic: if model size > 60% of total RAM, the runtime
+                // is likely to swap and stream slowly on this machine.
+                const heavy = sizeGb > hwProfile.totalRamGb * 0.6;
+                return (
+                  <div
+                    className={cn(
+                      "flex items-start gap-2 rounded-xl border px-3 py-2.5",
+                      heavy
+                        ? "border-amber-500/30 bg-amber-500/5"
+                        : "border-emerald-500/20 bg-emerald-500/5",
+                    )}
+                  >
+                    <Cpu className={cn("h-3.5 w-3.5 shrink-0 mt-0.5", heavy ? "text-amber-400" : "text-emerald-400")} />
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="text-[11px] font-medium">
+                        Hardware tier: <span className="uppercase tracking-wide">{hwProfile.tier}</span>
+                        <span className="ml-1 text-muted-foreground">
+                          ({hwProfile.totalRamGb.toFixed(0)} GB RAM
+                          {hwProfile.isAppleSilicon && ", Apple Silicon"})
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground/80 leading-relaxed">
+                        {heavy ? (
+                          <>
+                            Your active model <strong>{active.name}</strong> ({fmtBytes(active.sizeBytes)})
+                            is large for this machine and may stream slowly. Activate a smaller variant
+                            for faster responses.
+                          </>
+                        ) : (
+                          <>
+                            Active model <strong>{active.name}</strong> fits comfortably on this hardware.
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Model list */}
               {installedCount === 0 ? (
