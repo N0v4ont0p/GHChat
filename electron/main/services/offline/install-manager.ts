@@ -22,6 +22,7 @@ import { storageService } from "./storage";
 import { modelRegistry } from "./model-registry";
 import {
   fetchLatestRuntimeRelease,
+  formatErrorChain,
   getRuntimePlatformTag,
   RUNTIME_BINARY_NAME,
 } from "./runtime-catalog";
@@ -320,8 +321,18 @@ export const installManager = {
             5,
           );
         } catch (err) {
+          // Preserve the original error (and its full `.cause` chain) so that
+          // callers / IPC consumers can inspect ENOTFOUND / ECONNRESET / TLS /
+          // proxy details instead of seeing only an opaque "fetch failed".
+          // We still log the rendered chain here so it shows up in main-process
+          // logs even if the renderer only displays the top-level message.
+          console.error(
+            "[install-manager] runtime release lookup failed:\n  " +
+              formatErrorChain(err),
+          );
           throw new Error(
             `Failed to locate llama.cpp runtime release: ${err instanceof Error ? err.message : String(err)}`,
+            err !== undefined ? { cause: err } : undefined,
           );
         }
 

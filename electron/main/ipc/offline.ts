@@ -15,6 +15,7 @@ import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
 import { runtimeManager } from "../services/offline/runtime-manager";
 import { storageService } from "../services/offline/storage";
+import { formatErrorChain } from "../services/offline/runtime-catalog";
 import type { ChatMessage } from "../services/offline/runtime-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
@@ -125,10 +126,15 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         setOfflineReadiness(installed);
         return installed;
       } catch (err) {
-        console.error("[offline] install failed:", err);
+        // Render the full cause chain (top-level message + every nested
+        // `.cause`) so the renderer can show a diagnosable reason instead
+        // of just "fetch failed".  The chain walker is defensive and safe
+        // for non-Error values.
+        const message = formatErrorChain(err);
+        console.error("[offline] install failed:\n  " + message);
         const failed: OfflineReadiness = {
           state: "install-failed",
-          message: err instanceof Error ? err.message : String(err),
+          message,
         };
         setOfflineReadiness(failed);
         return failed;

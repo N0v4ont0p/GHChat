@@ -2,6 +2,116 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { storageService } from "./storage";
 
+// ── Network primitives (Electron-aware) ───────────────────────────────────────
+
+/**
+ * Lazily resolve Electron's `net.fetch` when running inside the main process.
+ *
+ * Electron's `net` module uses the Chromium network stack, which:
+ *   - honours system proxy configuration (PAC, env vars, macOS network settings)
+ *   - uses the OS trust store for TLS validation
+ *   - tends to be more reliable than Node's `undici`-based global `fetch` in
+ *     packaged apps (especially on macOS where corporate proxies / VPNs are common)
+ *
+ * We fall back to the global `fetch` when Electron is not available
+ * (e.g. unit tests, tooling that imports this module outside an Electron host).
+ */
+function resolveFetch(): typeof fetch {
+  try {
+    // Avoid a top-level import so this module remains importable in non-Electron
+    // contexts (the require call itself is what would throw there).
+    const electron = require("electron") as typeof import("electron");
+    if (electron?.net?.fetch) {
+      // Bind to preserve `this` inside Electron's net implementation.
+      return electron.net.fetch.bind(electron.net) as typeof fetch;
+    }
+  } catch {
+    // Electron not present — fall through to global fetch.
+  }
+  return globalThis.fetch;
+}
+
+// ── Error reporting ───────────────────────────────────────────────────────────
+
+/**
+ * Recursively walk the `cause` chain of an error and produce a single
+ * human-readable string.  Node/undici typically expose the underlying socket
+ * failure (ENOTFOUND, ECONNRESET, ETIMEDOUT, CERT_*) only via `.cause`, which
+ * the default `err.message` ("fetch failed") swallows.
+ */
+export function formatErrorChain(err: unknown, depth = 0): string {
+  if (depth > 5) return "[cause chain truncated]";
+  if (err == null) return String(err);
+  if (typeof err !== "object") return String(err);
+
+  const e = err as { message?: unknown; code?: unknown; name?: unknown; cause?: unknown };
+  const parts: string[] = [];
+  if (typeof e.name === "string" && e.name && e.name !== "Error") parts.push(e.name);
+  if (typeof e.code === "string" && e.code) parts.push(`code=${e.code}`);
+  if (typeof e.message === "string" && e.message) parts.push(e.message);
+
+  const head = parts.length > 0 ? parts.join(" ") : String(err);
+  if (e.cause != null) {
+    return `${head}\n  caused by: ${formatErrorChain(e.cause, depth + 1)}`;
+  }
+  return head;
+}
+
+/**
+ * Error thrown when the llama.cpp release lookup ultimately fails.
+ *
+ * Preserves the original error as `.cause` (per the standard `Error.cause`
+ * contract) so IPC consumers and developers can inspect the full chain
+ * rather than the opaque `"fetch failed"` surfaced by Node/undici.
+ */
+export class RuntimeReleaseLookupError extends Error {
+  override readonly name = "RuntimeReleaseLookupError";
+  /** A pre-rendered, single-string view of the full cause chain. */
+  readonly causeChain: string;
+  /** The URL that was being fetched when the failure occurred. */
+  readonly url: string;
+  /** Number of attempts made before giving up. */
+  readonly attempts: number;
+
+  constructor(opts: { message: string; url: string; attempts: number; cause?: unknown }) {
+    super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
+    this.url = opts.url;
+    this.attempts = opts.attempts;
+    this.causeChain = opts.cause !== undefined ? formatErrorChain(opts.cause) : opts.message;
+  }
+}
+
+/**
+ * Network classification used purely for diagnostic messages — we don't change
+ * behaviour based on the code, but the user/log gets a clearer hint than
+ * "fetch failed".
+ */
+function classifyNetworkError(err: unknown): string | null {
+  const chain = formatErrorChain(err);
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(chain)) {
+    return "DNS lookup failed (ENOTFOUND) — the host could not be resolved. " +
+      "Check your internet connection, DNS, or VPN/proxy settings.";
+  }
+  if (/ECONNRESET/i.test(chain)) {
+    return "Connection reset by peer (ECONNRESET) — the network or a proxy " +
+      "interrupted the request.";
+  }
+  if (/ETIMEDOUT|ESOCKETTIMEDOUT|UND_ERR_CONNECT_TIMEOUT|request.*timed out|timeout/i.test(chain)) {
+    return "Network request timed out — GitHub may be slow or unreachable from this network.";
+  }
+  if (/ECONNREFUSED/i.test(chain)) {
+    return "Connection refused (ECONNREFUSED) — a local proxy may be misconfigured.";
+  }
+  if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/i.test(chain)) {
+    return "TLS certificate validation failed — a corporate proxy or outdated " +
+      "system trust store may be intercepting the connection.";
+  }
+  if (/proxy/i.test(chain)) {
+    return "Proxy error while contacting GitHub — verify your HTTP(S)_PROXY settings.";
+  }
+  return null;
+}
+
 // ── Runtime binary constants ──────────────────────────────────────────────────
 
 /** The llama.cpp binary entry-point name (without path). */
@@ -99,11 +209,121 @@ function scoreAsset(
   return { score, ext: parsed.ext, isPlain: endsAtTag };
 }
 
+/** Per-attempt timeout for the release-metadata HTTP request. */
+const RELEASE_LOOKUP_TIMEOUT_MS = 15_000;
+/** Total attempts (1 initial + 2 retries). */
+const RELEASE_LOOKUP_MAX_ATTEMPTS = 3;
+/** Base backoff in ms (doubled each attempt: 800 → 1600). */
+const RELEASE_LOOKUP_BACKOFF_MS = 800;
+/** Max length of a 4xx/5xx response body slice we keep for diagnostic output. */
+const RESPONSE_BODY_HINT_MAX_LENGTH = 240;
+
+/** Sleep helper for retry backoff. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * HTTP statuses we will not retry — the response is deterministic and a
+ * second attempt would only delay the inevitable error.
+ */
+function isFatalHttpStatus(status: number): boolean {
+  // 4xx except 408 (Request Timeout) and 429 (Too Many Requests).
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
+ * Issue a single release-metadata request with a hard timeout.  Returns the
+ * parsed JSON on success; throws an error whose `.cause` is the underlying
+ * network/HTTP failure on failure.
+ */
+async function fetchReleaseOnce(
+  url: string,
+  attempt: number,
+): Promise<GitHubRelease> {
+  const fetchImpl = resolveFetch();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RELEASE_LOOKUP_TIMEOUT_MS);
+
+  const startedAt = Date.now();
+  try {
+    const res = await fetchImpl(url, {
+      headers: {
+        "User-Agent": "GHChat/0.2.0",
+        Accept: "application/vnd.github.v3+json",
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      // Read a short body slice to aid diagnosis (e.g. GitHub rate-limit JSON)
+      // without dumping a megabyte of HTML on the user.
+      let bodyHint = "";
+      try {
+        const text = await res.text();
+        bodyHint =
+          text.length > RESPONSE_BODY_HINT_MAX_LENGTH
+            ? `${text.slice(0, RESPONSE_BODY_HINT_MAX_LENGTH)}…`
+            : text;
+      } catch {
+        /* ignore — body is optional context */
+      }
+      const httpErr = new Error(
+        `GitHub API returned HTTP ${res.status} ${res.statusText}` +
+          (bodyHint ? ` — ${bodyHint}` : ""),
+      );
+      // Tag with a code so the retry layer can decide fatal vs transient.
+      (httpErr as Error & { httpStatus?: number }).httpStatus = res.status;
+      throw httpErr;
+    }
+
+    const release = (await res.json()) as GitHubRelease;
+    const elapsedMs = Date.now() - startedAt;
+    console.log(
+      `[runtime-catalog] release lookup attempt ${attempt} succeeded in ${elapsedMs}ms ` +
+        `(tag=${release.tag_name}, assets=${release.assets.length})`,
+    );
+    return release;
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt;
+    // Distinguish abort-from-timeout from a generic abort.
+    if (
+      controller.signal.aborted &&
+      (err instanceof Error) &&
+      (err.name === "AbortError" || /aborted/i.test(err.message))
+    ) {
+      const timeoutErr = new Error(
+        `Release lookup timed out after ${RELEASE_LOOKUP_TIMEOUT_MS}ms`,
+      );
+      (timeoutErr as Error & { code?: string }).code = "ETIMEDOUT";
+      console.warn(
+        `[runtime-catalog] release lookup attempt ${attempt} timed out after ${elapsedMs}ms`,
+      );
+      throw timeoutErr;
+    }
+    console.warn(
+      `[runtime-catalog] release lookup attempt ${attempt} failed after ${elapsedMs}ms: ` +
+        formatErrorChain(err),
+    );
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Query the GitHub releases API for the latest llama.cpp release and return
  * the download URL and expected size for the current platform/arch.
  *
- * Throws when the API is unreachable or no matching asset is found.
+ * Behaviour:
+ *  - Uses Electron's `net.fetch` when available so packaged apps respect the
+ *    system proxy / OS trust store.
+ *  - Each request is bounded by `RELEASE_LOOKUP_TIMEOUT_MS`.
+ *  - Up to `RELEASE_LOOKUP_MAX_ATTEMPTS` attempts with exponential backoff
+ *    are made for transient failures (network errors and 5xx/408/429).
+ *  - On terminal failure throws a `RuntimeReleaseLookupError` whose `.cause`
+ *    holds the original error so the full chain (ENOTFOUND/ECONNRESET/TLS/…)
+ *    survives the IPC boundary instead of collapsing to "fetch failed".
  */
 export async function fetchLatestRuntimeRelease(): Promise<{
   tag: string;
@@ -114,23 +334,61 @@ export async function fetchLatestRuntimeRelease(): Promise<{
 }> {
   const apiUrl =
     "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest";
+  const platformTag = getRuntimePlatformTag();
 
-  const res = await fetch(apiUrl, {
-    headers: {
-      "User-Agent": "GHChat/0.2.0",
-      Accept: "application/vnd.github.v3+json",
-    },
-  });
+  console.log(
+    `[runtime-catalog] starting llama.cpp release lookup ` +
+      `url=${apiUrl} platform=${process.platform} arch=${process.arch} ` +
+      `tag="${platformTag}" timeoutMs=${RELEASE_LOOKUP_TIMEOUT_MS} ` +
+      `maxAttempts=${RELEASE_LOOKUP_MAX_ATTEMPTS}`,
+  );
+  const overallStart = Date.now();
 
-  if (!res.ok) {
-    throw new Error(
-      `GitHub API returned ${res.status} while looking for llama.cpp release. ` +
-        `Check your internet connection and try again.`,
-    );
+  let release: GitHubRelease | null = null;
+  let lastError: unknown = null;
+  let attemptsMade = 0;
+
+  for (let attempt = 1; attempt <= RELEASE_LOOKUP_MAX_ATTEMPTS; attempt++) {
+    attemptsMade = attempt;
+    try {
+      release = await fetchReleaseOnce(apiUrl, attempt);
+      break;
+    } catch (err) {
+      lastError = err;
+      const status = (err as { httpStatus?: number }).httpStatus;
+      if (status != null && isFatalHttpStatus(status)) {
+        // 4xx (except 408/429) — retrying is pointless.
+        break;
+      }
+      if (attempt < RELEASE_LOOKUP_MAX_ATTEMPTS) {
+        const backoff = RELEASE_LOOKUP_BACKOFF_MS * 2 ** (attempt - 1);
+        console.log(
+          `[runtime-catalog] retrying release lookup in ${backoff}ms ` +
+            `(attempt ${attempt + 1}/${RELEASE_LOOKUP_MAX_ATTEMPTS})`,
+        );
+        await delay(backoff);
+      }
+    }
   }
 
-  const release = (await res.json()) as GitHubRelease;
-  const platformTag = getRuntimePlatformTag();
+  if (!release) {
+    const totalMs = Date.now() - overallStart;
+    const hint = classifyNetworkError(lastError);
+    const baseMessage =
+      `Failed to reach GitHub releases API after ${attemptsMade} attempt(s) ` +
+      `over ${totalMs}ms (url=${apiUrl}).`;
+    const fullMessage = hint ? `${baseMessage} ${hint}` : baseMessage;
+    console.error(
+      `[runtime-catalog] release lookup giving up: ${fullMessage}\n` +
+        `  cause chain: ${formatErrorChain(lastError)}`,
+    );
+    throw new RuntimeReleaseLookupError({
+      message: fullMessage,
+      url: apiUrl,
+      attempts: attemptsMade,
+      cause: lastError,
+    });
+  }
 
   console.log(
     `[runtime-catalog] resolving llama.cpp release ${release.tag_name} for ` +
