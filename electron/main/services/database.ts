@@ -50,6 +50,18 @@ export const offlineInstallationTable = sqliteTable("offline_installation", {
   offlineRoot: text("offline_root"),
   /** Epoch ms when the installation first reached "installed" state. */
   installedAt: integer("installed_at"),
+  /**
+   * Number of consecutive Gemma 4 install failures since the last
+   * successful install or explicit reset.  Drives the fallback-offered
+   * transition in the IPC layer.
+   */
+  gemma4FailureCount: integer("gemma4_failure_count").notNull().default(0),
+  /**
+   * JSON-encoded array of recent OfflineFailureReason records (newest
+   * last, capped at the failure threshold).  NULL when no failures have
+   * been recorded since the last reset.
+   */
+  lastFailureReasons: text("last_failure_reasons"),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -106,8 +118,10 @@ export const offlineManifestsTable = sqliteTable("offline_manifests", {
 //  v3 — added offline_installation, offline_models, offline_runtime,
 //        offline_manifests tables
 //  v4 — added current_mode to settings
+//  v5 — added gemma4_failure_count + last_failure_reasons (JSON) to
+//        offline_installation
 //
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -440,6 +454,39 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v5 — track Gemma 4 install failures so the IPC layer can transition
+    //       to a "fallback-offered" state after repeated failures instead
+    //       of trapping the user in an endless retry loop.
+    if (diskVersion < 5) {
+      console.log("[db] migration v5: ensuring Gemma 4 failure tracking columns…");
+      try {
+        const cols = tableColumns("offline_installation");
+        sqliteDb.exec("BEGIN");
+        if (!cols.includes("gemma4_failure_count")) {
+          sqliteDb.run(
+            "ALTER TABLE offline_installation ADD COLUMN gemma4_failure_count INTEGER NOT NULL DEFAULT 0",
+          );
+          console.log("[db] migration v5: gemma4_failure_count column added");
+        } else {
+          console.log("[db] migration v5: gemma4_failure_count already present");
+        }
+        if (!cols.includes("last_failure_reasons")) {
+          sqliteDb.run(
+            "ALTER TABLE offline_installation ADD COLUMN last_failure_reasons TEXT",
+          );
+          console.log("[db] migration v5: last_failure_reasons column added");
+        } else {
+          console.log("[db] migration v5: last_failure_reasons already present");
+        }
+        sqliteDb.run("PRAGMA user_version = 5");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v5: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v5 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -619,6 +666,14 @@ export interface OfflineInstallationRecord {
   state: string;
   offlineRoot: string | null;
   installedAt: number | null;
+  /** Consecutive Gemma 4 install failures since last success or reset. */
+  gemma4FailureCount: number;
+  /**
+   * Raw JSON-encoded array of recent failure reasons (newest last,
+   * capped at the failure threshold), or null when no failures have
+   * been recorded since the last reset.
+   */
+  lastFailureReasons: string | null;
   updatedAt: number;
 }
 
@@ -660,11 +715,29 @@ export function getOfflineInstallation(): OfflineInstallationRecord | null {
     .from(offlineInstallationTable)
     .where(eq(offlineInstallationTable.id, "app"))
     .get();
-  return row ?? null;
+  if (!row) return null;
+  return {
+    id: row.id,
+    state: row.state,
+    offlineRoot: row.offlineRoot ?? null,
+    installedAt: row.installedAt ?? null,
+    gemma4FailureCount: row.gemma4FailureCount ?? 0,
+    lastFailureReasons: row.lastFailureReasons ?? null,
+    updatedAt: row.updatedAt,
+  };
 }
 
 export function upsertOfflineInstallation(
-  partial: Partial<Pick<OfflineInstallationRecord, "state" | "offlineRoot" | "installedAt">>,
+  partial: Partial<
+    Pick<
+      OfflineInstallationRecord,
+      | "state"
+      | "offlineRoot"
+      | "installedAt"
+      | "gemma4FailureCount"
+      | "lastFailureReasons"
+    >
+  >,
 ): void {
   const now = Date.now();
   getDb()
@@ -673,6 +746,12 @@ export function upsertOfflineInstallation(
       ...(partial.state !== undefined && { state: partial.state }),
       ...(partial.offlineRoot !== undefined && { offlineRoot: partial.offlineRoot }),
       ...(partial.installedAt !== undefined && { installedAt: partial.installedAt }),
+      ...(partial.gemma4FailureCount !== undefined && {
+        gemma4FailureCount: partial.gemma4FailureCount,
+      }),
+      ...(partial.lastFailureReasons !== undefined && {
+        lastFailureReasons: partial.lastFailureReasons,
+      }),
       updatedAt: now,
     })
     .where(eq(offlineInstallationTable.id, "app"))
@@ -858,7 +937,14 @@ export function clearOfflineData(): void {
   d.delete(offlineManifestsTable).run();
   d.delete(offlineModelsTable).run();
   d.update(offlineInstallationTable)
-    .set({ state: "not-installed", offlineRoot: null, installedAt: null, updatedAt: Date.now() })
+    .set({
+      state: "not-installed",
+      offlineRoot: null,
+      installedAt: null,
+      gemma4FailureCount: 0,
+      lastFailureReasons: null,
+      updatedAt: Date.now(),
+    })
     .where(eq(offlineInstallationTable.id, "app"))
     .run();
   d.update(offlineRuntimeTable)

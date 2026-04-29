@@ -20,7 +20,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
-import type { OfflineErrorCategory, OfflineInstallProgress, OfflineRecommendation } from "@/types";
+import type {
+  OfflineErrorCategory,
+  OfflineFailureReason,
+  OfflineInstallProgress,
+  OfflineReadiness,
+  OfflineRecommendation,
+} from "@/types";
 
 // ── Animation variants ────────────────────────────────────────────────────────
 
@@ -701,12 +707,23 @@ function ErrorScreen({
   errorMessage,
   errorCategory,
   errorDetails,
+  attemptCount,
+  attemptThreshold,
   onRetry,
 }: {
   state: "install-failed" | "repair-needed";
   errorMessage?: string;
   errorCategory?: OfflineErrorCategory;
   errorDetails?: string;
+  /**
+   * Number of consecutive Gemma 4 install failures so far.  When >0 and
+   * `attemptThreshold` is also set, the screen renders an "Attempt N of M"
+   * counter so users can see we are still trying Gemma 4 (and how close
+   * we are to offering fallback choices).
+   */
+  attemptCount?: number;
+  /** Threshold from the main process at which fallbacks will be offered. */
+  attemptThreshold?: number;
   onRetry: () => void;
 }) {
   const isRepair = state === "repair-needed";
@@ -717,6 +734,16 @@ function ErrorScreen({
   // section; fall back to the top-level message if details aren't provided.
   const technical = errorDetails ?? errorMessage ?? null;
   const hasTechnical = technical !== null && technical.trim().length > 0;
+
+  // Show the attempt counter only for install-failed states (not repair).
+  // Always make it explicit that GHchat is still trying Gemma 4 — this is
+  // what differentiates the regular failure screen from "fallback-offered".
+  const showAttempts =
+    !isRepair &&
+    typeof attemptCount === "number" &&
+    attemptCount > 0 &&
+    typeof attemptThreshold === "number" &&
+    attemptThreshold > 0;
 
   return (
     <motion.div
@@ -734,6 +761,19 @@ function ErrorScreen({
         <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
         <p className="text-sm text-muted-foreground leading-relaxed">{summary}</p>
       </div>
+
+      {showAttempts && (
+        <div className="w-full rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-left">
+          <p className="text-xs font-medium text-amber-300">
+            Still trying Gemma 4 · attempt {attemptCount} of {attemptThreshold}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+            GHchat will keep attempting Gemma 4. After {attemptThreshold} consecutive failures
+            you'll be offered explicit fallback model choices — they will never be installed
+            automatically.
+          </p>
+        </div>
+      )}
 
       {hasTechnical && (
         <div className="w-full text-left">
@@ -766,8 +806,139 @@ function ErrorScreen({
       <div className="flex flex-col items-center gap-3 w-full">
         <Button className="w-full gap-2" onClick={onRetry}>
           <RotateCcw className="h-4 w-4" />
-          {isRepair ? "Repair Gemma 4" : "Retry Installation"}
+          {isRepair ? "Repair Gemma 4" : "Retry Gemma 4 Installation"}
         </Button>
+        <BackToOnlineButton />
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Fallback choice screen ────────────────────────────────────────────────────
+
+/**
+ * Shown after Gemma 4 has failed to install enough times that GHchat is
+ * giving up on the default path for this user.  We surface explicit
+ * fallback choices (Gemma 3 variants) and a recap of the recent failure
+ * reasons.  The user must click a specific option to install it; nothing
+ * is auto-selected.  The user can also opt to keep trying Gemma 4 by
+ * clicking "Try Gemma 4 again" which resets the failure counter.
+ */
+function FallbackChoiceScreen({
+  fallbackOptions,
+  failureCount,
+  failureReasons,
+  onChooseFallback,
+  onTryGemma4Again,
+}: {
+  fallbackOptions: OfflineRecommendation[];
+  failureCount: number;
+  failureReasons: OfflineFailureReason[];
+  onChooseFallback: (option: OfflineRecommendation) => void;
+  onTryGemma4Again: () => void;
+}) {
+  const [showReasons, setShowReasons] = useState(false);
+  const hasReasons = failureReasons.length > 0;
+
+  return (
+    <motion.div
+      key="fallback-offered"
+      {...SLIDE}
+      className="flex flex-1 flex-col items-center gap-7 px-8 py-10 text-center max-w-md mx-auto w-full"
+    >
+      {/* Icon */}
+      <div className="relative flex h-20 w-20 items-center justify-center">
+        <div className="absolute inset-0 rounded-3xl bg-amber-500/10 ring-1 ring-amber-500/20" />
+        <AlertTriangle className="relative h-9 w-9 text-amber-400" />
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-xs font-medium uppercase tracking-widest text-amber-300/80">
+          Gemma 4 install kept failing
+        </p>
+        <h2 className="text-2xl font-bold tracking-tight">Choose a fallback model</h2>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Gemma 4 failed to install {failureCount} times on this device. To avoid trapping you
+          in an endless retry loop, GHchat is offering explicit fallback choices below. Pick
+          one to install it — nothing is installed automatically.
+        </p>
+      </div>
+
+      {/* Fallback options list */}
+      <div className="w-full space-y-2.5">
+        {fallbackOptions.length === 0 && (
+          <div className="rounded-xl border border-border/60 bg-secondary/30 px-4 py-3 text-left text-xs text-muted-foreground">
+            No compatible fallback model is available for this platform. You can keep trying
+            Gemma 4 below.
+          </div>
+        )}
+        {fallbackOptions.map((option) => (
+          <button
+            key={option.modelId}
+            type="button"
+            onClick={() => onChooseFallback(option)}
+            className="group flex w-full items-start gap-3 rounded-xl border border-border bg-secondary/40 px-4 py-3 text-left ring-1 ring-transparent transition-colors hover:bg-secondary hover:ring-primary/40"
+          >
+            <Download className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1 space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">{option.label}</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider rounded bg-amber-500/10 text-amber-300 px-1.5 py-0.5 ring-1 ring-amber-500/20 shrink-0">
+                  Fallback
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground leading-snug">
+                {option.variantLabel} · {option.sizeGb.toFixed(1)} GB
+              </p>
+              <p className="text-xs text-muted-foreground/80 leading-snug">{option.reason}</p>
+            </div>
+            <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-muted-foreground/50 group-hover:text-primary" />
+          </button>
+        ))}
+      </div>
+
+      {hasReasons && (
+        <div className="w-full text-left">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-foreground transition-colors mx-auto"
+            onClick={() => setShowReasons((s) => !s)}
+            aria-expanded={showReasons}
+            aria-controls="offline-failure-reasons"
+            aria-label="Toggle Gemma 4 failure history"
+          >
+            {showReasons ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
+            {showReasons ? "Hide Gemma 4 failure history" : "Show Gemma 4 failure history"}
+          </button>
+          {showReasons && (
+            <ul
+              id="offline-failure-reasons"
+              className="mt-3 max-h-48 space-y-2 overflow-auto rounded-md border border-border/40 bg-muted/30 p-3 text-[11px] text-muted-foreground/90 font-mono leading-relaxed"
+            >
+              {failureReasons.map((reason, idx) => (
+                <li key={`${reason.at}-${idx}`} className="break-words">
+                  <span className="text-foreground/80">[{reason.category}]</span>{" "}
+                  <span>{reason.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-col items-center gap-3 w-full">
+        <button
+          type="button"
+          onClick={onTryGemma4Again}
+          className="w-full rounded-md border border-border/70 bg-transparent px-4 py-2 text-xs font-medium text-foreground/80 transition-colors hover:bg-secondary/60"
+        >
+          <RotateCcw className="mr-2 inline-block h-3.5 w-3.5" />
+          Try Gemma 4 again (reset counter)
+        </button>
         <BackToOnlineButton />
       </div>
     </motion.div>
@@ -801,6 +972,14 @@ export function OfflineSetupFlow() {
   const installProgress = useModeStore((s) => s.installProgress);
   const setInstallProgress = useModeStore((s) => s.setInstallProgress);
   const setMode = useModeStore((s) => s.setMode);
+  const gemma4FailureCount = useModeStore((s) => s.gemma4FailureCount);
+  const gemma4FailureThreshold = useModeStore((s) => s.gemma4FailureThreshold);
+  const lastFailureReasons = useModeStore((s) => s.lastFailureReasons);
+  const fallbackOptions = useModeStore((s) => s.fallbackOptions);
+  const setGemma4FailureCount = useModeStore((s) => s.setGemma4FailureCount);
+  const setGemma4FailureThreshold = useModeStore((s) => s.setGemma4FailureThreshold);
+  const setLastFailureReasons = useModeStore((s) => s.setLastFailureReasons);
+  const setFallbackOptions = useModeStore((s) => s.setFallbackOptions);
 
   // Structured error info from the last failed install attempt — shown in
   // ErrorScreen.  Includes the top-level message, a coarse category for
@@ -811,6 +990,29 @@ export function OfflineSetupFlow() {
     category?: OfflineErrorCategory;
     details?: string;
   } | null>(null);
+
+  /**
+   * Apply failure-tracking fields from an OfflineReadiness payload to the
+   * mode store so the UI can render the attempt counter, recent failure
+   * reasons, and fallback options consistently across screens.
+   */
+  const applyReadinessMetadata = (readiness: OfflineReadiness) => {
+    if (typeof readiness.gemma4FailureCount === "number") {
+      setGemma4FailureCount(readiness.gemma4FailureCount);
+    }
+    if (typeof readiness.gemma4FailureThreshold === "number") {
+      setGemma4FailureThreshold(readiness.gemma4FailureThreshold);
+    }
+    if (Array.isArray(readiness.lastFailureReasons)) {
+      setLastFailureReasons(readiness.lastFailureReasons);
+    }
+    if (Array.isArray(readiness.fallbackOptions)) {
+      setFallbackOptions(readiness.fallbackOptions);
+    } else if (readiness.state !== "fallback-offered") {
+      // Clear stale fallback options whenever we leave the fallback state.
+      setFallbackOptions([]);
+    }
+  };
 
   // ── Transitions ──────────────────────────────────────────────────────────────
 
@@ -828,15 +1030,22 @@ export function OfflineSetupFlow() {
         if (readiness.recommendation) {
           setOfflineRecommendation(readiness.recommendation);
         }
+        applyReadinessMetadata(readiness);
         const elapsed = Date.now() - start;
         const remaining = Math.max(0, ANALYSIS_MIN_DISPLAY_MS - elapsed);
         setTimeout(() => {
           if (!cancelled) {
-            setOfflineState(
-              readiness.state === "recommendation-ready"
-                ? "recommendation-ready"
-                : "not-installed",
-            );
+            // analyze() may legitimately return either recommendation-ready
+            // (default) or fallback-offered (when the failure threshold has
+            // already been crossed) — preserve both transitions verbatim.
+            if (
+              readiness.state === "recommendation-ready" ||
+              readiness.state === "fallback-offered"
+            ) {
+              setOfflineState(readiness.state);
+            } else {
+              setOfflineState("not-installed");
+            }
           }
         }, remaining);
       })
@@ -852,6 +1061,11 @@ export function OfflineSetupFlow() {
     return () => {
       cancelled = true;
     };
+    // applyReadinessMetadata is intentionally omitted: it closes over the
+    // store setters and would be a new function on every render, which
+    // would re-trigger the analyze IPC in a tight loop.  The setters
+    // themselves are stable references from zustand.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offlineState, setOfflineState, setOfflineRecommendation]);
 
   // installing: subscribe to progress events + await IPC result.
@@ -881,23 +1095,31 @@ export function OfflineSetupFlow() {
     setOfflineState("analyzing-system");
   };
 
-  const handleInstall = () => {
-    if (!offlineRecommendation) return;
-    const modelId = offlineRecommendation.modelId;
+  /**
+   * Kick off an install for `modelId`.  Used by both the default Gemma 4
+   * recommendation flow and the explicit Gemma 3 fallback selection.
+   * The main process knows from the catalog whether `modelId` belongs
+   * to the preferred or fallback family and counts failures accordingly.
+   */
+  const installModel = (modelId: string) => {
     setInstallError(null);
     // Transition to "installing" immediately for instant feedback.
     setOfflineState("installing");
     ipc
       .startInstall(modelId)
       .then((readiness) => {
-        if (readiness.state === "install-failed") {
+        applyReadinessMetadata(readiness);
+        if (
+          readiness.state === "install-failed" ||
+          readiness.state === "fallback-offered"
+        ) {
           setInstallError({
             message: readiness.message ?? "Installation failed",
             category: readiness.errorCategory,
             details: readiness.errorDetails,
           });
         }
-        // Final state from the main process — "installed" or "install-failed".
+        // Final state from the main process.
         setOfflineState(readiness.state);
       })
       .catch((err: unknown) => {
@@ -909,6 +1131,33 @@ export function OfflineSetupFlow() {
           details: err instanceof Error ? err.stack ?? err.message : String(err),
         });
         setOfflineState("install-failed");
+      });
+  };
+
+  const handleInstall = () => {
+    if (!offlineRecommendation) return;
+    installModel(offlineRecommendation.modelId);
+  };
+
+  const handleChooseFallback = (option: OfflineRecommendation) => {
+    installModel(option.modelId);
+  };
+
+  const handleTryGemma4Again = () => {
+    setInstallError(null);
+    setFallbackOptions([]);
+    ipc
+      .resetOfflineFailures()
+      .then((readiness) => {
+        applyReadinessMetadata(readiness);
+      })
+      .catch((err) => {
+        console.error("[offline] reset failures failed", err);
+      })
+      .finally(() => {
+        // Always re-run analysis so the user lands on a fresh Gemma 4
+        // recommendation regardless of whether the IPC reset succeeded.
+        setOfflineState("analyzing-system");
       });
   };
 
@@ -943,6 +1192,8 @@ export function OfflineSetupFlow() {
           <ErrorScreen
             key="rec-missing"
             state="install-failed"
+            attemptCount={gemma4FailureCount}
+            attemptThreshold={gemma4FailureThreshold}
             onRetry={handleRetry}
           />
         )}
@@ -956,6 +1207,16 @@ export function OfflineSetupFlow() {
         {offlineState === "installed" && (
           <SuccessScreen key="success" onEnterChat={handleEnterChat} />
         )}
+        {offlineState === "fallback-offered" && (
+          <FallbackChoiceScreen
+            key="fallback-offered"
+            fallbackOptions={fallbackOptions}
+            failureCount={gemma4FailureCount}
+            failureReasons={lastFailureReasons}
+            onChooseFallback={handleChooseFallback}
+            onTryGemma4Again={handleTryGemma4Again}
+          />
+        )}
         {(offlineState === "install-failed" ||
           offlineState === "repair-needed") && (
           <ErrorScreen
@@ -964,6 +1225,8 @@ export function OfflineSetupFlow() {
             errorMessage={installError?.message}
             errorCategory={installError?.category}
             errorDetails={installError?.details}
+            attemptCount={gemma4FailureCount}
+            attemptThreshold={gemma4FailureThreshold}
             onRetry={handleRetry}
           />
         )}

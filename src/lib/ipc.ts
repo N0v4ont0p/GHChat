@@ -127,4 +127,12 @@ export const ipc = {
    * Open the offline root directory in the OS file manager.
    */
   revealOfflineFolder: () => api().invoke<void>(IPC.OFFLINE_REVEAL_FOLDER),
+
+  /**
+   * Reset the consecutive Gemma 4 install failure counter.  Used when
+   * the user explicitly chooses to keep trying Gemma 4 after the
+   * fallback-offered screen instead of installing a Gemma 3 fallback.
+   */
+  resetOfflineFailures: () =>
+    api().invoke<OfflineReadiness>(IPC.OFFLINE_RESET_FAILURES),
 };

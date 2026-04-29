@@ -1,7 +1,14 @@
 import type { IpcMain, IpcMainEvent } from "electron";
 import { shell } from "electron";
 import { IPC } from "../../../src/types";
-import type { AppMode, OfflineReadiness, OfflineSetupState } from "../../../src/types";
+import type {
+  AppMode,
+  OfflineErrorCategory,
+  OfflineFailureReason,
+  OfflineReadiness,
+  OfflineRecommendation,
+  OfflineSetupState,
+} from "../../../src/types";
 import {
   isDatabaseReady,
   getOfflineInstallation,
@@ -15,12 +22,23 @@ import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
 import { runtimeManager } from "../services/offline/runtime-manager";
 import { storageService } from "../services/offline/storage";
+import { offlineCatalog } from "../services/offline/catalog";
 import { formatErrorChain } from "../services/offline/runtime-catalog";
 import {
   RuntimeReleaseInstallError,
   AssetDownloadInstallError,
 } from "../services/offline/install-manager";
 import type { ChatMessage } from "../services/offline/runtime-manager";
+
+/**
+ * Number of consecutive **Gemma 4** install failures after which GHchat
+ * stops looping the same install path and explicitly offers fallback
+ * model choices (Gemma 3) for the user to opt into.
+ *
+ * Per product requirements: never auto-substitute a different model;
+ * give the Gemma 4 path a fair shot first.
+ */
+const GEMMA4_FAILURE_THRESHOLD = 5;
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
 // AppMode is persisted to the settings table so it survives restarts.
@@ -56,6 +74,62 @@ function loadOfflineStateFromDb(): OfflineSetupState {
   }
 }
 
+/** Parse the JSON-encoded `last_failure_reasons` blob; defensive on bad data. */
+function parseFailureReasons(raw: string | null): OfflineFailureReason[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (r): r is OfflineFailureReason =>
+        r != null &&
+        typeof r === "object" &&
+        typeof (r as { at?: unknown }).at === "number" &&
+        typeof (r as { modelId?: unknown }).modelId === "string" &&
+        typeof (r as { category?: unknown }).category === "string" &&
+        typeof (r as { message?: unknown }).message === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build the renderer-facing `OfflineReadiness` payload from a partial
+ * state and the persisted Gemma-4 failure tracking.
+ *
+ * Always populates `gemma4FailureCount`, `gemma4FailureThreshold`, and
+ * `lastFailureReasons` so the UI can render the attempt counter and
+ * recent-failure list at any time.  Populates `fallbackOptions` when the
+ * state is `fallback-offered`.
+ */
+async function buildReadiness(
+  base: OfflineReadiness,
+): Promise<OfflineReadiness> {
+  const row = isDatabaseReady() ? getOfflineInstallation() : null;
+  const failureCount = row?.gemma4FailureCount ?? 0;
+  const reasons = parseFailureReasons(row?.lastFailureReasons ?? null);
+
+  const out: OfflineReadiness = {
+    ...base,
+    gemma4FailureCount: failureCount,
+    gemma4FailureThreshold: GEMMA4_FAILURE_THRESHOLD,
+    lastFailureReasons: reasons,
+  };
+
+  if (base.state === "fallback-offered" && !out.fallbackOptions) {
+    try {
+      const profile = await hardwareProfile.detect();
+      out.fallbackOptions = recommendationService.recommendFallbacks(profile);
+    } catch (err) {
+      console.error("[offline] failed to compute fallback options:", err);
+      out.fallbackOptions = [];
+    }
+  }
+
+  return out;
+}
+
 let _offlineReadiness: OfflineReadiness = {
   state: loadOfflineStateFromDb(),
 };
@@ -79,42 +153,73 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     return _currentMode;
   });
 
-  ipcMain.handle(IPC.OFFLINE_STATUS, (): OfflineReadiness => {
+  ipcMain.handle(IPC.OFFLINE_STATUS, async (): Promise<OfflineReadiness> => {
     // Re-read from DB on each status request so the renderer always sees
     // the latest persisted state (e.g. after an install step completes).
     if (isDatabaseReady()) {
       try {
         const row = getOfflineInstallation();
-        if (row) _offlineReadiness = { state: row.state as OfflineSetupState };
+        if (row) {
+          _offlineReadiness = { state: row.state as OfflineSetupState };
+        }
       } catch {
         // Keep last known in-memory state on DB read failure.
       }
     }
-    return _offlineReadiness;
+    return buildReadiness(_offlineReadiness);
   });
 
   ipcMain.handle(IPC.OFFLINE_ANALYZE, async (): Promise<OfflineReadiness> => {
     try {
       const profile = await hardwareProfile.detect();
+
+      // If the user has hit the failure threshold and we haven't reset it,
+      // jump directly to fallback-offered instead of recommending Gemma 4
+      // again — but still leave Gemma 4 listed under `recommendation` so
+      // the UI can offer "Try Gemma 4 anyway" as an explicit reset action.
+      const row = isDatabaseReady() ? getOfflineInstallation() : null;
+      const failureCount = row?.gemma4FailureCount ?? 0;
       const { offlineRecommendation } = recommendationService.recommend(profile);
+
+      if (failureCount >= GEMMA4_FAILURE_THRESHOLD) {
+        const fallbackOptions = recommendationService.recommendFallbacks(profile);
+        const readiness: OfflineReadiness = {
+          state: "fallback-offered",
+          recommendation: offlineRecommendation,
+          fallbackOptions,
+          message:
+            `Gemma 4 install failed ${failureCount} times in a row. ` +
+            `Please choose a fallback below or reset the counter to keep trying Gemma 4.`,
+        };
+        setOfflineReadiness(readiness);
+        return buildReadiness(readiness);
+      }
+
       const readiness: OfflineReadiness = {
         state: "recommendation-ready",
         recommendation: offlineRecommendation,
       };
       setOfflineReadiness(readiness);
-      return readiness;
+      return buildReadiness(readiness);
     } catch (err) {
       console.error("[offline] analyze failed:", err);
       // Return a safe fallback so the renderer is never stuck.
       const fallback: OfflineReadiness = { state: "not-installed", message: String(err) };
       setOfflineReadiness(fallback);
-      return fallback;
+      return buildReadiness(fallback);
     }
   });
 
   ipcMain.handle(
     IPC.OFFLINE_INSTALL,
     async (event, modelId: string): Promise<OfflineReadiness> => {
+      // Look up the catalog entry up front so we know whether this is a
+      // Gemma 4 install (which counts toward the failure threshold) or an
+      // explicit user-chosen fallback (which does NOT count — by then the
+      // user has already opted in to a different family).
+      const entry = offlineCatalog.getById(modelId);
+      const isGemma4Install = entry?.family === "gemma-4";
+
       // Transition to "installing" immediately so status polls are correct.
       setOfflineReadiness({ state: "installing" });
 
@@ -126,9 +231,23 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           }
         });
 
+        // Successful install — reset the Gemma 4 failure counter so future
+        // attempts start fresh.  We reset on ANY successful install (even
+        // a fallback) so the user is never left with stale failure state.
+        if (isDatabaseReady()) {
+          try {
+            upsertOfflineInstallation({
+              gemma4FailureCount: 0,
+              lastFailureReasons: null,
+            });
+          } catch (err) {
+            console.warn("[offline] failed to reset failure counter:", err);
+          }
+        }
+
         const installed: OfflineReadiness = { state: "installed" };
         setOfflineReadiness(installed);
-        return installed;
+        return buildReadiness(installed);
       } catch (err) {
         // Render the full cause chain (top-level message + every nested
         // `.cause`) so technical details are available for the renderer's
@@ -141,7 +260,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         // render an actionable message instead of raw network error text.
         // Falls back to "install" for non-network failures (disk space,
         // checksum mismatch, extraction error, etc.).
-        let errorCategory: OfflineReadiness["errorCategory"] = "install";
+        let errorCategory: OfflineErrorCategory = "install";
         let errorDetails = causeChain;
         if (err instanceof RuntimeReleaseInstallError) {
           errorCategory = err.category;
@@ -154,17 +273,97 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
         const topMessage = err instanceof Error ? err.message : String(err);
 
+        // Record failure metadata so the UI can show the attempt counter
+        // and recent-failure list — but ONLY count failures of Gemma 4
+        // installs.  An explicit user-chosen fallback that fails does
+        // not push the user further toward "give up on Gemma 4".
+        let failureCount = 0;
+        let recordedReasons: OfflineFailureReason[] = [];
+        if (isGemma4Install && isDatabaseReady()) {
+          try {
+            const existing = getOfflineInstallation();
+            failureCount = (existing?.gemma4FailureCount ?? 0) + 1;
+            recordedReasons = parseFailureReasons(existing?.lastFailureReasons ?? null);
+            recordedReasons.push({
+              at: Date.now(),
+              modelId,
+              category: errorCategory,
+              message: topMessage,
+            });
+            // Cap history at the failure threshold so the list stays bounded.
+            if (recordedReasons.length > GEMMA4_FAILURE_THRESHOLD) {
+              recordedReasons = recordedReasons.slice(-GEMMA4_FAILURE_THRESHOLD);
+            }
+            upsertOfflineInstallation({
+              gemma4FailureCount: failureCount,
+              lastFailureReasons: JSON.stringify(recordedReasons),
+            });
+          } catch (dbErr) {
+            console.warn("[offline] failed to persist failure metadata:", dbErr);
+          }
+        } else if (isDatabaseReady()) {
+          // Read existing counter so the response payload is accurate even
+          // when the failure didn't itself bump the counter (fallback install).
+          try {
+            const existing = getOfflineInstallation();
+            failureCount = existing?.gemma4FailureCount ?? 0;
+            recordedReasons = parseFailureReasons(existing?.lastFailureReasons ?? null);
+          } catch {
+            /* best-effort */
+          }
+        }
+
+        // Decide whether to surface explicit fallback options.  Only
+        // happens for Gemma 4 failures that just crossed the threshold.
+        const shouldOfferFallback =
+          isGemma4Install && failureCount >= GEMMA4_FAILURE_THRESHOLD;
+        const nextState: OfflineSetupState = shouldOfferFallback
+          ? "fallback-offered"
+          : "install-failed";
+
+        let fallbackOptions: OfflineRecommendation[] | undefined;
+        if (shouldOfferFallback) {
+          try {
+            const profile = await hardwareProfile.detect();
+            fallbackOptions = recommendationService.recommendFallbacks(profile);
+          } catch (profErr) {
+            console.error("[offline] failed to compute fallback options:", profErr);
+            fallbackOptions = [];
+          }
+        }
+
         const failed: OfflineReadiness = {
-          state: "install-failed",
+          state: nextState,
           message: topMessage,
           errorCategory,
           errorDetails,
+          ...(fallbackOptions !== undefined && { fallbackOptions }),
         };
         setOfflineReadiness(failed);
-        return failed;
+        return buildReadiness(failed);
       }
     },
   );
+
+  // Reset the Gemma 4 failure counter so the user can keep trying Gemma 4
+  // even after the threshold has been reached.  This is the explicit
+  // counterpart to choosing a fallback option — the user is telling us
+  // "don't give up on Gemma 4 yet".
+  ipcMain.handle(IPC.OFFLINE_RESET_FAILURES, async (): Promise<OfflineReadiness> => {
+    if (isDatabaseReady()) {
+      try {
+        upsertOfflineInstallation({
+          gemma4FailureCount: 0,
+          lastFailureReasons: null,
+        });
+      } catch (err) {
+        console.error("[offline] failed to reset Gemma 4 failure counter:", err);
+      }
+    }
+    const reset: OfflineReadiness = { state: "not-installed" };
+    setOfflineReadiness(reset);
+    return buildReadiness(reset);
+  });
 
   // ── Offline chat streaming ──────────────────────────────────────────────────
 
@@ -273,20 +472,21 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       // avoid file-in-use errors).
       await runtimeManager.stop();
 
-      // Delete all offline assets and clear offline DB state.
+      // Delete all offline assets and clear offline DB state (this also
+      // resets the Gemma 4 failure counter via clearOfflineData()).
       await installManager.removeAll();
 
       const removed: OfflineReadiness = { state: "not-installed" };
       setOfflineReadiness(removed);
       // Also switch mode back to online so the renderer leaves offline mode.
       _currentMode = "online";
-      return removed;
+      return buildReadiness(removed);
     } catch (err) {
       console.error("[offline] remove failed:", err);
-      return {
+      return buildReadiness({
         state: "install-failed",
         message: err instanceof Error ? err.message : String(err),
-      };
+      });
     }
   });
 
