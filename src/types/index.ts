@@ -14,6 +14,10 @@ export type AppMode = "online" | "offline" | "auto";
  * installing         – model download / runtime install in progress
  * installed          – offline runtime is ready and a model is available
  * install-failed     – the last install attempt failed; user can retry
+ * fallback-offered   – Gemma 4 has failed to install enough times that
+ *                      GHchat is now offering explicit fallback model
+ *                      choices (e.g. Gemma 3) for the user to opt into.
+ *                      The user MUST choose one — never auto-switched.
  * repair-needed      – files are present but the runtime check failed
  */
 export type OfflineSetupState =
@@ -23,6 +27,7 @@ export type OfflineSetupState =
   | "installing"
   | "installed"
   | "install-failed"
+  | "fallback-offered"
   | "repair-needed";
 
 /**
@@ -42,15 +47,22 @@ export interface OfflineProfileSummary {
 }
 
 /**
+ * Top-level model family driving the offline install path.
+ * "gemma-4" is the default for fresh users; "gemma-3" entries are only
+ * offered after Gemma 4 install has failed repeatedly.
+ */
+export type OfflineModelFamily = "gemma-4" | "gemma-3";
+
+/**
  * Offline model recommendation returned by the main-process analyze step.
  * Contains everything the renderer needs to display the recommendation screen.
  */
 export interface OfflineRecommendation {
-  /** Catalog model ID, e.g. "gemma4-4b-q4km". */
+  /** Catalog model ID, e.g. "gemma4-e4b-q4km". */
   modelId: string;
-  /** Human-readable model family label, e.g. "Gemma 4 4B". */
+  /** Human-readable model family label, e.g. "Gemma 4 E4B". */
   label: string;
-  /** Variant label combining size and quantization, e.g. "4B · Q4_K_M". */
+  /** Variant label combining size and quantization, e.g. "E4B · Q4_K_M". */
   variantLabel: string;
   /** Approximate download / disk size in gigabytes. */
   sizeGb: number;
@@ -60,6 +72,19 @@ export interface OfflineRecommendation {
   reason: string;
   /** Hardware profile that drove the recommendation. */
   profile: OfflineProfileSummary;
+  /**
+   * Top-level family ("gemma-4" or "gemma-3").  The default recommendation
+   * pipeline only ever returns "gemma-4"; "gemma-3" only appears in the
+   * `fallbackOptions` list of an `OfflineReadiness` after Gemma 4 has
+   * failed repeatedly.
+   */
+  family: OfflineModelFamily;
+  /**
+   * True when this recommendation is an explicit fallback (i.e. NOT the
+   * preferred Gemma 4 default).  Renderer uses this to label the entry
+   * unambiguously in the fallback-choice UI.
+   */
+  isFallback: boolean;
 }
 
 /**
@@ -78,6 +103,18 @@ export type OfflineErrorCategory =
   | "auth-required"
   | "install"
   | "unknown";
+
+/** Structured record of a Gemma 4 install failure, surfaced to the UI. */
+export interface OfflineFailureReason {
+  /** Epoch ms when the failure occurred. */
+  at: number;
+  /** Catalog model ID that was being installed. */
+  modelId: string;
+  /** Coarse error category (same vocabulary as `OfflineReadiness.errorCategory`). */
+  category: OfflineErrorCategory;
+  /** Top-level error message. */
+  message: string;
+}
 
 /** Current offline readiness returned by the main process. */
 export interface OfflineReadiness {
@@ -103,6 +140,34 @@ export interface OfflineReadiness {
    * to derive it.
    */
   recommendation?: OfflineRecommendation;
+  /**
+   * Cumulative count of consecutive **Gemma 4** install failures since the
+   * last successful install (or the last explicit failure-counter reset).
+   * Reset to 0 on any successful install.  Used by the UI to display
+   * "Attempt N of M" and to know when fallback options will be offered.
+   */
+  gemma4FailureCount?: number;
+  /**
+   * Threshold (number of consecutive Gemma 4 failures) at which GHchat
+   * stops looping the same install path and transitions to
+   * "fallback-offered".  Surfaced to the UI so the attempt counter stays
+   * accurate without hard-coding it in the renderer.
+   */
+  gemma4FailureThreshold?: number;
+  /**
+   * Most recent Gemma 4 failure reasons (newest last), capped at the
+   * threshold size.  Surfaced in the UI so users can see *why* their
+   * Gemma 4 installs keep failing instead of being trapped in a silent
+   * retry loop.
+   */
+  lastFailureReasons?: OfflineFailureReason[];
+  /**
+   * Populated only when state is "fallback-offered".  Ranked list of
+   * explicit fallback model choices (Gemma 3 variants) the user may opt
+   * into.  GHchat NEVER auto-installs from this list — the user must
+   * click a specific option to install it.
+   */
+  fallbackOptions?: OfflineRecommendation[];
 }
 
 export type ModelCategory =
@@ -369,7 +434,7 @@ export interface OfflineInstallProgress {
 
 /** Information about a fully installed offline setup, returned by OFFLINE_GET_INFO. */
 export interface OfflineInfo {
-  /** Catalog model ID of the installed model (e.g. "gemma4-4b-q4km"). */
+  /** Catalog model ID of the installed model (e.g. "gemma4-e4b-q4km"). */
   modelId: string;
   /** Human-readable model name (e.g. "Gemma 4 4B"). */
   modelName: string;
@@ -454,6 +519,14 @@ export const IPC = {
    * Fired repeatedly while an install is in progress.
    */
   OFFLINE_INSTALL_PROGRESS: "offline:install:progress",
+  /**
+   * Reset the consecutive Gemma 4 failure counter and clear the
+   * `fallback-offered` state, returning the offline state machine to the
+   * default "Try Gemma 4 again" path.  Used by the UI when the user
+   * explicitly chooses to keep trying Gemma 4 instead of accepting a
+   * fallback.
+   */
+  OFFLINE_RESET_FAILURES: "offline:reset-failures",
   /**
    * Start a local-inference chat stream for offline mode.
    * Sent from renderer to main via `window.ghchat.send()`.
