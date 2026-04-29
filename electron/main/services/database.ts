@@ -101,6 +101,40 @@ export const offlineRuntimeTable = sqliteTable("offline_runtime", {
 });
 
 /**
+ * Offline-specific runtime settings (singleton).  Separate from the
+ * universal `settings` table so online/OpenRouter preferences and local
+ * inference knobs evolve independently.
+ *
+ * NULL columns mean "use the runtime default".  See OFFLINE_SETTINGS_DEFAULTS
+ * in the IPC layer for the values returned to the renderer.
+ */
+export const offlineSettingsTable = sqliteTable("offline_settings", {
+  id: text("id").primaryKey().default("app"),
+  /** Catalog id of the user's preferred default offline model, or null. */
+  defaultModelId: text("default_model_id"),
+  /** Performance preset name: "speed" | "balanced" | "quality" | "custom". */
+  performancePreset: text("performance_preset").default("balanced"),
+  /** llama-server context window in tokens (e.g. 4096). */
+  contextSize: integer("context_size"),
+  /** Per-request generation cap.  -1 means "unlimited". */
+  maxTokens: integer("max_tokens"),
+  /** Sampling temperature ×100 stored as integer for portability (e.g. 70 = 0.7). */
+  temperatureX100: integer("temperature_x100"),
+  /** top-p sampling ×100 (e.g. 90 = 0.9). */
+  topPX100: integer("top_p_x100"),
+  /** Worker thread override; null delegates to runtime auto-detection. */
+  threads: integer("threads"),
+  /**
+   * How long (ms) the IPC layer should wait for a graceful cancel after
+   * the user clicks Stop before hard-restarting the runtime subprocess.
+   */
+  cancelTimeoutMs: integer("cancel_timeout_ms"),
+  /** Whether to stream tokens; when false, the IPC waits for the full response. */
+  streamingEnabled: integer("streaming_enabled", { mode: "boolean" }).default(true),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/**
  * File ownership manifest — one row per file that GHchat manages as part
  * of the offline installation.  Enables precise clean-up and integrity checks.
  */
@@ -130,8 +164,11 @@ export const offlineManifestsTable = sqliteTable("offline_manifests", {
 //        offline_installation
 //  v6 — added active_model_id to offline_installation; added
 //        last_used_at to offline_models
+//  v7 — added offline_settings table for offline-specific runtime knobs
+//        (performance preset, context size, max tokens, temperature,
+//        top-p, threads, cancel timeout, streaming flag, default model).
 //
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -538,6 +575,43 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v7 — offline-specific runtime settings.  Creates a singleton
+    //       offline_settings row so renderer reads/writes never have to
+    //       handle the "row missing" case.  All columns are nullable so
+    //       new keys can be added without further migrations.
+    if (diskVersion < 7) {
+      console.log("[db] migration v7: creating offline_settings table…");
+      try {
+        sqliteDb.exec("BEGIN");
+        sqliteDb.run(`
+          CREATE TABLE IF NOT EXISTS offline_settings (
+            id TEXT PRIMARY KEY DEFAULT 'app',
+            default_model_id TEXT,
+            performance_preset TEXT DEFAULT 'balanced',
+            context_size INTEGER,
+            max_tokens INTEGER,
+            temperature_x100 INTEGER,
+            top_p_x100 INTEGER,
+            threads INTEGER,
+            cancel_timeout_ms INTEGER,
+            streaming_enabled INTEGER DEFAULT 1,
+            updated_at INTEGER NOT NULL
+          )
+        `);
+        sqliteDb.run(
+          `INSERT OR IGNORE INTO offline_settings (id, performance_preset, streaming_enabled, updated_at)
+           VALUES ('app', 'balanced', 1, ?)`,
+          [Date.now()],
+        );
+        sqliteDb.run("PRAGMA user_version = 7");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v7: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v7 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -690,6 +764,94 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
     .run();
   flushDb();
   return getSettings();
+}
+
+// ── Offline-specific settings ─────────────────────────────────────────────────
+
+/**
+ * Renderer-facing shape of the offline_settings row.  All fields are
+ * optional/nullable so the runtime can distinguish "unset, use default"
+ * from an explicit value (in particular maxTokens=-1 means "unlimited"
+ * while maxTokens=undefined falls back to the runtime default).
+ */
+export interface OfflineSettingsRecord {
+  /** Catalog id of the user's preferred default model, or null. */
+  defaultModelId: string | null;
+  /** Performance preset name. */
+  performancePreset: "speed" | "balanced" | "quality" | "custom";
+  /** llama-server context window in tokens, or null for default. */
+  contextSize: number | null;
+  /** Per-request generation cap.  -1 = unlimited.  null = runtime default. */
+  maxTokens: number | null;
+  /** Sampling temperature.  null = runtime default. */
+  temperature: number | null;
+  /** top-p sampling.  null = runtime default. */
+  topP: number | null;
+  /** Worker thread override.  null = auto-detect. */
+  threads: number | null;
+  /** Cancel-timeout (ms) before forcing a runtime restart.  null = default. */
+  cancelTimeoutMs: number | null;
+  /** Whether streaming is enabled for offline chats. */
+  streamingEnabled: boolean;
+  updatedAt: number;
+}
+
+export function getOfflineSettings(): OfflineSettingsRecord {
+  // Defensive: ensure the singleton row exists.  The migration creates it
+  // but a corrupted DB could lose it; we self-heal here so callers never
+  // see an exception just to read settings.
+  try {
+    sqliteDb.run(
+      `INSERT OR IGNORE INTO offline_settings (id, performance_preset, streaming_enabled, updated_at)
+       VALUES ('app', 'balanced', 1, ?)`,
+      [Date.now()],
+    );
+  } catch {
+    /* ignore — table may legitimately not yet exist during early startup */
+  }
+  const row = getDb().select().from(offlineSettingsTable).where(eq(offlineSettingsTable.id, "app")).get();
+  return {
+    defaultModelId: row?.defaultModelId ?? null,
+    performancePreset: ((row?.performancePreset ?? "balanced") as OfflineSettingsRecord["performancePreset"]),
+    contextSize: row?.contextSize ?? null,
+    maxTokens: row?.maxTokens ?? null,
+    temperature: row?.temperatureX100 != null ? row.temperatureX100 / 100 : null,
+    topP: row?.topPX100 != null ? row.topPX100 / 100 : null,
+    threads: row?.threads ?? null,
+    cancelTimeoutMs: row?.cancelTimeoutMs ?? null,
+    streamingEnabled: row?.streamingEnabled ?? true,
+    updatedAt: row?.updatedAt ?? Date.now(),
+  };
+}
+
+export function updateOfflineSettings(
+  partial: Partial<Omit<OfflineSettingsRecord, "updatedAt">>,
+): OfflineSettingsRecord {
+  // Make sure the row exists before we update it.
+  getOfflineSettings();
+  const now = Date.now();
+  getDb()
+    .update(offlineSettingsTable)
+    .set({
+      ...(partial.defaultModelId !== undefined && { defaultModelId: partial.defaultModelId }),
+      ...(partial.performancePreset !== undefined && { performancePreset: partial.performancePreset }),
+      ...(partial.contextSize !== undefined && { contextSize: partial.contextSize }),
+      ...(partial.maxTokens !== undefined && { maxTokens: partial.maxTokens }),
+      ...(partial.temperature !== undefined && {
+        temperatureX100: partial.temperature == null ? null : Math.round(partial.temperature * 100),
+      }),
+      ...(partial.topP !== undefined && {
+        topPX100: partial.topP == null ? null : Math.round(partial.topP * 100),
+      }),
+      ...(partial.threads !== undefined && { threads: partial.threads }),
+      ...(partial.cancelTimeoutMs !== undefined && { cancelTimeoutMs: partial.cancelTimeoutMs }),
+      ...(partial.streamingEnabled !== undefined && { streamingEnabled: partial.streamingEnabled }),
+      updatedAt: now,
+    })
+    .where(eq(offlineSettingsTable.id, "app"))
+    .run();
+  flushDb();
+  return getOfflineSettings();
 }
 
 export function clearAllData(): void {

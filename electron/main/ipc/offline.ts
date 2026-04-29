@@ -8,9 +8,12 @@ import type {
   OfflineCatalogEntrySummary,
   OfflineErrorCategory,
   OfflineFailureReason,
+  OfflineHardwareProfileSnapshot,
   OfflineModelSummary,
+  OfflinePerformancePreset,
   OfflineReadiness,
   OfflineRecommendation,
+  OfflineSettings,
   OfflineSetupState,
 } from "../../../src/types";
 import {
@@ -20,6 +23,8 @@ import {
   listOfflineModels,
   getSettings,
   updateSettings,
+  getOfflineSettings,
+  updateOfflineSettings,
 } from "../services/database";
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
@@ -33,6 +38,80 @@ import {
   AssetDownloadInstallError,
 } from "../services/offline/install-manager";
 import type { ChatMessage } from "../services/offline/runtime-manager";
+import * as os from "os";
+
+// ── Offline settings: presets & defaults ──────────────────────────────────────
+
+/**
+ * Default cancel-timeout: how long we wait after the user clicks Stop
+ * before hard-restarting the runtime.  Picked so that on Apple Silicon
+ * generating one token of Gemma 4 (~150–800 ms typical) has time to
+ * complete cleanly, while not feeling indefinite to the user.
+ */
+const DEFAULT_CANCEL_TIMEOUT_MS = 1500;
+
+/**
+ * Resolve a complete OfflineSettings record from the persisted partial,
+ * filling in `null` fields with values derived from the active
+ * performance preset.  This is the single source of truth for what the
+ * runtime manager and chat handler should actually use.
+ */
+function resolveOfflineSettings(): Required<{
+  [K in keyof OfflineSettings]: NonNullable<OfflineSettings[K]>;
+}> {
+  const stored = isDatabaseReady() ? getOfflineSettings() : null;
+  const preset = (stored?.performancePreset ?? "balanced") as OfflinePerformancePreset;
+
+  const presetDefaults: Record<OfflinePerformancePreset, {
+    contextSize: number;
+    maxTokens: number;
+    temperature: number;
+    topP: number;
+    threads: number;
+  }> = {
+    speed: {
+      contextSize: 2048,
+      maxTokens: 512,
+      temperature: 0.7,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length * 0.75)),
+    },
+    balanced: {
+      contextSize: 4096,
+      maxTokens: 1024,
+      temperature: 0.7,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length / 2)),
+    },
+    quality: {
+      contextSize: 8192,
+      maxTokens: 2048,
+      temperature: 0.6,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length / 2)),
+    },
+    custom: {
+      contextSize: 4096,
+      maxTokens: 1024,
+      temperature: 0.7,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length / 2)),
+    },
+  };
+
+  const d = presetDefaults[preset] ?? presetDefaults.balanced;
+  return {
+    defaultModelId: stored?.defaultModelId ?? "",
+    performancePreset: preset,
+    contextSize: stored?.contextSize ?? d.contextSize,
+    maxTokens: stored?.maxTokens ?? d.maxTokens,
+    temperature: stored?.temperature ?? d.temperature,
+    topP: stored?.topP ?? d.topP,
+    threads: stored?.threads ?? d.threads,
+    cancelTimeoutMs: stored?.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS,
+    streamingEnabled: stored?.streamingEnabled ?? true,
+  };
+}
 
 /**
  * Number of consecutive **Gemma 4** install failures after which GHchat
@@ -371,7 +450,17 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
 
   // ── Offline chat streaming ──────────────────────────────────────────────────
 
+  /**
+   * Map of in-flight offline chat requests → their AbortController.
+   * Removed when the stream completes naturally OR when the user cancels.
+   */
   const activeStreams = new Map<string, AbortController>();
+  /**
+   * Set of requestIds that have been cancelled by the user.  The stream
+   * handler checks this to skip sending a duplicate OFFLINE_CHAT_END (the
+   * stop handler sends one immediately so the UI is responsive).
+   */
+  const cancelledRequests = new Set<string>();
 
   ipcMain.on(
     IPC.OFFLINE_CHAT_STREAM,
@@ -392,17 +481,43 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       };
 
+      // Resolve the user's runtime knobs once per request.
+      const settings = resolveOfflineSettings();
+
       try {
         await runtimeManager.streamChat(
           modelId,
           messages,
-          (token) => send(IPC.OFFLINE_CHAT_TOKEN, { requestId, token }),
+          (token) => {
+            // Drop tokens for cancelled requests so the renderer never
+            // sees post-stop content even if llama.cpp emits a few more
+            // batches before the abort propagates.
+            if (cancelledRequests.has(requestId)) return;
+            send(IPC.OFFLINE_CHAT_TOKEN, { requestId, token });
+          },
           controller.signal,
+          {
+            spawn: {
+              contextSize: settings.contextSize,
+              threads: settings.threads,
+            },
+            generation: {
+              temperature: settings.temperature,
+              topP: settings.topP,
+              maxTokens: settings.maxTokens,
+            },
+          },
         );
-        send(IPC.OFFLINE_CHAT_END, { requestId });
-      } catch (err) {
-        if (controller.signal.aborted) {
+        // Only send END when the stop handler hasn't already done so.
+        if (!cancelledRequests.has(requestId)) {
           send(IPC.OFFLINE_CHAT_END, { requestId });
+        }
+      } catch (err) {
+        if (controller.signal.aborted || cancelledRequests.has(requestId)) {
+          // Cancel path — stop handler already sent OFFLINE_CHAT_END.
+          if (!cancelledRequests.has(requestId)) {
+            send(IPC.OFFLINE_CHAT_END, { requestId });
+          }
         } else {
           const message = err instanceof Error ? err.message : String(err);
           console.error("[offline] chat stream error:", err);
@@ -428,15 +543,191 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       } finally {
         activeStreams.delete(requestId);
+        cancelledRequests.delete(requestId);
       }
     },
   );
 
   ipcMain.on(
     IPC.OFFLINE_CHAT_STOP,
-    (_e, { requestId }: { requestId: string }) => {
-      activeStreams.get(requestId)?.abort();
-      activeStreams.delete(requestId);
+    (event: IpcMainEvent, { requestId }: { requestId: string }) => {
+      const controller = activeStreams.get(requestId);
+      if (!controller) return;
+
+      // Mark cancelled BEFORE aborting so any in-flight token callbacks
+      // racing with the abort are dropped.
+      cancelledRequests.add(requestId);
+      controller.abort();
+
+      // Tell the renderer the stream has ended *immediately*.  We don't
+      // wait for the fetch to unwind — on slow models (e.g. M2 + Gemma
+      // 4 31B) the fetch reader can be blocked for seconds on the next
+      // SSE chunk.  This makes the UI feel instantly responsive.
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(IPC.OFFLINE_CHAT_END, { requestId });
+      }
+
+      // Cancel-watchdog: if the runtime is still busy after the
+      // configured timeout, hard-restart it so the next request lands on
+      // a clean slate.  This is rare in practice (HTTP TCP close usually
+      // makes llama.cpp abort within one token), but is the safety net
+      // that guarantees Stop is always responsive.
+      const settings = resolveOfflineSettings();
+      const timeoutMs = settings.cancelTimeoutMs;
+      if (timeoutMs > 0) {
+        setTimeout(() => {
+          // If the abort already drained, activeStreams no longer
+          // contains this requestId — nothing to do.
+          if (!activeStreams.has(requestId)) return;
+          console.warn(
+            `[offline] stop watchdog: stream ${requestId} did not unwind ` +
+              `within ${timeoutMs}ms — force-restarting runtime`,
+          );
+          // Force-stop the runtime; the next chat request will lazy-start it.
+          void runtimeManager.stop({ force: true });
+        }, timeoutMs);
+      }
+    },
+  );
+
+  // ── Offline-specific settings ───────────────────────────────────────────────
+
+  ipcMain.handle(IPC.OFFLINE_SETTINGS_GET, async (): Promise<OfflineSettings> => {
+    if (!isDatabaseReady()) {
+      // Return safe defaults so the renderer never breaks even if the DB
+      // hasn't initialized yet.
+      return {
+        defaultModelId: null,
+        performancePreset: "balanced",
+        contextSize: null,
+        maxTokens: null,
+        temperature: null,
+        topP: null,
+        threads: null,
+        cancelTimeoutMs: null,
+        streamingEnabled: true,
+      };
+    }
+    const r = getOfflineSettings();
+    return {
+      defaultModelId: r.defaultModelId,
+      performancePreset: r.performancePreset,
+      contextSize: r.contextSize,
+      maxTokens: r.maxTokens,
+      temperature: r.temperature,
+      topP: r.topP,
+      threads: r.threads,
+      cancelTimeoutMs: r.cancelTimeoutMs,
+      streamingEnabled: r.streamingEnabled,
+    };
+  });
+
+  ipcMain.handle(
+    IPC.OFFLINE_SETTINGS_UPDATE,
+    async (_e, partial: Partial<OfflineSettings>): Promise<OfflineSettings> => {
+      // Any direct slider change implicitly switches the preset to
+      // "custom" so the preset label stays honest.  The renderer can
+      // still send a non-null performancePreset to take a different
+      // preset path (which then resets the per-knob overrides to null).
+      const presetSwitch = partial.performancePreset !== undefined;
+      const knobChanged =
+        partial.contextSize !== undefined ||
+        partial.maxTokens !== undefined ||
+        partial.temperature !== undefined ||
+        partial.topP !== undefined ||
+        partial.threads !== undefined;
+      const effective: Partial<OfflineSettings> = { ...partial };
+      if (knobChanged && !presetSwitch) {
+        effective.performancePreset = "custom";
+      }
+      // If the user picked a non-custom preset, clear the per-knob
+      // overrides so the preset's defaults take effect.
+      if (
+        presetSwitch &&
+        partial.performancePreset !== "custom" &&
+        partial.performancePreset !== undefined
+      ) {
+        effective.contextSize = null;
+        effective.maxTokens = null;
+        effective.temperature = null;
+        effective.topP = null;
+        effective.threads = null;
+      }
+      const r = updateOfflineSettings(effective);
+      // Stop the runtime so the next chat request picks up the new
+      // ctx-size / threads.  Cheap: a no-op if not running.
+      if (
+        partial.contextSize !== undefined ||
+        partial.threads !== undefined ||
+        presetSwitch
+      ) {
+        void runtimeManager.stop();
+      }
+      return {
+        defaultModelId: r.defaultModelId,
+        performancePreset: r.performancePreset,
+        contextSize: r.contextSize,
+        maxTokens: r.maxTokens,
+        temperature: r.temperature,
+        topP: r.topP,
+        threads: r.threads,
+        cancelTimeoutMs: r.cancelTimeoutMs,
+        streamingEnabled: r.streamingEnabled,
+      };
+    },
+  );
+
+  ipcMain.handle(IPC.OFFLINE_SETTINGS_RESET, async (): Promise<OfflineSettings> => {
+    const r = updateOfflineSettings({
+      performancePreset: "balanced",
+      contextSize: null,
+      maxTokens: null,
+      temperature: null,
+      topP: null,
+      threads: null,
+      cancelTimeoutMs: null,
+      streamingEnabled: true,
+    });
+    void runtimeManager.stop();
+    return {
+      defaultModelId: r.defaultModelId,
+      performancePreset: r.performancePreset,
+      contextSize: r.contextSize,
+      maxTokens: r.maxTokens,
+      temperature: r.temperature,
+      topP: r.topP,
+      threads: r.threads,
+      cancelTimeoutMs: r.cancelTimeoutMs,
+      streamingEnabled: r.streamingEnabled,
+    };
+  });
+
+  ipcMain.handle(
+    IPC.OFFLINE_GET_HARDWARE_PROFILE,
+    async (): Promise<OfflineHardwareProfileSnapshot | null> => {
+      try {
+        const p = await hardwareProfile.detect();
+        // Tier heuristics — calibrated to match the catalog tiers used
+        // by the recommendation engine.  Apple Silicon gets a one-tier
+        // bump because of unified memory + Metal acceleration.
+        let tier: OfflineHardwareProfileSnapshot["tier"] = "low";
+        if (p.totalRamGb >= 48) tier = "ultra";
+        else if (p.totalRamGb >= 16) tier = "high";
+        else if (p.totalRamGb >= 8) tier = "mid";
+        if (p.isAppleSilicon && tier === "mid") tier = "high";
+        return {
+          totalRamGb: p.totalRamGb,
+          freeDiskGb: p.freeDiskGb,
+          cpuCores: p.cpuCores,
+          platform: p.platform,
+          arch: p.arch,
+          isAppleSilicon: p.isAppleSilicon,
+          tier,
+        };
+      } catch (err) {
+        console.warn("[offline] get-hardware-profile failed:", err);
+        return null;
+      }
     },
   );
 

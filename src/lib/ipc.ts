@@ -12,6 +12,8 @@ import type {
   OfflineInfo,
   OfflineModelSummary,
   OfflineCatalogEntrySummary,
+  OfflineSettings,
+  OfflineHardwareProfileSnapshot,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -159,6 +161,18 @@ export const ipc = {
   /** Reveal a single model's storage location in the OS file manager. */
   revealOfflineModelFolder: (modelId: string) =>
     api().invoke<void>(IPC.OFFLINE_REVEAL_MODEL_FOLDER, modelId),
+
+  // ── Offline-specific settings ─────────────────────────────────────────
+  /** Read the persisted offline-specific settings record. */
+  getOfflineSettings: () => api().invoke<OfflineSettings>(IPC.OFFLINE_SETTINGS_GET),
+  /** Update one or more offline-specific settings; returns the new state. */
+  updateOfflineSettings: (partial: Partial<OfflineSettings>) =>
+    api().invoke<OfflineSettings>(IPC.OFFLINE_SETTINGS_UPDATE, partial),
+  /** Reset all offline-specific settings to defaults. */
+  resetOfflineSettings: () => api().invoke<OfflineSettings>(IPC.OFFLINE_SETTINGS_RESET),
+  /** Get a snapshot of host hardware (RAM/CPU/disk + tier) for diagnostics. */
+  getOfflineHardwareProfile: () =>
+    api().invoke<OfflineHardwareProfileSnapshot | null>(IPC.OFFLINE_GET_HARDWARE_PROFILE),
 
   /**
    * Reset the consecutive Gemma 4 install failure counter.  Used when

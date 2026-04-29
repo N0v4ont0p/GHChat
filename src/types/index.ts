@@ -255,6 +255,65 @@ export interface AppSettings {
   currentMode?: AppMode;
 }
 
+/**
+ * Performance preset bundles a few related runtime knobs (context size,
+ * thread count, max tokens) into a single user-friendly choice.
+ *   - "speed":    smallest context, capped output, generous thread count
+ *   - "balanced": sensible defaults for most machines
+ *   - "quality":  large context, longer outputs, may be slower
+ *   - "custom":   the user has tweaked individual sliders
+ */
+export type OfflinePerformancePreset = "speed" | "balanced" | "quality" | "custom";
+
+/**
+ * Offline-specific settings persisted in the offline_settings table.
+ * Separate from `AppSettings` so universal/online preferences and local
+ * inference knobs can evolve independently.  All fields are optional —
+ * `null` / `undefined` means "use the runtime default".
+ */
+export interface OfflineSettings {
+  /** Catalog id of the user's preferred default model, or null. */
+  defaultModelId: string | null;
+  /** Active performance preset. */
+  performancePreset: OfflinePerformancePreset;
+  /** llama-server context window in tokens (e.g. 4096). */
+  contextSize: number | null;
+  /** Per-request generation cap.  -1 = unlimited.  null = preset default. */
+  maxTokens: number | null;
+  /** Sampling temperature (0.0–2.0).  null = preset default. */
+  temperature: number | null;
+  /** top-p sampling (0.0–1.0).  null = preset default. */
+  topP: number | null;
+  /** Worker thread override.  null = auto. */
+  threads: number | null;
+  /** Cancel-timeout (ms) before forcing a runtime restart. */
+  cancelTimeoutMs: number | null;
+  /** Whether streaming is enabled. */
+  streamingEnabled: boolean;
+}
+
+/**
+ * Snapshot of the host machine's hardware capabilities, returned to the
+ * renderer so the management UI can render a hardware tier banner and
+ * warn when the active model is heavier than the local hardware.
+ */
+export interface OfflineHardwareProfileSnapshot {
+  totalRamGb: number;
+  freeDiskGb: number;
+  cpuCores: number;
+  platform: string;
+  arch: string;
+  isAppleSilicon: boolean;
+  /**
+   * Human-readable hardware tier:
+   *   - "low":   limited RAM/CPU; recommend the smallest variants
+   *   - "mid":   typical laptop; recommend mid-size variants
+   *   - "high":  desktop or Apple Silicon w/ ≥16 GB RAM
+   *   - "ultra": ≥48 GB RAM; can comfortably run 30B+ variants
+   */
+  tier: "low" | "mid" | "high" | "ultra";
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -681,4 +740,16 @@ export const IPC = {
    * itself selected; otherwise opens the models/ directory.
    */
   OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
+  /** Get the offline-specific settings record. */
+  OFFLINE_SETTINGS_GET: "offline:settings-get",
+  /** Update one or more offline-specific settings. */
+  OFFLINE_SETTINGS_UPDATE: "offline:settings-update",
+  /** Reset offline-specific settings to defaults. */
+  OFFLINE_SETTINGS_RESET: "offline:settings-reset",
+  /**
+   * Get a cached HardwareProfile snapshot for the management UI to render
+   * hardware tier diagnostics and to warn when the active model is heavier
+   * than the local hardware can comfortably handle.
+   */
+  OFFLINE_GET_HARDWARE_PROFILE: "offline:get-hardware-profile",
 } as const;

@@ -98,4 +98,16 @@ export const IPC = {
   OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
   /** Reset Gemma 4 install failure counter (renderer-facing copy of internal handler). */
   OFFLINE_RESET_FAILURES: "offline:reset-failures",
+  /** Get the offline-specific settings record. */
+  OFFLINE_SETTINGS_GET: "offline:settings-get",
+  /** Update one or more offline-specific settings. */
+  OFFLINE_SETTINGS_UPDATE: "offline:settings-update",
+  /** Reset offline-specific settings to defaults. */
+  OFFLINE_SETTINGS_RESET: "offline:settings-reset",
+  /**
+   * Get the cached HardwareProfile snapshot used by the recommendation
+   * engine.  Used by the management UI to render hardware tier and to
+   * warn when the active model exceeds the local capacity.
+   */
+  OFFLINE_GET_HARDWARE_PROFILE: "offline:get-hardware-profile",
 } as const;
