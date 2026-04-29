@@ -14,11 +14,13 @@ import {
   Loader2,
   ShieldCheck,
   PackageCheck,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
-import type { OfflineInstallProgress, OfflineRecommendation } from "@/types";
+import type { OfflineErrorCategory, OfflineInstallProgress, OfflineRecommendation } from "@/types";
 
 // ── Animation variants ────────────────────────────────────────────────────────
 
@@ -605,16 +607,105 @@ function SuccessScreen({ onEnterChat }: { onEnterChat: () => void }) {
 
 // ── Error / repair screen ─────────────────────────────────────────────────────
 
+/**
+ * Map a coarse error category to an actionable, user-friendly title +
+ * summary.  The raw technical chain remains available in a collapsible
+ * details section below.
+ */
+function describeErrorCategory(
+  category: OfflineErrorCategory | undefined,
+  state: "install-failed" | "repair-needed",
+): { title: string; summary: string } {
+  if (state === "repair-needed") {
+    return {
+      title: "Repair needed",
+      summary:
+        "Some Gemma 4 files appear to be missing or corrupted. A repair will re-download only what's needed.",
+    };
+  }
+  switch (category) {
+    case "network-offline":
+      return {
+        title: "Can't reach GitHub",
+        summary:
+          "Your device can't connect to GitHub to download the offline runtime. " +
+          "Check your internet connection or firewall settings, then try again.",
+      };
+    case "dns":
+      return {
+        title: "Network / DNS problem",
+        summary:
+          "We couldn't resolve GitHub's address. This is usually a DNS, VPN, " +
+          "or Wi-Fi connectivity issue. Check your network and try again.",
+      };
+    case "timeout":
+      return {
+        title: "Network timed out",
+        summary:
+          "The request to GitHub took too long to respond. The connection may " +
+          "be slow or unstable — try again in a moment.",
+      };
+    case "rate-limited":
+      return {
+        title: "GitHub rate limit reached",
+        summary:
+          "GitHub has temporarily limited requests from this network. Wait a " +
+          "few minutes and try again, or try from a different network.",
+      };
+    case "tls-proxy":
+      return {
+        title: "Proxy or TLS issue",
+        summary:
+          "A proxy or firewall on this network appears to be intercepting the " +
+          "secure connection to GitHub. Check your proxy / VPN configuration.",
+      };
+    case "http-error":
+      return {
+        title: "GitHub is unavailable",
+        summary:
+          "GitHub returned an unexpected error. The service may be temporarily " +
+          "degraded — please try again in a few minutes.",
+      };
+    case "install":
+      return {
+        title: "Installation failed",
+        summary:
+          "Something went wrong while installing Gemma 4. Make sure you have " +
+          "enough disk space and a stable connection, then try again.",
+      };
+    case "unknown":
+    default:
+      return {
+        title: "Installation failed",
+        summary:
+          "An unexpected error occurred while setting up offline mode. " +
+          "Try again, and if it keeps failing, check the technical details below.",
+      };
+  }
+}
+
 function ErrorScreen({
   state,
   errorMessage,
+  errorCategory,
+  errorDetails,
   onRetry,
 }: {
   state: "install-failed" | "repair-needed";
   errorMessage?: string;
+  errorCategory?: OfflineErrorCategory;
+  errorDetails?: string;
   onRetry: () => void;
 }) {
   const isRepair = state === "repair-needed";
+  const { title, summary } = describeErrorCategory(errorCategory, state);
+  const [showDetails, setShowDetails] = useState(false);
+
+  // Prefer the rich `errorDetails` (full cause chain) for the technical
+  // section; fall back to the top-level message if details aren't provided.
+  const technical = errorDetails ?? errorMessage ?? null;
+  const hasTechnical = technical !== null && technical.trim().length > 0;
+
   return (
     <motion.div
       key="error"
@@ -628,20 +719,37 @@ function ErrorScreen({
       </div>
 
       <div className="space-y-2">
-        <h2 className="text-2xl font-bold tracking-tight">
-          {isRepair ? "Repair needed" : "Installation failed"}
-        </h2>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          {isRepair
-            ? "Some Gemma 4 files appear to be missing or corrupted. A repair will re-download only what's needed."
-            : "Something went wrong during the Gemma 4 install. Make sure you have enough disk space and a stable connection, then try again."}
-        </p>
-        {errorMessage && (
-          <p className="text-xs text-muted-foreground/60 mt-1 font-mono break-words leading-relaxed">
-            {errorMessage}
-          </p>
-        )}
+        <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
+        <p className="text-sm text-muted-foreground leading-relaxed">{summary}</p>
       </div>
+
+      {hasTechnical && (
+        <div className="w-full text-left">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-foreground transition-colors mx-auto"
+            onClick={() => setShowDetails((s) => !s)}
+            aria-expanded={showDetails}
+            aria-controls="offline-error-details"
+            aria-label="Toggle technical error details"
+          >
+            {showDetails ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
+            {showDetails ? "Hide technical details" : "Show technical details"}
+          </button>
+          {showDetails && (
+            <pre
+              id="offline-error-details"
+              className="mt-3 max-h-48 overflow-auto rounded-md border border-border/40 bg-muted/30 p-3 text-[11px] text-muted-foreground/80 font-mono whitespace-pre-wrap break-words leading-relaxed"
+            >
+              {technical}
+            </pre>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-col items-center gap-3 w-full">
         <Button className="w-full gap-2" onClick={onRetry}>
@@ -682,8 +790,15 @@ export function OfflineSetupFlow() {
   const setInstallProgress = useModeStore((s) => s.setInstallProgress);
   const setMode = useModeStore((s) => s.setMode);
 
-  // Error message from the last failed install attempt — shown in ErrorScreen.
-  const [installErrorMessage, setInstallErrorMessage] = useState<string | null>(null);
+  // Structured error info from the last failed install attempt — shown in
+  // ErrorScreen.  Includes the top-level message, a coarse category for
+  // friendly UI mapping, and the full cause chain for the technical-details
+  // collapsible section.
+  const [installError, setInstallError] = useState<{
+    message: string;
+    category?: OfflineErrorCategory;
+    details?: string;
+  } | null>(null);
 
   // ── Transitions ──────────────────────────────────────────────────────────────
 
@@ -750,33 +865,43 @@ export function OfflineSetupFlow() {
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
   const handleStartSetup = () => {
-    setInstallErrorMessage(null);
+    setInstallError(null);
     setOfflineState("analyzing-system");
   };
 
   const handleInstall = () => {
     if (!offlineRecommendation) return;
     const modelId = offlineRecommendation.modelId;
-    setInstallErrorMessage(null);
+    setInstallError(null);
     // Transition to "installing" immediately for instant feedback.
     setOfflineState("installing");
     ipc
       .startInstall(modelId)
       .then((readiness) => {
-        if (readiness.state === "install-failed" && readiness.message) {
-          setInstallErrorMessage(readiness.message);
+        if (readiness.state === "install-failed") {
+          setInstallError({
+            message: readiness.message ?? "Installation failed",
+            category: readiness.errorCategory,
+            details: readiness.errorDetails,
+          });
         }
         // Final state from the main process — "installed" or "install-failed".
         setOfflineState(readiness.state);
       })
       .catch((err: unknown) => {
-        setInstallErrorMessage(err instanceof Error ? err.message : String(err));
+        // IPC-level failure (main process unreachable, etc.) — we have no
+        // structured category here, so render as a generic install error.
+        setInstallError({
+          message: err instanceof Error ? err.message : String(err),
+          category: "unknown",
+          details: err instanceof Error ? err.stack ?? err.message : String(err),
+        });
         setOfflineState("install-failed");
       });
   };
 
   const handleRetry = () => {
-    setInstallErrorMessage(null);
+    setInstallError(null);
     setOfflineState("analyzing-system");
   };
 
@@ -824,7 +949,9 @@ export function OfflineSetupFlow() {
           <ErrorScreen
             key="error"
             state={offlineState as "install-failed" | "repair-needed"}
-            errorMessage={installErrorMessage ?? undefined}
+            errorMessage={installError?.message}
+            errorCategory={installError?.category}
+            errorDetails={installError?.details}
             onRetry={handleRetry}
           />
         )}

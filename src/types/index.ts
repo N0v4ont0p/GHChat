@@ -62,12 +62,40 @@ export interface OfflineRecommendation {
   profile: OfflineProfileSummary;
 }
 
+/**
+ * Coarse category of an install failure, used by the renderer to render
+ * an actionable, friendly message in the offline-setup UI.  Mirrors
+ * `ReleaseLookupErrorCategory` in `runtime-catalog.ts` plus a generic
+ * `install` bucket for non-network install failures.
+ */
+export type OfflineErrorCategory =
+  | "network-offline"
+  | "dns"
+  | "timeout"
+  | "rate-limited"
+  | "tls-proxy"
+  | "http-error"
+  | "install"
+  | "unknown";
+
 /** Current offline readiness returned by the main process. */
 export interface OfflineReadiness {
   /** Current position in the offline setup state machine. */
   state: OfflineSetupState;
   /** Human-readable status message (progress, error detail, etc.). */
   message?: string;
+  /**
+   * Coarse error category — only present on failure states.  Allows the
+   * renderer to map to an actionable, localised title/summary instead of
+   * displaying raw network error text.
+   */
+  errorCategory?: OfflineErrorCategory;
+  /**
+   * Full technical details (error chain, URL, attempts) — only present on
+   * failure states.  Rendered inside the collapsible "Technical details"
+   * section of the error screen so users can copy them when reporting bugs.
+   */
+  errorDetails?: string;
   /**
    * Populated when state is "recommendation-ready".
    * Contains the recommended Gemma 4 variant and the hardware profile used

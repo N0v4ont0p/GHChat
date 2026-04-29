@@ -15,6 +15,8 @@ import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
 import { runtimeManager } from "../services/offline/runtime-manager";
 import { storageService } from "../services/offline/storage";
+import { formatErrorChain } from "../services/offline/runtime-catalog";
+import { RuntimeReleaseInstallError } from "../services/offline/install-manager";
 import type { ChatMessage } from "../services/offline/runtime-manager";
 
 // ── In-memory mode state ──────────────────────────────────────────────────────
@@ -125,10 +127,26 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         setOfflineReadiness(installed);
         return installed;
       } catch (err) {
-        console.error("[offline] install failed:", err);
+        // Render the full cause chain (top-level message + every nested
+        // `.cause`) so technical details are available for the renderer's
+        // collapsible "Technical details" section.  The chain walker is
+        // defensive and safe for non-Error values.
+        const causeChain = formatErrorChain(err);
+        console.error("[offline] install failed:\n  " + causeChain);
+
+        // Map structured install errors to a coarse category so the UI can
+        // render an actionable message instead of raw network error text.
+        // Falls back to "install" for non-network failures (disk space,
+        // checksum mismatch, extraction error, etc.).
+        const errorCategory =
+          err instanceof RuntimeReleaseInstallError ? err.category : "install";
+        const topMessage = err instanceof Error ? err.message : String(err);
+
         const failed: OfflineReadiness = {
           state: "install-failed",
-          message: err instanceof Error ? err.message : String(err),
+          message: topMessage,
+          errorCategory,
+          errorDetails: causeChain,
         };
         setOfflineReadiness(failed);
         return failed;

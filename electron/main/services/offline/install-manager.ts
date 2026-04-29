@@ -22,8 +22,11 @@ import { storageService } from "./storage";
 import { modelRegistry } from "./model-registry";
 import {
   fetchLatestRuntimeRelease,
+  formatErrorChain,
   getRuntimePlatformTag,
+  RuntimeReleaseLookupError,
   RUNTIME_BINARY_NAME,
+  type ReleaseLookupErrorCategory,
 } from "./runtime-catalog";
 import { addOfflineManifestEntry, clearOfflineData, isDatabaseReady } from "../database";
 import type { OfflineInstallPhase, OfflineInstallProgress } from "../../../../src/types";
@@ -204,6 +207,34 @@ function findFileRecursive(dir: string, name: string): string | null {
   return null;
 }
 
+// ── Typed install errors ──────────────────────────────────────────────────────
+
+/**
+ * Error thrown by the install pipeline when the llama.cpp runtime release
+ * cannot be located.  Wraps the underlying `RuntimeReleaseLookupError`
+ * (preserving its `.cause` chain) and surfaces a stable error category
+ * that the renderer can map to a friendly UI message.
+ */
+export class RuntimeReleaseInstallError extends Error {
+  override readonly name = "RuntimeReleaseInstallError";
+  /** Category propagated from the underlying lookup failure. */
+  readonly category: ReleaseLookupErrorCategory;
+  /** Pre-rendered cause chain for the technical-details UI section. */
+  readonly causeChain: string;
+  /** URL that was being contacted when the lookup failed. */
+  readonly url: string;
+  /** Number of attempts made before giving up. */
+  readonly attempts: number;
+
+  constructor(message: string, lookupErr: RuntimeReleaseLookupError) {
+    super(message, { cause: lookupErr });
+    this.category = lookupErr.category;
+    this.causeChain = lookupErr.causeChain;
+    this.url = lookupErr.url;
+    this.attempts = lookupErr.attempts;
+  }
+}
+
 // ── Install lock ──────────────────────────────────────────────────────────────
 
 /** True while an install is in progress — prevents concurrent installs. */
@@ -314,14 +345,36 @@ export const installManager = {
           runtimeSizeBytes = release.sizeBytes;
           runtimeArchiveExt = release.archiveExt;
           runtimeAssetName = release.assetName;
+          const sourceLabel =
+            release.source === "pinned-fallback"
+              ? " (using pinned fallback — GitHub API unreachable)"
+              : "";
           report(
             "downloading-runtime",
-            `Downloading runtime ${release.tag} (${getRuntimePlatformTag()}: ${runtimeAssetName})…`,
+            `Downloading runtime ${release.tag} (${getRuntimePlatformTag()}: ${runtimeAssetName})${sourceLabel}…`,
             5,
           );
         } catch (err) {
+          // Preserve the original error (and its full `.cause` chain) so that
+          // callers / IPC consumers can inspect ENOTFOUND / ECONNRESET / TLS /
+          // proxy details instead of seeing only an opaque "fetch failed".
+          // We still log the rendered chain here so it shows up in main-process
+          // logs even if the renderer only displays the top-level message.
+          console.error(
+            "[install-manager] runtime release lookup failed:\n  " +
+              formatErrorChain(err),
+          );
+          if (err instanceof RuntimeReleaseLookupError) {
+            // Surface the structured category so the UI can render a friendly
+            // message; the underlying error is preserved as `.cause`.
+            throw new RuntimeReleaseInstallError(
+              `Failed to locate llama.cpp runtime release: ${err.message}`,
+              err,
+            );
+          }
           throw new Error(
             `Failed to locate llama.cpp runtime release: ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
           );
         }
 
