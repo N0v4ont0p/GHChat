@@ -57,6 +57,11 @@ export const storageService = {
     return join(resolveOfflineRoot(), "models");
   },
 
+  /** Return the absolute path to a specific model's `.gguf` file. */
+  getModelFilePath(modelId: string): string {
+    return join(resolveOfflineRoot(), "models", `${modelId}.gguf`);
+  },
+
   /**
    * Create the offline root and all required sub-directories.
    * Safe to call multiple times — existing directories are left untouched.

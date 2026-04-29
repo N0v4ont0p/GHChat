@@ -3,6 +3,7 @@ import * as net from "net";
 import * as os from "os";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
+import { touchOfflineModelLastUsed } from "../database";
 
 // ── Port utilities ────────────────────────────────────────────────────────────
 
@@ -205,6 +206,11 @@ export const runtimeManager = {
     return _port;
   },
 
+  /** Returns the model id currently loaded in the runtime, or null. */
+  getCurrentModelId(): string | null {
+    return _modelId;
+  },
+
   // ── Inference ───────────────────────────────────────────────────────────────
 
   /**
@@ -227,6 +233,10 @@ export const runtimeManager = {
   ): Promise<void> {
     // Ensure the server is running (lazy start).
     await runtimeManager.start(modelId);
+
+    // Mark this model as used now so the management UI can render
+    // a meaningful "last used" timestamp for each installed model.
+    touchOfflineModelLastUsed(modelId);
 
     if (_port === null) {
       throw new Error("[runtimeManager] server port not available after start");

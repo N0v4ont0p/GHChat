@@ -82,4 +82,20 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  /** Returns OfflineModelSummary[] — every installed offline model. */
+  OFFLINE_LIST_INSTALLED: "offline:list-installed",
+  /** Returns OfflineCatalogEntrySummary[] — installable catalog entries. */
+  OFFLINE_LIST_AVAILABLE: "offline:list-available",
+  /** Install an additional offline model w/o flipping global state. */
+  OFFLINE_INSTALL_ADDITIONAL: "offline:install-additional",
+  /** Remove a single installed offline model by id. */
+  OFFLINE_REMOVE_MODEL: "offline:remove-model",
+  /** Set the currently active offline model. */
+  OFFLINE_SET_ACTIVE_MODEL: "offline:set-active-model",
+  /** Get the currently active offline model id, or null. */
+  OFFLINE_GET_ACTIVE_MODEL: "offline:get-active-model",
+  /** Reveal a specific offline model file/folder in the OS file manager. */
+  OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
+  /** Reset Gemma 4 install failure counter (renderer-facing copy of internal handler). */
+  OFFLINE_RESET_FAILURES: "offline:reset-failures",
 } as const;

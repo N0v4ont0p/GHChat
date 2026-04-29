@@ -62,6 +62,12 @@ export const offlineInstallationTable = sqliteTable("offline_installation", {
    * been recorded since the last reset.
    */
   lastFailureReasons: text("last_failure_reasons"),
+  /**
+   * Catalog ID of the currently selected (active) offline model.  The
+   * runtime manager uses this when no explicit model id is supplied.
+   * NULL when no model is installed or the user has not picked one yet.
+   */
+  activeModelId: text("active_model_id"),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -76,6 +82,8 @@ export const offlineModelsTable = sqliteTable("offline_models", {
   /** Absolute path to the model's JSON manifest inside manifests/. */
   manifestPath: text("manifest_path").notNull(),
   installedAt: integer("installed_at").notNull(),
+  /** Epoch ms of last successful chat using this model; NULL if never used. */
+  lastUsedAt: integer("last_used_at"),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -120,8 +128,10 @@ export const offlineManifestsTable = sqliteTable("offline_manifests", {
 //  v4 — added current_mode to settings
 //  v5 — added gemma4_failure_count + last_failure_reasons (JSON) to
 //        offline_installation
+//  v6 — added active_model_id to offline_installation; added
+//        last_used_at to offline_models
 //
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -487,6 +497,47 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v6 — multi-model offline support: track which installed model is
+    //       currently active, and when each model was last used.  Both
+    //       columns are nullable so existing single-model installs keep
+    //       working unchanged until the user picks an active model.
+    if (diskVersion < 6) {
+      console.log("[db] migration v6: adding multi-model offline columns…");
+      try {
+        const installCols = tableColumns("offline_installation");
+        const modelCols = tableColumns("offline_models");
+        sqliteDb.exec("BEGIN");
+        if (!installCols.includes("active_model_id")) {
+          sqliteDb.run(
+            "ALTER TABLE offline_installation ADD COLUMN active_model_id TEXT",
+          );
+          console.log("[db] migration v6: active_model_id column added");
+        }
+        if (!modelCols.includes("last_used_at")) {
+          sqliteDb.run(
+            "ALTER TABLE offline_models ADD COLUMN last_used_at INTEGER",
+          );
+          console.log("[db] migration v6: last_used_at column added");
+        }
+        // Backfill active_model_id with the first installed model so
+        // existing single-model installs continue to work without the
+        // user having to pick an active model manually.
+        sqliteDb.run(
+          `UPDATE offline_installation
+           SET active_model_id = (
+             SELECT id FROM offline_models ORDER BY installed_at ASC LIMIT 1
+           )
+           WHERE active_model_id IS NULL`,
+        );
+        sqliteDb.run("PRAGMA user_version = 6");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v6: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v6 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -674,6 +725,8 @@ export interface OfflineInstallationRecord {
    * been recorded since the last reset.
    */
   lastFailureReasons: string | null;
+  /** Catalog ID of the currently selected offline model, or null. */
+  activeModelId: string | null;
   updatedAt: number;
 }
 
@@ -685,6 +738,8 @@ export interface OfflineModelRecord {
   modelPath: string;
   manifestPath: string;
   installedAt: number;
+  /** Epoch ms when the model was last used for inference, or null. */
+  lastUsedAt: number | null;
   updatedAt: number;
 }
 
@@ -723,6 +778,7 @@ export function getOfflineInstallation(): OfflineInstallationRecord | null {
     installedAt: row.installedAt ?? null,
     gemma4FailureCount: row.gemma4FailureCount ?? 0,
     lastFailureReasons: row.lastFailureReasons ?? null,
+    activeModelId: row.activeModelId ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -736,6 +792,7 @@ export function upsertOfflineInstallation(
       | "installedAt"
       | "gemma4FailureCount"
       | "lastFailureReasons"
+      | "activeModelId"
     >
   >,
 ): void {
@@ -751,6 +808,9 @@ export function upsertOfflineInstallation(
       }),
       ...(partial.lastFailureReasons !== undefined && {
         lastFailureReasons: partial.lastFailureReasons,
+      }),
+      ...(partial.activeModelId !== undefined && {
+        activeModelId: partial.activeModelId,
       }),
       updatedAt: now,
     })
@@ -775,6 +835,7 @@ export function listOfflineModels(): OfflineModelRecord[] {
       modelPath: r.modelPath,
       manifestPath: r.manifestPath,
       installedAt: r.installedAt,
+      lastUsedAt: r.lastUsedAt ?? null,
       updatedAt: r.updatedAt,
     }));
 }
@@ -794,6 +855,7 @@ export function getOfflineModel(id: string): OfflineModelRecord | null {
     modelPath: row.modelPath,
     manifestPath: row.manifestPath,
     installedAt: row.installedAt,
+    lastUsedAt: row.lastUsedAt ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -803,6 +865,9 @@ export function upsertOfflineModel(
     Partial<Pick<OfflineModelRecord, "quantization">>,
 ): OfflineModelRecord {
   const now = Date.now();
+  // Preserve installedAt + lastUsedAt across re-installs (they are
+  // historical facts that the install pipeline should not overwrite).
+  const existing = getOfflineModel(model.id);
   const values = {
     id: model.id,
     name: model.name,
@@ -810,7 +875,8 @@ export function upsertOfflineModel(
     quantization: model.quantization ?? null,
     modelPath: model.modelPath,
     manifestPath: model.manifestPath,
-    installedAt: now,
+    installedAt: existing?.installedAt ?? now,
+    lastUsedAt: existing?.lastUsedAt ?? null,
     updatedAt: now,
   };
   getDb()
@@ -830,6 +896,22 @@ export function upsertOfflineModel(
     .run();
   flushDb();
   return getOfflineModel(model.id)!;
+}
+
+/** Mark an installed model as used right now. */
+export function touchOfflineModelLastUsed(id: string): void {
+  if (!isDatabaseReady()) return;
+  try {
+    const now = Date.now();
+    getDb()
+      .update(offlineModelsTable)
+      .set({ lastUsedAt: now, updatedAt: now })
+      .where(eq(offlineModelsTable.id, id))
+      .run();
+    flushDb();
+  } catch (err) {
+    console.warn("[db] touchOfflineModelLastUsed failed:", err);
+  }
 }
 
 export function deleteOfflineModel(id: string): void {
@@ -943,6 +1025,7 @@ export function clearOfflineData(): void {
       installedAt: null,
       gemma4FailureCount: 0,
       lastFailureReasons: null,
+      activeModelId: null,
       updatedAt: Date.now(),
     })
     .where(eq(offlineInstallationTable.id, "app"))

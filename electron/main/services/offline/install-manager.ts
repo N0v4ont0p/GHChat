@@ -1078,6 +1078,72 @@ export const installManager = {
   },
 
   /**
+   * Check whether a single registered model's files are intact on disk.
+   *
+   * Returns:
+   *   - { ok: true, sizeBytes } when the file exists and its size is at
+   *     least 50 % of the declared size.
+   *   - { ok: false, health: "missing", sizeBytes: 0 } when the file is gone.
+   *   - { ok: false, health: "incomplete", sizeBytes } when the file exists
+   *     but is suspiciously small.
+   *   - { ok: false, health: "unknown", sizeBytes: 0 } on stat error.
+   *
+   * Never throws.
+   */
+  verifyModel(
+    modelId: string,
+  ): {
+    ok: boolean;
+    health: "ok" | "missing" | "incomplete" | "unknown";
+    sizeBytes: number;
+    reason?: string;
+  } {
+    try {
+      const record = modelRegistry.listInstalled().find((m) => m.id === modelId);
+      if (!record) {
+        return { ok: false, health: "unknown", sizeBytes: 0, reason: "Not registered in DB" };
+      }
+      if (!existsSync(record.modelPath)) {
+        return {
+          ok: false,
+          health: "missing",
+          sizeBytes: 0,
+          reason: `Model file missing: ${record.modelPath}`,
+        };
+      }
+      const stat = statSync(record.modelPath);
+      const minBytes = record.sizeGb * BYTES_PER_GB * 0.5;
+      if (stat.size < minBytes) {
+        return {
+          ok: false,
+          health: "incomplete",
+          sizeBytes: stat.size,
+          reason:
+            `Model file appears incomplete: expected ~${record.sizeGb.toFixed(1)} GB, ` +
+            `found ${(stat.size / BYTES_PER_GB).toFixed(2)} GB`,
+        };
+      }
+      return { ok: true, health: "ok", sizeBytes: stat.size };
+    } catch (err) {
+      return {
+        ok: false,
+        health: "unknown",
+        sizeBytes: 0,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+
+  /** True when the runtime binary exists on disk. */
+  isRuntimeBinaryPresent(): boolean {
+    try {
+      return existsSync(join(storageService.getSubdir("runtime"), RUNTIME_BINARY_NAME));
+    } catch {
+      return false;
+    }
+  },
+
+  /**
    * Remove all files associated with `modelId` and unregister it from the DB.
    * Safe to call even if some files are missing.
    */

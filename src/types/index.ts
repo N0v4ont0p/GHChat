@@ -454,6 +454,83 @@ export interface OfflineInfo {
   isRuntimeRunning: boolean;
 }
 
+/** Per-model health/availability status. */
+export type OfflineModelHealth = "ok" | "missing" | "incomplete" | "unknown";
+
+/**
+ * Renderer-facing summary for one installed offline model.  Returned from
+ * OFFLINE_LIST_INSTALLED, one entry per model row in the offline_models DB
+ * table.  Includes whatever the renderer needs to render a row in the
+ * Offline Models management UI without follow-up IPC calls.
+ */
+export interface OfflineModelSummary {
+  /** Catalog ID, e.g. "gemma4-e4b-q4km". */
+  id: string;
+  /** Human-readable model name (e.g. "Gemma 4 E4B"). */
+  name: string;
+  /** Short variant label (e.g. "E4B · Q4_K_M"). */
+  variantLabel: string;
+  /** Quantization string (e.g. "Q4_K_M"), or empty when unknown. */
+  quantization: string;
+  /** Top-level family ("gemma-4" / "gemma-3"), or "unknown" if not in the current catalog. */
+  family: OfflineModelFamily | "unknown";
+  /** Declared catalog size in GB (the "expected" size). */
+  declaredSizeGb: number;
+  /** Actual size on disk in bytes (0 if the file is missing). */
+  sizeOnDiskBytes: number;
+  /** Absolute path to the model file. */
+  modelPath: string;
+  /** Absolute path to the directory containing the model file. */
+  modelDir: string;
+  /** Per-model health: "ok", "missing", "incomplete", "unknown". */
+  health: OfflineModelHealth;
+  /** Human-readable explanation when health != "ok". */
+  healthReason?: string;
+  /** True when this model is the currently selected (active) model. */
+  isActive: boolean;
+  /** Epoch ms when the model was first installed. */
+  installedAt: number;
+  /** Epoch ms of last successful chat with this model, or null. */
+  lastUsedAt: number | null;
+}
+
+/**
+ * Renderer-facing summary for one *installable* catalog entry.  Returned
+ * from OFFLINE_LIST_AVAILABLE so the management UI can render the
+ * "Install another model" picker without re-implementing the catalog.
+ */
+export interface OfflineCatalogEntrySummary {
+  /** Catalog ID. */
+  id: string;
+  /** Human-readable model name. */
+  name: string;
+  /** Short variant label. */
+  variantLabel: string;
+  /** Quantization string. */
+  quantization: string;
+  /** Family ("gemma-4" or "gemma-3"). */
+  family: OfflineModelFamily;
+  /** True when this entry is an explicit fallback (Gemma 3). */
+  isFallback: boolean;
+  /** Approximate download/disk size in GB. */
+  sizeGb: number;
+  /** Minimum total system RAM in GB required to run this variant. */
+  ramRequiredGb: number;
+  /** Minimum free disk space in GB required to download + install. */
+  diskRequiredGb: number;
+  /** Quality / speed tradeoff tier. */
+  tier: "balanced" | "quality" | "fast";
+  /** True when this model is already installed. */
+  installed: boolean;
+  /**
+   * True when the local hardware meets the RAM/disk requirements.
+   * Computed against the cached hardware profile in the main process.
+   */
+  fitsHardware: boolean;
+  /** Short human-readable reason why fitsHardware is false (if applicable). */
+  fitReason?: string;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -561,4 +638,47 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  /**
+   * Returns OfflineModelSummary[] — every installed offline model with
+   * size on disk, health, active flag, and last-used timestamp.  Used by
+   * the Offline Models management UI.
+   */
+  OFFLINE_LIST_INSTALLED: "offline:list-installed",
+  /**
+   * Returns OfflineCatalogEntrySummary[] — every catalog model the user
+   * could install, with installed/fitsHardware flags pre-computed.  Used
+   * by the "Install another model" picker.
+   */
+  OFFLINE_LIST_AVAILABLE: "offline:list-available",
+  /**
+   * Install an additional offline model from the management UI without
+   * touching the global offline state machine.  Same arguments and
+   * progress events as OFFLINE_INSTALL but does not flip offlineState
+   * to "installing".  Returns true on success, false on failure.
+   */
+  OFFLINE_INSTALL_ADDITIONAL: "offline:install-additional",
+  /**
+   * Remove a single installed offline model by id.  Stops the runtime
+   * first when the target model is currently active.  Reassigns the
+   * active model to another installed model when possible (or null when
+   * none remain).  Returns true on success.
+   */
+  OFFLINE_REMOVE_MODEL: "offline:remove-model",
+  /**
+   * Set the currently active offline model.  Stops the runtime so the
+   * next chat picks up the new model cleanly.  Returns the new active
+   * model id (echo of the argument) or null if the id is unknown.
+   */
+  OFFLINE_SET_ACTIVE_MODEL: "offline:set-active-model",
+  /**
+   * Returns the id of the currently active offline model, or null when
+   * no model is active.
+   */
+  OFFLINE_GET_ACTIVE_MODEL: "offline:get-active-model",
+  /**
+   * Reveal a specific offline model's storage location in the OS file
+   * manager.  When given an id whose model file exists, shows the file
+   * itself selected; otherwise opens the models/ directory.
+   */
+  OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
 } as const;

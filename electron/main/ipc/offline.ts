@@ -1,10 +1,14 @@
 import type { IpcMain, IpcMainEvent } from "electron";
+import { dirname } from "path";
+import { existsSync, statSync } from "fs";
 import { shell } from "electron";
 import { IPC } from "../../../src/types";
 import type {
   AppMode,
+  OfflineCatalogEntrySummary,
   OfflineErrorCategory,
   OfflineFailureReason,
+  OfflineModelSummary,
   OfflineReadiness,
   OfflineRecommendation,
   OfflineSetupState,
@@ -438,13 +442,37 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
 
   // ── Offline management ──────────────────────────────────────────────────────
 
+  /**
+   * Resolve which model the user-facing OfflineInfo / runtime should treat
+   * as active.  Preference order:
+   *   1. The persisted active_model_id (when it points at an installed row)
+   *   2. The first installed model (legacy single-model installs)
+   *   3. null (no models installed)
+   */
+  function resolveActiveModelId(): string | null {
+    if (!isDatabaseReady()) return null;
+    try {
+      const installation = getOfflineInstallation();
+      const models = listOfflineModels();
+      const persisted = installation?.activeModelId ?? null;
+      if (persisted && models.some((m) => m.id === persisted)) return persisted;
+      return models[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   ipcMain.handle(IPC.OFFLINE_GET_INFO, async () => {
     const installRoot = storageService.getOfflineRoot();
     const storageBytesUsed = storageService.computeUsedBytes();
 
-    // Pull the first (and normally only) installed model record.
+    // Pick the *active* installed model (or the first one when no
+    // explicit selection has been made yet) so the UI shows the model
+    // that chats will actually use.
     const models = isDatabaseReady() ? listOfflineModels() : [];
-    const model = models[0] ?? null;
+    const activeId = resolveActiveModelId();
+    const model =
+      models.find((m) => m.id === activeId) ?? models[0] ?? null;
 
     // Pull install timestamp from the installation record.
     const installation = isDatabaseReady() ? getOfflineInstallation() : null;
@@ -453,10 +481,14 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     // internal state (the runtime manager tracks this without extra IPC).
     const isRuntimeRunning = runtimeManager.isRunning();
 
+    // Look up catalog metadata so we can render the variant label even
+    // when the DB row predates the multi-model schema.
+    const catalogEntry = model ? offlineCatalog.getById(model.id) : undefined;
+
     return {
       modelId: model?.id ?? "",
       modelName: model?.name ?? "Gemma 4",
-      variantLabel: model?.name ?? "Gemma 4",
+      variantLabel: catalogEntry?.variantLabel ?? model?.name ?? "Gemma 4",
       quantization: model?.quantization ?? "",
       sizeGb: model?.sizeGb ?? 0,
       storageBytesUsed,
@@ -465,6 +497,210 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       isRuntimeRunning,
     };
   });
+
+  ipcMain.handle(
+    IPC.OFFLINE_LIST_INSTALLED,
+    async (): Promise<OfflineModelSummary[]> => {
+      if (!isDatabaseReady()) return [];
+      const models = listOfflineModels();
+      const activeId = resolveActiveModelId();
+      return models.map((m): OfflineModelSummary => {
+        const check = installManager.verifyModel(m.id);
+        const catalog = offlineCatalog.getById(m.id);
+        return {
+          id: m.id,
+          name: m.name,
+          variantLabel: catalog?.variantLabel ?? m.name,
+          quantization: m.quantization ?? "",
+          family: catalog?.family ?? "unknown",
+          declaredSizeGb: m.sizeGb,
+          sizeOnDiskBytes: check.sizeBytes,
+          modelPath: m.modelPath,
+          modelDir: dirname(m.modelPath),
+          health: check.health,
+          ...(check.reason ? { healthReason: check.reason } : {}),
+          isActive: m.id === activeId,
+          installedAt: m.installedAt,
+          lastUsedAt: m.lastUsedAt,
+        };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_LIST_AVAILABLE,
+    async (): Promise<OfflineCatalogEntrySummary[]> => {
+      const installedIds = isDatabaseReady()
+        ? new Set(listOfflineModels().map((m) => m.id))
+        : new Set<string>();
+
+      // Best-effort hardware fit check.  Failures here are non-fatal —
+      // we just mark every entry as fitsHardware=true so the user can
+      // still install something.
+      let profile: Awaited<ReturnType<typeof hardwareProfile.detect>> | null = null;
+      try {
+        profile = await hardwareProfile.detect();
+      } catch (err) {
+        console.warn("[offline] hardware profile detection failed:", err);
+      }
+
+      return offlineCatalog.listAvailable().map((entry): OfflineCatalogEntrySummary => {
+        let fitsHardware = true;
+        let fitReason: string | undefined;
+        if (profile) {
+          if (!(entry.platforms as string[]).includes(profile.platform)) {
+            fitsHardware = false;
+            fitReason = `Not supported on ${profile.platform}`;
+          } else if (profile.totalRamGb < entry.ramRequiredGb) {
+            fitsHardware = false;
+            fitReason = `Requires ${entry.ramRequiredGb} GB RAM (have ${Math.round(profile.totalRamGb)} GB)`;
+          } else if (profile.freeDiskGb < entry.diskRequiredGb * 1.1) {
+            fitsHardware = false;
+            fitReason = `Requires ${entry.diskRequiredGb} GB free disk (have ${Math.round(profile.freeDiskGb)} GB)`;
+          }
+        }
+        return {
+          id: entry.id,
+          name: entry.name,
+          variantLabel: entry.variantLabel,
+          quantization: entry.quantization,
+          family: entry.family,
+          isFallback: entry.isFallback,
+          sizeGb: entry.sizeGb,
+          ramRequiredGb: entry.ramRequiredGb,
+          diskRequiredGb: entry.diskRequiredGb,
+          tier: entry.tier,
+          installed: installedIds.has(entry.id),
+          fitsHardware,
+          ...(fitReason ? { fitReason } : {}),
+        };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_INSTALL_ADDITIONAL,
+    async (event, modelId: string): Promise<{ ok: boolean; error?: string }> => {
+      // Sanity-check the catalog entry up front.
+      const entry = offlineCatalog.getById(modelId);
+      if (!entry) {
+        return { ok: false, error: `Unknown catalog model: ${modelId}` };
+      }
+      try {
+        await installManager.install(modelId, (progress) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(IPC.OFFLINE_INSTALL_PROGRESS, progress);
+          }
+        });
+        // If this is the first model installed, promote it to active so
+        // the runtime knows what to load.  Otherwise leave the active
+        // selection alone — the user explicitly chose to add a model.
+        if (isDatabaseReady()) {
+          const installation = getOfflineInstallation();
+          if (!installation?.activeModelId) {
+            upsertOfflineInstallation({ activeModelId: modelId });
+          }
+          // Reset Gemma 4 failure counter on any successful install.
+          upsertOfflineInstallation({
+            gemma4FailureCount: 0,
+            lastFailureReasons: null,
+          });
+        }
+        return { ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[offline] additional install failed:", err);
+        return { ok: false, error: message };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_REMOVE_MODEL,
+    async (_event, modelId: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        // If the runtime is currently serving this model, stop it first
+        // so the file isn't locked on Windows and so the next chat picks
+        // up a freshly-loaded model cleanly.
+        if (runtimeManager.getCurrentModelId() === modelId) {
+          await runtimeManager.stop();
+        }
+
+        await installManager.uninstall(modelId);
+
+        // If this was the active model, pick a new one (or clear it).
+        if (isDatabaseReady()) {
+          const installation = getOfflineInstallation();
+          if (installation?.activeModelId === modelId) {
+            const remaining = listOfflineModels();
+            const nextActive = remaining[0]?.id ?? null;
+            upsertOfflineInstallation({ activeModelId: nextActive });
+          }
+
+          // If no models remain, transition the global state back so the
+          // sidebar/header reflects "no offline model installed".
+          const stillInstalled = listOfflineModels();
+          if (stillInstalled.length === 0) {
+            setOfflineReadiness({ state: "not-installed" });
+          }
+        }
+        return { ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[offline] remove-model failed:", err);
+        return { ok: false, error: message };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_SET_ACTIVE_MODEL,
+    async (_event, modelId: string): Promise<string | null> => {
+      if (!isDatabaseReady()) return null;
+      const exists = listOfflineModels().some((m) => m.id === modelId);
+      if (!exists) return null;
+      // Stop the runtime so the next chat lazy-starts with the new model.
+      if (runtimeManager.getCurrentModelId() !== modelId) {
+        try {
+          await runtimeManager.stop();
+        } catch (err) {
+          console.warn("[offline] failed to stop runtime when switching active model:", err);
+        }
+      }
+      upsertOfflineInstallation({ activeModelId: modelId });
+      return modelId;
+    },
+  );
+
+  ipcMain.handle(IPC.OFFLINE_GET_ACTIVE_MODEL, (): string | null => {
+    return resolveActiveModelId();
+  });
+
+  ipcMain.handle(IPC.OFFLINE_REVEAL_FOLDER, async (): Promise<void> => {
+    storageService.ensureDirectories();
+    const dir = storageService.getOfflineRoot();
+    await shell.openPath(dir);
+  });
+
+  ipcMain.handle(
+    IPC.OFFLINE_REVEAL_MODEL_FOLDER,
+    async (_event, modelId: string): Promise<void> => {
+      // When the model file exists, show it selected in the OS file
+      // manager so the user lands on exactly what they asked about.
+      // Otherwise fall back to opening the parent models/ directory.
+      const filePath = storageService.getModelFilePath(modelId);
+      try {
+        if (existsSync(filePath) && statSync(filePath).isFile()) {
+          shell.showItemInFolder(filePath);
+          return;
+        }
+      } catch {
+        /* fall through to folder open */
+      }
+      storageService.ensureDirectories();
+      await shell.openPath(storageService.getModelStorePath());
+    },
+  );
 
   ipcMain.handle(IPC.OFFLINE_REMOVE, async (): Promise<OfflineReadiness> => {
     try {
@@ -488,11 +724,6 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  });
-
-  ipcMain.handle(IPC.OFFLINE_REVEAL_FOLDER, async (): Promise<void> => {
-    const dir = storageService.getOfflineRoot();
-    await shell.openPath(dir);
   });
 }
 

@@ -95,11 +95,15 @@ export function useChat(conversationId: string | null) {
     addIncognitoMessage,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineState, offlineRecommendation } = useModeStore();
+  const { currentMode, offlineState, offlineRecommendation, activeOfflineModelId } = useModeStore();
 
-  // The installed offline model ID — falls back to OFFLINE_MODEL_ID sentinel
-  // if no recommendation is available (e.g. after an install with no reco step).
-  const offlineModelId = offlineRecommendation?.modelId ?? OFFLINE_MODEL_ID;
+  // The installed offline model ID — prefer the user's currently-selected
+  // active model (multi-model UI), fall back to the analyze-step
+  // recommendation, and finally to a sentinel string when neither is set
+  // (the main process will reject a chat request with this id, which is
+  // the desired outcome — no model installed means no chat).
+  const offlineModelId =
+    activeOfflineModelId ?? offlineRecommendation?.modelId ?? OFFLINE_MODEL_ID;
 
   const activeRequestId = useRef<string | null>(null);
   // Mirror of streamingText in a ref so event callbacks see the latest value
