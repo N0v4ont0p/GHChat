@@ -22,8 +22,27 @@ export interface OfflineModelEntry {
   platforms: NodeJS.Platform[];
   /**
    * Primary download URL for the GGUF file.
-   * Follows the standard HuggingFace resolve pattern.
-   * NOTE: placeholder until Gemma 4 GGUF artifacts are published.
+   *
+   * Follows the standard HuggingFace `/resolve/{rev}/...` pattern. We
+   * intentionally point at **ungated** mirrors (currently the `unsloth/`
+   * organization's GGUF re-uploads of the latest publicly-available Gemma
+   * weights) so the installer works without requiring users to create a
+   * HuggingFace account, accept gated-repo terms, or provide an access
+   * token.
+   *
+   * Why not `google/gemma-*-it-GGUF` directly?
+   *   - Those repositories are **gated** on HuggingFace and return HTTP 401
+   *     to unauthenticated `/resolve/...` requests, which manifested as the
+   *     "Download failed: HTTP 401" stall the installer used to hit at the
+   *     start of the model-download phase.
+   *
+   * Operators who do want to use a different (e.g. gated) source can:
+   *   - Set the `GHCHAT_OFFLINE_MODEL_BASE_URL` env var to a host/path
+   *     prefix that exposes files under the same final filename, **and/or**
+   *   - Set `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` / `GHCHAT_HF_TOKEN` so
+   *     the downloader sends `Authorization: Bearer <token>` on the
+   *     initial request (the header is automatically dropped on cross-host
+   *     redirects to the HuggingFace CDN to avoid leaking it).
    */
   downloadUrl: string;
   /**
@@ -47,6 +66,41 @@ export interface OfflineModelEntry {
 // Recommendation logic in recommendation.ts selects the single best fit for the
 // detected hardware profile.  The catalog itself is inert data — no selection
 // decisions live here.
+//
+// "Gemma 4" is the GHchat product label for the offline experience.  The
+// underlying GGUF weights below are pulled from the `unsloth/` HuggingFace
+// organization, which mirrors the latest publicly-available Gemma family
+// (currently Gemma 3 instruction-tuned variants) as **ungated** repositories.
+//
+// We deliberately do **not** point at `google/gemma-*-it-GGUF` because those
+// repositories are gated and respond with HTTP 401 to unauthenticated
+// `/resolve/...` requests — which used to manifest as the install stalling at
+// 27 % with "Download failed: HTTP 401".  See the `downloadUrl` doc comment on
+// `OfflineModelEntry` above for how to override the source if you do want to
+// use a gated mirror.
+
+/**
+ * Optional override for the host/path prefix used to assemble the model
+ * download URL.  When set, the trailing GGUF filename is appended to this
+ * prefix.  Useful for air-gapped mirrors or alternative hosting.
+ *
+ * Example: `GHCHAT_OFFLINE_MODEL_BASE_URL=https://mirror.example.com/gemma`
+ *  → downloadUrl becomes `https://mirror.example.com/gemma/<filename>.gguf`
+ */
+const MODEL_BASE_URL_OVERRIDE =
+  process.env.GHCHAT_OFFLINE_MODEL_BASE_URL?.trim() || null;
+
+/**
+ * Build the resolve URL for a GGUF file in an ungated unsloth HF repo,
+ * honouring the optional `GHCHAT_OFFLINE_MODEL_BASE_URL` mirror override.
+ */
+function buildModelUrl(repo: string, filename: string): string {
+  if (MODEL_BASE_URL_OVERRIDE) {
+    const base = MODEL_BASE_URL_OVERRIDE.replace(/\/+$/, "");
+    return `${base}/${filename}`;
+  }
+  return `https://huggingface.co/${repo}/resolve/main/${filename}`;
+}
 
 const CATALOG: readonly OfflineModelEntry[] = [
   {
@@ -60,8 +114,10 @@ const CATALOG: readonly OfflineModelEntry[] = [
     diskRequiredGb: 5,
     tier: "balanced",
     platforms: ["darwin", "linux", "win32"],
-    downloadUrl:
-      "https://huggingface.co/google/gemma-4-4b-it-GGUF/resolve/main/gemma-4-4b-it-Q4_K_M.gguf",
+    downloadUrl: buildModelUrl(
+      "unsloth/gemma-3-4b-it-GGUF",
+      "gemma-3-4b-it-Q4_K_M.gguf",
+    ),
     sha256: "pending",
   },
   {
@@ -75,8 +131,10 @@ const CATALOG: readonly OfflineModelEntry[] = [
     diskRequiredGb: 6,
     tier: "quality",
     platforms: ["darwin", "linux", "win32"],
-    downloadUrl:
-      "https://huggingface.co/google/gemma-4-4b-it-GGUF/resolve/main/gemma-4-4b-it-Q5_K_M.gguf",
+    downloadUrl: buildModelUrl(
+      "unsloth/gemma-3-4b-it-GGUF",
+      "gemma-3-4b-it-Q5_K_M.gguf",
+    ),
     sha256: "pending",
   },
   {
@@ -90,8 +148,10 @@ const CATALOG: readonly OfflineModelEntry[] = [
     diskRequiredGb: 10,
     tier: "quality",
     platforms: ["darwin", "linux", "win32"],
-    downloadUrl:
-      "https://huggingface.co/google/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q4_K_M.gguf",
+    downloadUrl: buildModelUrl(
+      "unsloth/gemma-3-12b-it-GGUF",
+      "gemma-3-12b-it-Q4_K_M.gguf",
+    ),
     sha256: "pending",
   },
   {
@@ -105,8 +165,10 @@ const CATALOG: readonly OfflineModelEntry[] = [
     diskRequiredGb: 12,
     tier: "quality",
     platforms: ["darwin", "linux", "win32"],
-    downloadUrl:
-      "https://huggingface.co/google/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q5_K_M.gguf",
+    downloadUrl: buildModelUrl(
+      "unsloth/gemma-3-12b-it-GGUF",
+      "gemma-3-12b-it-Q5_K_M.gguf",
+    ),
     sha256: "pending",
   },
   {
@@ -120,8 +182,10 @@ const CATALOG: readonly OfflineModelEntry[] = [
     diskRequiredGb: 20,
     tier: "quality",
     platforms: ["darwin", "linux", "win32"],
-    downloadUrl:
-      "https://huggingface.co/google/gemma-4-27b-it-GGUF/resolve/main/gemma-4-27b-it-Q4_K_M.gguf",
+    downloadUrl: buildModelUrl(
+      "unsloth/gemma-3-27b-it-GGUF",
+      "gemma-3-27b-it-Q4_K_M.gguf",
+    ),
     sha256: "pending",
   },
 ] as const;

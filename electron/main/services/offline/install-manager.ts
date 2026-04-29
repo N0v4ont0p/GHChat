@@ -41,23 +41,226 @@ type ProgressCallback = (progress: OfflineInstallProgress) => void;
 
 const BYTES_PER_GB = 1024 ** 3;
 
+/** Maximum redirect hops we'll follow during a download. */
+const MAX_REDIRECTS = 5;
+
+/** Maximum length of a 4xx/5xx response body slice we keep for diagnostics. */
+const RESPONSE_BODY_HINT_MAX_LENGTH = 240;
+
+/** Logical "purpose" of a download — used for log messages and error context. */
+type DownloadPurpose = "runtime" | "model";
+
 /**
- * Download a file from `url` to `destPath`, following up to 5 redirects.
- * Reports (receivedBytes, totalBytes) to `onData` on each chunk — callers
- * compute percentage themselves so they can map it to any range they like.
+ * Structured error thrown by {@link downloadFile} when the HTTP response is
+ * non-2xx (after redirect resolution).  Carries enough context to render an
+ * actionable message in the UI **and** in main-process logs:
+ *
+ *  - `status`: final HTTP status code (e.g. 401, 403, 404)
+ *  - `purpose`: which install step the failure belongs to (runtime/model)
+ *  - `host`: host that returned the error (post-redirect)
+ *  - `finalUrl`: full URL after redirect resolution
+ *  - `redirectChain`: every URL visited (initial → ... → final), one per line
+ *  - `contentType`/`bodyHint`: short response body slice for diagnosis
+ *  - `headersHint`: a small, safe header subset (rate-limit / server / type)
+ *  - `phase`/`pct`: install pipeline coordinates at failure
+ */
+export class DownloadHttpError extends Error {
+  override readonly name = "DownloadHttpError";
+  readonly status: number;
+  readonly statusText: string;
+  readonly purpose: DownloadPurpose;
+  readonly initialUrl: string;
+  readonly finalUrl: string;
+  readonly host: string;
+  readonly redirectChain: string[];
+  readonly contentType: string | undefined;
+  readonly bodyHint: string | undefined;
+  readonly headersHint: Record<string, string>;
+  readonly phase: OfflineInstallPhase;
+  readonly pct: number;
+
+  constructor(opts: {
+    message: string;
+    status: number;
+    statusText: string;
+    purpose: DownloadPurpose;
+    initialUrl: string;
+    finalUrl: string;
+    host: string;
+    redirectChain: string[];
+    contentType?: string;
+    bodyHint?: string;
+    headersHint: Record<string, string>;
+    phase: OfflineInstallPhase;
+    pct: number;
+  }) {
+    super(opts.message);
+    this.status = opts.status;
+    this.statusText = opts.statusText;
+    this.purpose = opts.purpose;
+    this.initialUrl = opts.initialUrl;
+    this.finalUrl = opts.finalUrl;
+    this.host = opts.host;
+    this.redirectChain = opts.redirectChain;
+    this.contentType = opts.contentType;
+    this.bodyHint = opts.bodyHint;
+    this.headersHint = opts.headersHint;
+    this.phase = opts.phase;
+    this.pct = opts.pct;
+  }
+}
+
+/**
+ * Render a `DownloadHttpError` as a multi-line technical diagnostic string,
+ * suitable for the renderer's "Show technical details" section and the
+ * main-process console.
+ */
+function renderDownloadErrorDetails(err: DownloadHttpError): string {
+  const lines: string[] = [
+    `purpose:   ${err.purpose}`,
+    `phase:     ${err.phase} (pct=${err.pct})`,
+    `status:    HTTP ${err.status} ${err.statusText}`.trimEnd(),
+    `host:      ${err.host}`,
+    `finalUrl:  ${err.finalUrl}`,
+  ];
+  if (err.redirectChain.length > 1) {
+    lines.push(`redirects: ${err.redirectChain.length - 1}`);
+    for (let i = 0; i < err.redirectChain.length; i++) {
+      lines.push(`  [${i}] ${err.redirectChain[i]}`);
+    }
+  }
+  if (err.contentType) lines.push(`contentType: ${err.contentType}`);
+  const safeHeaderKeys = Object.keys(err.headersHint);
+  if (safeHeaderKeys.length > 0) {
+    lines.push("headers:");
+    for (const k of safeHeaderKeys) {
+      lines.push(`  ${k}: ${err.headersHint[k]}`);
+    }
+  }
+  if (err.bodyHint) lines.push(`body: ${err.bodyHint}`);
+  return lines.join("\n");
+}
+
+/**
+ * Map an HTTP status code from a download to an `OfflineErrorCategory`.
+ * 401/403 → "auth-required" (the most likely actionable cause: gated repo
+ * or missing/incorrect HF token).  429 → "rate-limited".  Other 4xx/5xx →
+ * "http-error".
+ */
+function classifyDownloadStatus(
+  status: number,
+): "auth-required" | "rate-limited" | "http-error" {
+  if (status === 401 || status === 403) return "auth-required";
+  if (status === 429) return "rate-limited";
+  return "http-error";
+}
+
+/**
+ * Resolve an optional bearer token for HuggingFace requests from the
+ * environment.  Honours the same set of variable names the official HF
+ * tooling looks at, plus a GHchat-specific override that wins over them.
+ *
+ * Returns `undefined` when no token is configured — in that case the
+ * downloader sends no `Authorization` header at all.
+ */
+function resolveHuggingFaceToken(): string | undefined {
+  const candidates = [
+    process.env.GHCHAT_HF_TOKEN,
+    process.env.HUGGING_FACE_HUB_TOKEN,
+    process.env.HUGGINGFACE_HUB_TOKEN,
+    process.env.HF_TOKEN,
+  ];
+  for (const v of candidates) {
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  }
+  return undefined;
+}
+
+/** A safe subset of response headers we log on failure. */
+const SAFE_HEADER_KEYS = [
+  "content-type",
+  "content-length",
+  "server",
+  "x-error-code",
+  "x-error-message",
+  "x-request-id",
+  "x-amz-request-id",
+  "x-ratelimit-limit",
+  "x-ratelimit-remaining",
+  "x-ratelimit-reset",
+  "retry-after",
+] as const;
+
+/** Pull a small, safe subset of headers from an `IncomingMessage` for logging. */
+function pickSafeHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of SAFE_HEADER_KEYS) {
+    const v = headers[k];
+    if (typeof v === "string") out[k] = v;
+    else if (Array.isArray(v) && v.length > 0) out[k] = v.join(", ");
+  }
+  return out;
+}
+
+/**
+ * Download a file from `url` to `destPath`, following up to MAX_REDIRECTS
+ * redirects.  Reports `(receivedBytes, totalBytes)` to `onData` on each chunk.
+ *
+ * Headers:
+ *  - Always sends `User-Agent: GHChat/<version>` (HuggingFace and several CDNs
+ *    return 4xx for missing UA).
+ *  - Sends `Accept: application/octet-stream` so HF resolves to the raw LFS
+ *    object instead of a metadata page.
+ *  - Sends `Authorization: Bearer <token>` only when an HF token is present
+ *    in the environment.  The header is **dropped on cross-host redirects**
+ *    so we never leak it to a CDN host that didn't issue it (and so the CDN
+ *    doesn't reject a foreign token with 401/403).
+ *
+ * On non-2xx HTTP responses, throws a `DownloadHttpError` carrying the full
+ * redirect chain, status, host, content-type, safe header subset and a short
+ * body slice, so the install pipeline can map it to a precise category and
+ * the renderer can display it under "Technical details".
  */
 function downloadFile(
   url: string,
   destPath: string,
   onData: (receivedBytes: number, totalBytes: number) => void,
+  ctx: {
+    purpose: DownloadPurpose;
+    phase: OfflineInstallPhase;
+    pct: number;
+  },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // Ensure the parent directory exists before opening the write stream.
     mkdirSync(join(destPath, ".."), { recursive: true });
 
+    const initialUrl = url;
+    const redirectChain: string[] = [url];
+    const initialHost = (() => {
+      try {
+        return new URL(url).host;
+      } catch {
+        return "";
+      }
+    })();
+    const hfToken = resolveHuggingFaceToken();
+    const tokenLogStatus = hfToken ? "present" : "absent";
+
+    console.log(
+      `[install-manager] download starting purpose=${ctx.purpose} ` +
+        `phase=${ctx.phase} pct=${ctx.pct} host=${initialHost} ` +
+        `hfToken=${tokenLogStatus} url=${url}`,
+    );
+
     function get(urlStr: string, redirectCount: number): void {
-      if (redirectCount > 5) {
-        reject(new Error("Too many redirects while downloading model"));
+      if (redirectCount > MAX_REDIRECTS) {
+        reject(
+          new Error(
+            `Too many redirects (>${MAX_REDIRECTS}) while downloading ` +
+              `${ctx.purpose} from ${initialHost}`,
+          ),
+        );
         return;
       }
 
@@ -65,26 +268,111 @@ function downloadFile(
       try {
         parsedUrl = new URL(urlStr);
       } catch {
-        reject(new Error(`Invalid download URL: ${urlStr}`));
+        reject(new Error(`Invalid ${ctx.purpose} download URL: ${urlStr}`));
         return;
       }
 
       const mod = parsedUrl.protocol === "https:" ? https : http;
 
-      const req = mod.get(urlStr, (res) => {
-        if (
-          res.statusCode &&
-          res.statusCode >= 300 &&
-          res.statusCode < 400 &&
-          res.headers.location
-        ) {
-          req.destroy();
-          get(res.headers.location, redirectCount + 1);
+      // Build request headers.  Authorization is only attached to the initial
+      // host (initialHost) — never to redirect targets on a different host —
+      // to avoid leaking tokens to (and being rejected by) HuggingFace's CDN.
+      const headers: Record<string, string> = {
+        "User-Agent": "GHChat/0.2.0",
+        Accept: "application/octet-stream",
+      };
+      const sameHostAsInitial = parsedUrl.host === initialHost;
+      if (hfToken && sameHostAsInitial) {
+        headers["Authorization"] = `Bearer ${hfToken}`;
+      }
+
+      const req = mod.get(urlStr, { headers }, (res) => {
+        const status = res.statusCode ?? 0;
+
+        // Redirect handling — collect the chain so we can report it on failure.
+        if (status >= 300 && status < 400 && res.headers.location) {
+          // Resolve the `Location` header against the current request URL so
+          // relative redirects work (RFC 7231 allows them, though most CDNs
+          // emit absolute URLs).
+          let nextUrl: string;
+          try {
+            nextUrl = new URL(res.headers.location, urlStr).toString();
+          } catch {
+            req.destroy();
+            reject(
+              new Error(
+                `Invalid redirect target "${res.headers.location}" while ` +
+                  `downloading ${ctx.purpose} from ${parsedUrl.host}`,
+              ),
+            );
+            return;
+          }
+          redirectChain.push(nextUrl);
+          // Drain and discard the redirect response body so the socket can be
+          // reused / cleanly closed.
+          res.resume();
+          console.log(
+            `[install-manager] download redirect purpose=${ctx.purpose} ` +
+              `status=${status} from=${parsedUrl.host} ` +
+              `to=${(() => { try { return new URL(nextUrl).host; } catch { return "?"; } })()}`,
+          );
+          get(nextUrl, redirectCount + 1);
           return;
         }
 
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+        if (status < 200 || status >= 300) {
+          // Read a short response body slice for diagnostics. We cap the
+          // accumulated bytes so a 1 MB HTML error page can't blow up memory
+          // or our log lines.
+          const chunks: Buffer[] = [];
+          let total = 0;
+          const cap = RESPONSE_BODY_HINT_MAX_LENGTH * 4;
+          res.on("data", (chunk: Buffer) => {
+            if (total < cap) {
+              const remaining = cap - total;
+              chunks.push(chunk.length > remaining ? chunk.subarray(0, remaining) : chunk);
+              total += Math.min(chunk.length, remaining);
+            }
+          });
+          res.on("end", () => {
+            let bodyHint: string | undefined;
+            try {
+              const text = Buffer.concat(chunks).toString("utf-8").trim();
+              if (text.length > 0) {
+                bodyHint =
+                  text.length > RESPONSE_BODY_HINT_MAX_LENGTH
+                    ? `${text.slice(0, RESPONSE_BODY_HINT_MAX_LENGTH)}…`
+                    : text;
+              }
+            } catch {
+              /* body is best-effort context only */
+            }
+            const headersHint = pickSafeHeaders(res.headers);
+            const contentType = headersHint["content-type"];
+            const dlErr = new DownloadHttpError({
+              message:
+                `Download failed: HTTP ${status}${
+                  res.statusMessage ? ` ${res.statusMessage}` : ""
+                } from ${parsedUrl.host} (${ctx.purpose})`,
+              status,
+              statusText: res.statusMessage ?? "",
+              purpose: ctx.purpose,
+              initialUrl,
+              finalUrl: urlStr,
+              host: parsedUrl.host,
+              redirectChain,
+              contentType,
+              bodyHint,
+              headersHint,
+              phase: ctx.phase,
+              pct: ctx.pct,
+            });
+            console.error(
+              `[install-manager] download failed:\n${renderDownloadErrorDetails(dlErr)}`,
+            );
+            reject(dlErr);
+          });
+          res.on("error", reject);
           return;
         }
 
@@ -93,13 +381,27 @@ function downloadFile(
 
         const fileStream = createWriteStream(destPath);
 
+        console.log(
+          `[install-manager] download response purpose=${ctx.purpose} ` +
+            `status=${status} host=${parsedUrl.host} ` +
+            `contentType=${res.headers["content-type"] ?? "?"} ` +
+            `contentLength=${totalBytes || "unknown"} ` +
+            `redirects=${redirectChain.length - 1}`,
+        );
+
         res.on("data", (chunk: Buffer) => {
           receivedBytes += chunk.length;
           onData(receivedBytes, totalBytes);
         });
 
         res.pipe(fileStream);
-        fileStream.on("finish", resolve);
+        fileStream.on("finish", () => {
+          console.log(
+            `[install-manager] download complete purpose=${ctx.purpose} ` +
+              `bytes=${receivedBytes} host=${parsedUrl.host}`,
+          );
+          resolve();
+        });
         fileStream.on("error", reject);
         res.on("error", reject);
       });
@@ -232,6 +534,49 @@ export class RuntimeReleaseInstallError extends Error {
     this.causeChain = lookupErr.causeChain;
     this.url = lookupErr.url;
     this.attempts = lookupErr.attempts;
+  }
+}
+
+/**
+ * Error thrown by the install pipeline when an asset download (runtime archive
+ * or model GGUF) returns a non-2xx HTTP response.  Wraps a
+ * {@link DownloadHttpError} and exposes the same coarse category vocabulary
+ * as `RuntimeReleaseInstallError` so the IPC layer can map it to a friendly
+ * UI message — most importantly distinguishing the **401/403 "auth-required"**
+ * case (gated repo / wrong token) from a generic install failure.
+ */
+export class AssetDownloadInstallError extends Error {
+  override readonly name = "AssetDownloadInstallError";
+  /** Coarse category derived from the HTTP status. */
+  readonly category: "auth-required" | "rate-limited" | "http-error";
+  /** Pre-rendered diagnostic chain for the UI's technical-details section. */
+  readonly causeChain: string;
+  /** Final URL after redirects — i.e. the request that actually failed. */
+  readonly url: string;
+  /** Initial URL before any redirects. */
+  readonly initialUrl: string;
+  /** HTTP status code returned by the server. */
+  readonly status: number;
+  /** Host that returned the failing response. */
+  readonly host: string;
+  /** Logical purpose of the failed download. */
+  readonly purpose: DownloadPurpose;
+  /** Install pipeline phase at the time of failure. */
+  readonly phase: OfflineInstallPhase;
+  /** Reported pct at the time of failure. */
+  readonly pct: number;
+
+  constructor(message: string, dlErr: DownloadHttpError) {
+    super(message, { cause: dlErr });
+    this.category = classifyDownloadStatus(dlErr.status);
+    this.causeChain = renderDownloadErrorDetails(dlErr);
+    this.url = dlErr.finalUrl;
+    this.initialUrl = dlErr.initialUrl;
+    this.status = dlErr.status;
+    this.host = dlErr.host;
+    this.purpose = dlErr.purpose;
+    this.phase = dlErr.phase;
+    this.pct = dlErr.pct;
   }
 }
 
@@ -382,36 +727,58 @@ export const installManager = {
         if (existsSync(runtimeArchiveTmp)) unlinkSync(runtimeArchiveTmp);
 
         const rtDownloadStart = Date.now();
-        await downloadFile(runtimeDownloadUrl, runtimeArchiveTmp, (received, total) => {
-          // Runtime download maps to 5–22 % range.
-          const dlPct = total > 0 ? received / total : 0;
-          const pct = 5 + Math.round(dlPct * 17);
-          const kb = (received / 1024).toFixed(0);
-          const totalKb =
-            total > 0 ? ` / ${Math.round(total / 1024)} KB` : "";
+        try {
+          await downloadFile(
+            runtimeDownloadUrl,
+            runtimeArchiveTmp,
+            (received, total) => {
+              // Runtime download maps to 5–22 % range.
+              const dlPct = total > 0 ? received / total : 0;
+              const pct = 5 + Math.round(dlPct * 17);
+              const kb = (received / 1024).toFixed(0);
+              const totalKb =
+                total > 0 ? ` / ${Math.round(total / 1024)} KB` : "";
 
-          const elapsedSec = (Date.now() - rtDownloadStart) / 1000;
-          let speedBps: number | undefined;
-          let etaSec: number | undefined;
-          if (elapsedSec >= 0.5 && received >= 64 * 1024) {
-            speedBps = received / elapsedSec;
-            if (speedBps > 0 && total > received) {
-              etaSec = Math.round((total - received) / speedBps);
-            }
-          }
+              const elapsedSec = (Date.now() - rtDownloadStart) / 1000;
+              let speedBps: number | undefined;
+              let etaSec: number | undefined;
+              if (elapsedSec >= 0.5 && received >= 64 * 1024) {
+                speedBps = received / elapsedSec;
+                if (speedBps > 0 && total > received) {
+                  etaSec = Math.round((total - received) / speedBps);
+                }
+              }
 
-          report(
-            "downloading-runtime",
-            `Downloading runtime… ${kb} KB${totalKb}`,
-            pct,
-            {
-              downloadedBytes: received,
-              totalBytes: total > 0 ? total : runtimeSizeBytes || undefined,
-              speedBps,
-              etaSec,
+              report(
+                "downloading-runtime",
+                `Downloading runtime… ${kb} KB${totalKb}`,
+                pct,
+                {
+                  downloadedBytes: received,
+                  totalBytes: total > 0 ? total : runtimeSizeBytes || undefined,
+                  speedBps,
+                  etaSec,
+                },
+              );
             },
+            { purpose: "runtime", phase: "downloading-runtime", pct: 5 },
           );
-        });
+        } catch (err) {
+          if (err instanceof DownloadHttpError) {
+            // Surface a clear failure step text so the renderer's progress
+            // bar doesn't visually freeze on the last "Downloading…" line.
+            report(
+              "downloading-runtime",
+              `Runtime download failed: HTTP ${err.status} from ${err.host}`,
+              Math.max(5, err.pct),
+            );
+            throw new AssetDownloadInstallError(
+              `Runtime download failed: HTTP ${err.status} from ${err.host}`,
+              err,
+            );
+          }
+          throw err;
+        }
 
         report("downloading-runtime", "Runtime download complete", 22);
 
@@ -477,39 +844,72 @@ export const installManager = {
       report("downloading-model", "Connecting to download server…", 27);
 
       const downloadStartMs = Date.now();
-      await downloadFile(entry.downloadUrl, tmpPath, (received, total) => {
-        // Map download progress to the 27–88 % range.
-        const dlPct = total > 0 ? received / total : 0;
-        const pct = 27 + Math.round(dlPct * 61);
-        const mb = (received / (1024 * 1024)).toFixed(0);
-        const totalMb = total > 0 ? ` / ${(total / (1024 * 1024)).toFixed(0)} MB` : "";
+      try {
+        await downloadFile(
+          entry.downloadUrl,
+          tmpPath,
+          (received, total) => {
+            // Map download progress to the 27–88 % range.
+            const dlPct = total > 0 ? received / total : 0;
+            const pct = 27 + Math.round(dlPct * 61);
+            const mb = (received / (1024 * 1024)).toFixed(0);
+            const totalMb = total > 0 ? ` / ${(total / (1024 * 1024)).toFixed(0)} MB` : "";
 
-        // Speed and ETA — only meaningful once at least 500 ms have elapsed and
-        // 64 KB have arrived, to avoid wildly inflated estimates at startup.
-        const elapsedSec = (Date.now() - downloadStartMs) / 1000;
-        const minElapsedSec = 0.5;
-        const minReceivedBytes = 64 * 1024;
-        let speedBps: number | undefined;
-        let etaSec: number | undefined;
-        if (elapsedSec >= minElapsedSec && received >= minReceivedBytes) {
-          speedBps = received / elapsedSec;
-          if (speedBps > 0 && total > received) {
-            etaSec = Math.round((total - received) / speedBps);
-          }
+            // Speed and ETA — only meaningful once at least 500 ms have elapsed and
+            // 64 KB have arrived, to avoid wildly inflated estimates at startup.
+            const elapsedSec = (Date.now() - downloadStartMs) / 1000;
+            const minElapsedSec = 0.5;
+            const minReceivedBytes = 64 * 1024;
+            let speedBps: number | undefined;
+            let etaSec: number | undefined;
+            if (elapsedSec >= minElapsedSec && received >= minReceivedBytes) {
+              speedBps = received / elapsedSec;
+              if (speedBps > 0 && total > received) {
+                etaSec = Math.round((total - received) / speedBps);
+              }
+            }
+
+            report(
+              "downloading-model",
+              `Downloading ${entry.name}… ${mb} MB${totalMb}`,
+              pct,
+              {
+                downloadedBytes: received,
+                totalBytes: total > 0 ? total : undefined,
+                speedBps,
+                etaSec,
+              },
+            );
+          },
+          { purpose: "model", phase: "downloading-model", pct: 27 },
+        );
+      } catch (err) {
+        // Clean up the partial download so a retry isn't biased by stale bytes
+        // and so disk usage doesn't drift on repeated failures.
+        try {
+          if (existsSync(tmpPath)) unlinkSync(tmpPath);
+        } catch {
+          /* best-effort */
         }
 
-        report(
-          "downloading-model",
-          `Downloading ${entry.name}… ${mb} MB${totalMb}`,
-          pct,
-          {
-            downloadedBytes: received,
-            totalBytes: total > 0 ? total : undefined,
-            speedBps,
-            etaSec,
-          },
-        );
-      });
+        if (err instanceof DownloadHttpError) {
+          // Emit a concrete failure progress event so the InstallingScreen
+          // immediately reflects the failure (instead of remaining stuck on
+          // the last "Downloading…" line) before the IPC layer transitions
+          // the readiness state to "install-failed".
+          report(
+            "downloading-model",
+            `Model download failed: HTTP ${err.status} from ${err.host}`,
+            Math.max(27, err.pct),
+          );
+          throw new AssetDownloadInstallError(
+            `Model download failed: HTTP ${err.status} from ${err.host} ` +
+              `(${entry.name})`,
+            err,
+          );
+        }
+        throw err;
+      }
 
       report("downloading-model", "Download complete", 88);
 
