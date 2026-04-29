@@ -58,7 +58,27 @@ export function formatErrorChain(err: unknown, depth = 0): string {
 }
 
 /**
- * Error thrown when the llama.cpp release lookup ultimately fails.
+ * Coarse categorisation of release-lookup failures, used to render an
+ * actionable, friendly message in the offline-setup UI.
+ *
+ * The category is derived from the formatted cause chain — see
+ * {@link classifyNetworkError}.  The UI maps each value to a localised
+ * title + summary; the raw cause chain remains available as technical
+ * details in a collapsible section.
+ */
+export type ReleaseLookupErrorCategory =
+  | "network-offline"
+  | "dns"
+  | "timeout"
+  | "rate-limited"
+  | "tls-proxy"
+  | "http-error"
+  | "unknown";
+
+/**
+ * Error thrown when the llama.cpp release lookup ultimately fails — i.e.
+ * both the live GitHub releases API and the pinned-fallback path were
+ * exhausted.
  *
  * Preserves the original error as `.cause` (per the standard `Error.cause`
  * contract) so IPC consumers and developers can inspect the full chain
@@ -72,44 +92,96 @@ export class RuntimeReleaseLookupError extends Error {
   readonly url: string;
   /** Number of attempts made before giving up. */
   readonly attempts: number;
+  /** Coarse category for UI mapping. */
+  readonly category: ReleaseLookupErrorCategory;
 
-  constructor(opts: { message: string; url: string; attempts: number; cause?: unknown }) {
+  constructor(opts: {
+    message: string;
+    url: string;
+    attempts: number;
+    category: ReleaseLookupErrorCategory;
+    cause?: unknown;
+  }) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
     this.url = opts.url;
     this.attempts = opts.attempts;
+    this.category = opts.category;
     this.causeChain = opts.cause !== undefined ? formatErrorChain(opts.cause) : opts.message;
   }
 }
 
 /**
- * Network classification used purely for diagnostic messages — we don't change
- * behaviour based on the code, but the user/log gets a clearer hint than
- * "fetch failed".
+ * Classify a network/HTTP error into a category + a longer human hint.
+ * The hint is appended to the top-level error message; the category is
+ * propagated to the renderer for UI mapping.
  */
-function classifyNetworkError(err: unknown): string | null {
+function classifyNetworkError(err: unknown): {
+  category: ReleaseLookupErrorCategory;
+  hint: string | null;
+} {
   const chain = formatErrorChain(err);
-  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(chain)) {
-    return "DNS lookup failed (ENOTFOUND) — the host could not be resolved. " +
-      "Check your internet connection, DNS, or VPN/proxy settings.";
+  const status = (err as { httpStatus?: number } | null)?.httpStatus;
+
+  if (status === 403 || status === 429) {
+    return {
+      category: "rate-limited",
+      hint:
+        "GitHub API rate limit reached — too many requests from this network. " +
+        "Wait a few minutes and try again, or use a different network.",
+    };
   }
-  if (/ECONNRESET/i.test(chain)) {
-    return "Connection reset by peer (ECONNRESET) — the network or a proxy " +
-      "interrupted the request.";
+  if (status != null && status >= 500) {
+    return {
+      category: "http-error",
+      hint:
+        `GitHub returned HTTP ${status} — the service may be temporarily ` +
+        `degraded. Retrying later usually fixes this.`,
+    };
+  }
+  if (status != null && status >= 400) {
+    return {
+      category: "http-error",
+      hint: `GitHub returned HTTP ${status} — the release endpoint is unreachable.`,
+    };
+  }
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(chain)) {
+    return {
+      category: "dns",
+      hint:
+        "DNS lookup failed (ENOTFOUND) — the host could not be resolved. " +
+        "Check your internet connection, DNS, or VPN/proxy settings.",
+    };
   }
   if (/ETIMEDOUT|ESOCKETTIMEDOUT|UND_ERR_CONNECT_TIMEOUT|request.*timed out|timeout/i.test(chain)) {
-    return "Network request timed out — GitHub may be slow or unreachable from this network.";
-  }
-  if (/ECONNREFUSED/i.test(chain)) {
-    return "Connection refused (ECONNREFUSED) — a local proxy may be misconfigured.";
+    return {
+      category: "timeout",
+      hint:
+        "Network request timed out — GitHub may be slow or unreachable from this network.",
+    };
   }
   if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/i.test(chain)) {
-    return "TLS certificate validation failed — a corporate proxy or outdated " +
-      "system trust store may be intercepting the connection.";
+    return {
+      category: "tls-proxy",
+      hint:
+        "TLS certificate validation failed — a corporate proxy or outdated " +
+        "system trust store may be intercepting the connection.",
+    };
   }
   if (/proxy/i.test(chain)) {
-    return "Proxy error while contacting GitHub — verify your HTTP(S)_PROXY settings.";
+    return {
+      category: "tls-proxy",
+      hint: "Proxy error while contacting GitHub — verify your HTTP(S)_PROXY settings.",
+    };
   }
-  return null;
+  if (/ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_FAIL/i.test(chain)) {
+    return {
+      category: "network-offline",
+      hint:
+        "Network connection failed — the device may be offline or a firewall " +
+        "may be blocking outbound HTTPS to GitHub.",
+    };
+  }
+  return { category: "unknown", hint: null };
 }
 
 // ── Runtime binary constants ──────────────────────────────────────────────────
@@ -311,6 +383,94 @@ async function fetchReleaseOnce(
   }
 }
 
+// ── Pinned fallback release ───────────────────────────────────────────────────
+
+/**
+ * Pinned, known-good llama.cpp release used as a fallback when the live
+ * GitHub releases API lookup ultimately fails (network down, rate-limited,
+ * proxy misconfigured, etc.).
+ *
+ * Why a pinned tag instead of "latest"?
+ *   - Release archives are served from `objects.githubusercontent.com` /
+ *     `github.com/.../releases/download/...` which is a separate path from
+ *     `api.github.com` and frequently keeps working when the JSON API is
+ *     rate-limited or returns 5xx.
+ *   - It gives us a deterministic recovery path so the offline installer
+ *     can succeed even on networks that can't reach the metadata API.
+ *
+ * Maintenance:
+ *   - Bump the tag periodically to follow upstream stability fixes.
+ *   - Verify the per-platform asset filenames in `PINNED_FALLBACK_ASSETS`
+ *     still exist on the upstream release page when bumping.
+ *   - Operators can override via `GHCHAT_LLAMA_FALLBACK_TAG` to ship a
+ *     newer pinned tag without a code change.
+ *
+ * Currently pinned: `b8967` — verified to exist with the expected
+ * macos-arm64 / macos-x64 / win-cpu-x64 / ubuntu-x64 assets at
+ * https://github.com/ggml-org/llama.cpp/releases/tag/b8967 (verified 2026-04-29).
+ */
+const PINNED_FALLBACK_TAG_DEFAULT = "b8967";
+
+/**
+ * Per-platform fallback asset names for the pinned tag. The list is
+ * intentionally narrow — one plain CPU build per supported platform.
+ *
+ * If you bump `PINNED_FALLBACK_TAG_DEFAULT` you must also verify these
+ * filenames still exist on the release page; the upstream naming scheme
+ * is stable but not contractual.
+ */
+const PINNED_FALLBACK_ASSETS: Record<
+  string,
+  { assetName: string; archiveExt: RuntimeArchiveExtension }
+> = {
+  "macos-arm64": { assetName: "llama-{TAG}-bin-macos-arm64.tar.gz", archiveExt: ".tar.gz" },
+  "macos-x64": { assetName: "llama-{TAG}-bin-macos-x64.tar.gz", archiveExt: ".tar.gz" },
+  // Windows uses a CPU-suffixed plain build in the upstream naming scheme.
+  "win-x64": { assetName: "llama-{TAG}-bin-win-cpu-x64.zip", archiveExt: ".zip" },
+  "ubuntu-x64": { assetName: "llama-{TAG}-bin-ubuntu-x64.tar.gz", archiveExt: ".tar.gz" },
+};
+
+/**
+ * Build the pinned-fallback release info for the current platform.
+ * Returns `null` if the current platform has no fallback entry.
+ */
+function getPinnedFallbackRelease(platformTag: string): {
+  tag: string;
+  assetName: string;
+  downloadUrl: string;
+  sizeBytes: number;
+  archiveExt: RuntimeArchiveExtension;
+} | null {
+  const tag = process.env.GHCHAT_LLAMA_FALLBACK_TAG?.trim() || PINNED_FALLBACK_TAG_DEFAULT;
+  const entry = PINNED_FALLBACK_ASSETS[platformTag];
+  if (!entry) return null;
+  const assetName = entry.assetName.replace("{TAG}", tag);
+  return {
+    tag,
+    assetName,
+    // Release-asset downloads live on a different host than the JSON API and
+    // commonly remain reachable even when api.github.com is rate-limited.
+    downloadUrl: `https://github.com/ggml-org/llama.cpp/releases/download/${tag}/${assetName}`,
+    // Size is unknown without a HEAD request; the downloader gracefully
+    // handles size=0 by reporting received bytes only.
+    sizeBytes: 0,
+    archiveExt: entry.archiveExt,
+  };
+}
+
+/** Source of the resolved release info — `"live"` from API, `"pinned-fallback"` otherwise. */
+export type ReleaseSource = "live" | "pinned-fallback";
+
+export interface ResolvedRuntimeRelease {
+  tag: string;
+  assetName: string;
+  downloadUrl: string;
+  sizeBytes: number;
+  archiveExt: RuntimeArchiveExtension;
+  /** Where this info came from — used by the install pipeline to log/inform. */
+  source: ReleaseSource;
+}
+
 /**
  * Query the GitHub releases API for the latest llama.cpp release and return
  * the download URL and expected size for the current platform/arch.
@@ -321,17 +481,16 @@ async function fetchReleaseOnce(
  *  - Each request is bounded by `RELEASE_LOOKUP_TIMEOUT_MS`.
  *  - Up to `RELEASE_LOOKUP_MAX_ATTEMPTS` attempts with exponential backoff
  *    are made for transient failures (network errors and 5xx/408/429).
- *  - On terminal failure throws a `RuntimeReleaseLookupError` whose `.cause`
+ *  - When the live lookup is exhausted, falls back to a pinned known-good
+ *    release for the current platform (see `PINNED_FALLBACK_*` above).
+ *    This step is logged explicitly.  The fallback can be disabled by
+ *    setting `GHCHAT_LLAMA_DISABLE_FALLBACK=1` (e.g. in tests).
+ *  - On terminal failure (live + fallback both unavailable, or no fallback
+ *    for this platform) throws a `RuntimeReleaseLookupError` whose `.cause`
  *    holds the original error so the full chain (ENOTFOUND/ECONNRESET/TLS/…)
  *    survives the IPC boundary instead of collapsing to "fetch failed".
  */
-export async function fetchLatestRuntimeRelease(): Promise<{
-  tag: string;
-  assetName: string;
-  downloadUrl: string;
-  sizeBytes: number;
-  archiveExt: RuntimeArchiveExtension;
-}> {
+export async function fetchLatestRuntimeRelease(): Promise<ResolvedRuntimeRelease> {
   const apiUrl =
     "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest";
   const platformTag = getRuntimePlatformTag();
@@ -373,19 +532,50 @@ export async function fetchLatestRuntimeRelease(): Promise<{
 
   if (!release) {
     const totalMs = Date.now() - overallStart;
-    const hint = classifyNetworkError(lastError);
+    const { category, hint } = classifyNetworkError(lastError);
     const baseMessage =
       `Failed to reach GitHub releases API after ${attemptsMade} attempt(s) ` +
       `over ${totalMs}ms (url=${apiUrl}).`;
-    const fullMessage = hint ? `${baseMessage} ${hint}` : baseMessage;
-    console.error(
-      `[runtime-catalog] release lookup giving up: ${fullMessage}\n` +
+    const liveFailureMessage = hint ? `${baseMessage} ${hint}` : baseMessage;
+    console.warn(
+      `[runtime-catalog] live release lookup giving up: ${liveFailureMessage}\n` +
         `  cause chain: ${formatErrorChain(lastError)}`,
     );
+
+    // ── Pinned-fallback path ──────────────────────────────────────────────
+    // Release-asset downloads are served from a different host than the
+    // metadata API and frequently keep working when api.github.com is
+    // rate-limited or otherwise unhealthy.  Fall back to a known-good
+    // pinned release so the install can still complete.
+    const fallbackDisabled = process.env.GHCHAT_LLAMA_DISABLE_FALLBACK === "1";
+    const pinned = fallbackDisabled ? null : getPinnedFallbackRelease(platformTag);
+    if (pinned) {
+      console.warn(
+        `[runtime-catalog] FALLBACK ACTIVATED — using pinned llama.cpp release ` +
+          `tag=${pinned.tag} asset=${pinned.assetName} ` +
+          `url=${pinned.downloadUrl} ` +
+          `(reason: ${category}; live API unreachable). ` +
+          `If this is incorrect, set GHCHAT_LLAMA_FALLBACK_TAG to override or ` +
+          `GHCHAT_LLAMA_DISABLE_FALLBACK=1 to disable the fallback path.`,
+      );
+      return { ...pinned, source: "pinned-fallback" };
+    }
+
+    if (fallbackDisabled) {
+      console.warn(
+        "[runtime-catalog] pinned fallback skipped — GHCHAT_LLAMA_DISABLE_FALLBACK=1",
+      );
+    } else {
+      console.warn(
+        `[runtime-catalog] no pinned fallback configured for platform tag "${platformTag}"`,
+      );
+    }
+
     throw new RuntimeReleaseLookupError({
-      message: fullMessage,
+      message: liveFailureMessage,
       url: apiUrl,
       attempts: attemptsMade,
+      category,
       cause: lastError,
     });
   }
@@ -411,6 +601,21 @@ export async function fetchLatestRuntimeRelease(): Promise<{
   candidates.sort((a, b) => a.score - b.score);
 
   if (candidates.length === 0) {
+    // The live release exists but doesn't carry a usable asset for this
+    // platform — fall back to the pinned release rather than failing the
+    // install outright.
+    const pinned =
+      process.env.GHCHAT_LLAMA_DISABLE_FALLBACK === "1"
+        ? null
+        : getPinnedFallbackRelease(platformTag);
+    if (pinned) {
+      console.warn(
+        `[runtime-catalog] FALLBACK ACTIVATED — release ${release.tag_name} has ` +
+          `no asset matching tag "${platformTag}"; using pinned ` +
+          `tag=${pinned.tag} asset=${pinned.assetName}`,
+      );
+      return { ...pinned, source: "pinned-fallback" };
+    }
     throw new Error(
       `No llama.cpp binary found for platform tag "${platformTag}" in ` +
         `release ${release.tag_name}. Available assets: ` +
@@ -419,7 +624,7 @@ export async function fetchLatestRuntimeRelease(): Promise<{
   }
 
   const chosen = candidates[0];
-  const fallback = candidates.length > 1 ? candidates[1] : null;
+  const altCandidate = candidates.length > 1 ? candidates[1] : null;
 
   console.log(
     `[runtime-catalog] platform tag "${platformTag}" matched ` +
@@ -429,7 +634,7 @@ export async function fetchLatestRuntimeRelease(): Promise<{
   console.log(
     `[runtime-catalog] selected asset: ${chosen.asset.name} ` +
       `(${chosen.isPlain ? "plain" : "variant"}, ${chosen.ext}) ` +
-      (fallback ? `— fallback would be: ${fallback.asset.name}` : "— no fallback available"),
+      (altCandidate ? `— next-best would be: ${altCandidate.asset.name}` : "— no alternative available"),
   );
 
   return {
@@ -438,6 +643,7 @@ export async function fetchLatestRuntimeRelease(): Promise<{
     downloadUrl: chosen.asset.browser_download_url,
     sizeBytes: chosen.asset.size,
     archiveExt: chosen.ext,
+    source: "live",
   };
 }
 
