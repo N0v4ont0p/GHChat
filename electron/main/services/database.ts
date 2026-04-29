@@ -257,8 +257,16 @@ export async function initDatabase(): Promise<void> {
         last_conversation_id TEXT,
         current_mode TEXT DEFAULT 'online'
       );
-      INSERT OR IGNORE INTO settings (id, default_model, theme, onboarding_complete, last_conversation_id, current_mode) VALUES ('app', '${DEFAULT_MODEL}', 'dark', 0, NULL, 'online');
     `);
+    // NOTE: The singleton `settings` row is intentionally NOT inserted here.
+    // On an existing pre-v4 install the `settings` table is missing the
+    // `current_mode` column (and on pre-v2 installs it also lacks
+    // `last_conversation_id`). SQLite parses the column list of an INSERT
+    // statement before evaluating `OR IGNORE`, so referencing those columns
+    // would throw `table settings has no column named current_mode` and abort
+    // initDatabase() before the migrations get a chance to add them. The row
+    // is inserted after the migration block, when the schema is guaranteed
+    // up-to-date and every column has a usable DEFAULT.
     console.log("[db] step 3/4 done — schema tables created");
 
     console.log("[db] step 4/4 — checking migration version…");
@@ -291,6 +299,7 @@ export async function initDatabase(): Promise<void> {
 
     const diskVersion = pragmaValue<number>("PRAGMA user_version", "user_version");
     console.log(`[db] schema version on disk: ${diskVersion} (target: ${SCHEMA_VERSION})`);
+    console.log("[db] existing settings columns before migrations:", tableColumns("settings"));
 
     // Warn on downgrade — the app may still work, but the schema may have
     // columns that this version does not know about.
@@ -436,6 +445,13 @@ export async function initDatabase(): Promise<void> {
     } else {
       console.log(`[db] schema upgraded from v${diskVersion} to v${SCHEMA_VERSION} — all migration steps complete`);
     }
+
+    // Bootstrap the singleton settings row.  This MUST run after the migration
+    // block above so every column referenced by the row defaults is guaranteed
+    // to exist.  We list only the primary key — every other column has a
+    // DEFAULT in its CREATE/ALTER statement, so a fresh row is fully valid.
+    sqliteDb.run("INSERT OR IGNORE INTO settings (id) VALUES ('app')");
+    console.log("[db] settings columns after migrations + bootstrap:", tableColumns("settings"));
 
     db = drizzle(sqliteDb);
     _dbReady = true;
