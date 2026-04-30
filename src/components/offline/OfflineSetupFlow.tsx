@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   WifiOff,
@@ -16,14 +16,21 @@ import {
   PackageCheck,
   ChevronDown,
   ChevronUp,
+  Zap,
+  Gauge,
+  FlaskConical,
+  Crown,
+  Star,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 import type {
+  OfflineCatalogEntrySummary,
   OfflineErrorCategory,
   OfflineFailureReason,
   OfflineInstallProgress,
+  OfflineModelPurpose,
   OfflineReadiness,
   OfflineRecommendation,
 } from "@/types";
@@ -184,94 +191,340 @@ function AnalyzingScreen() {
   );
 }
 
-// ── Recommendation screen ─────────────────────────────────────────────────────
+// ── Model chooser screen ──────────────────────────────────────────────────────
 
-function RecommendationScreen({
-  rec,
+/**
+ * UI metadata derived from a catalog entry's `purpose` field.  Lets the
+ * chooser render a short, honest one-line label per option without
+ * baking copy into the catalog itself.
+ */
+interface PurposeMeta {
+  /** Short label rendered as a pill on the model card. */
+  label: string;
+  /** Lucide icon paired with the label. */
+  Icon: React.ComponentType<{ className?: string }>;
+  /** Tailwind classes for the pill background + text. */
+  className: string;
+}
+
+function getPurposeMeta(purpose: OfflineModelPurpose | undefined): PurposeMeta {
+  switch (purpose) {
+    case "test":
+      return {
+        label: "Best for testing",
+        Icon: FlaskConical,
+        className:
+          "bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30",
+      };
+    case "fastest":
+      return {
+        label: "Fastest setup",
+        Icon: Zap,
+        className:
+          "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
+      };
+    case "balanced":
+      return {
+        label: "Balanced",
+        Icon: Gauge,
+        className:
+          "bg-primary/10 text-primary ring-1 ring-primary/30",
+      };
+    case "advanced":
+      return {
+        label: "Higher quality",
+        Icon: Star,
+        className:
+          "bg-violet-500/10 text-violet-300 ring-1 ring-violet-500/30",
+      };
+    case "strongest":
+      return {
+        label: "Strongest",
+        Icon: Crown,
+        className:
+          "bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30",
+      };
+    default:
+      return {
+        label: "Offline model",
+        Icon: Sparkles,
+        className:
+          "bg-secondary text-foreground/70 ring-1 ring-border",
+      };
+  }
+}
+
+/** Coarse estimated speed label derived from RAM requirement + Apple-Silicon hint. */
+function describeSpeed(
+  entry: OfflineCatalogEntrySummary,
+  isAppleSilicon: boolean,
+): string {
+  if (entry.ramRequiredGb <= 4) return "Very fast";
+  if (entry.ramRequiredGb <= 8) return "Fast";
+  if (entry.ramRequiredGb <= 16) return isAppleSilicon ? "Fast (Metal)" : "Moderate";
+  if (entry.ramRequiredGb <= 24) return isAppleSilicon ? "Moderate (Metal)" : "Slow";
+  return isAppleSilicon ? "Moderate" : "Heavy";
+}
+
+/** Coarse quality tier label derived from the catalog tier + size. */
+function describeQuality(entry: OfflineCatalogEntrySummary): string {
+  if (entry.purpose === "test") return "Reasonable (test)";
+  if (entry.tier === "fast") return "Good";
+  if (entry.tier === "balanced") return "Strong";
+  // tier === "quality"
+  if (entry.purpose === "strongest") return "Best in catalog";
+  return "Excellent";
+}
+
+/** Recommended hardware tier for the given entry. */
+function describeHardwareTier(entry: OfflineCatalogEntrySummary): string {
+  if (entry.ramRequiredGb <= 4) return "Any laptop · 8 GB RAM";
+  if (entry.ramRequiredGb <= 8) return "M2 MacBook Air · 8–16 GB RAM";
+  if (entry.ramRequiredGb <= 12) return "Modern laptop · 16 GB RAM";
+  if (entry.ramRequiredGb <= 24) return "Desktop / Pro laptop · 24 GB RAM";
+  return "Workstation · 32+ GB RAM";
+}
+
+interface ModelChooserScreenProps {
+  /** Recommended catalog entry id (highlighted in the list). */
+  recommendedId: string | undefined;
+  /** All available catalog entries from the main process. */
+  available: OfflineCatalogEntrySummary[] | null;
+  /** True when the available list is still loading. */
+  loading: boolean;
+  /** Optional load error (rare — shown inline). */
+  loadError: string | null;
+  /** Recommendation reason copy from the analyze IPC. */
+  recommendationReason: string | undefined;
+  /** True when the analyze step says we're on Apple Silicon. */
+  isAppleSilicon: boolean;
+  /** Currently-highlighted model id in the chooser. */
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onInstall: (id: string) => void;
+}
+
+function ModelChooserScreen({
+  recommendedId,
+  available,
+  loading,
+  loadError,
+  recommendationReason,
+  isAppleSilicon,
+  selectedId,
+  onSelect,
   onInstall,
-}: {
-  rec: OfflineRecommendation;
-  onInstall: () => void;
-}) {
-  const sizeLabel = `${rec.sizeGb.toFixed(1)} GB`;
+}: ModelChooserScreenProps) {
+  // Order: recommended first, then test, then everything else by purpose.
+  const ordered = useMemo(() => {
+    if (!available) return [];
+    const order: Record<OfflineModelPurpose, number> = {
+      test: 1,
+      fastest: 2,
+      balanced: 3,
+      advanced: 4,
+      strongest: 5,
+    };
+    return [...available].sort((a, b) => {
+      if (a.id === recommendedId && b.id !== recommendedId) return -1;
+      if (b.id === recommendedId && a.id !== recommendedId) return 1;
+      const ap = order[a.purpose] ?? 99;
+      const bp = order[b.purpose] ?? 99;
+      if (ap !== bp) return ap - bp;
+      return a.sizeGb - b.sizeGb;
+    });
+  }, [available, recommendedId]);
+
+  const selected = ordered.find((e) => e.id === selectedId);
+  const sizeLabel = selected ? `${selected.sizeGb.toFixed(1)} GB` : "";
+
+  // M2 Air guardrail: when the recommended entry needs > 8 GB RAM and a
+  // smaller test option exists, surface a one-line note so users on a
+  // typical 8 GB M2 Air aren't trapped into the heavy default.
+  const recommendedEntry = ordered.find((e) => e.id === recommendedId);
+  const testEntry = ordered.find((e) => e.purpose === "test");
+  const showM2AirNote =
+    !!recommendedEntry &&
+    !!testEntry &&
+    recommendedEntry.id !== testEntry.id &&
+    recommendedEntry.ramRequiredGb > 8;
+
   return (
     <motion.div
       key="recommendation"
       {...SLIDE}
-      className="flex flex-1 flex-col items-center justify-center gap-7 px-8 py-10 text-center max-w-md mx-auto w-full"
+      className="flex flex-1 flex-col items-center gap-6 px-8 py-10 max-w-xl mx-auto w-full"
     >
-      {/* Icon */}
-      <div className="relative flex h-20 w-20 items-center justify-center">
-        <div className="absolute inset-0 rounded-3xl bg-primary/10 ring-1 ring-primary/20" />
-        <Sparkles className="relative h-9 w-9 text-primary" />
-      </div>
-
-      <div className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-widest text-primary/70">
-          Recommended for your device
-        </p>
-        <h2 className="text-2xl font-bold tracking-tight">{rec.label}</h2>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          Google's latest on-device model — fast, private, and capable. Runs
-          entirely on your machine with no internet required.
-        </p>
-      </div>
-
-      {/* Details card */}
-      <div className="w-full rounded-2xl border border-border bg-secondary/40 p-4 space-y-3 text-left">
-        {/* Variant row */}
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">Variant</span>
-          <span className="text-xs font-mono font-medium rounded bg-secondary px-2 py-0.5">
-            {rec.variantLabel}
-          </span>
+      {/* Header */}
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="relative flex h-16 w-16 items-center justify-center">
+          <div className="absolute inset-0 rounded-3xl bg-primary/10 ring-1 ring-primary/20" />
+          <Sparkles className="relative h-7 w-7 text-primary" />
         </div>
-        <div className="h-px bg-border" />
+        <div className="space-y-1.5">
+          <h2 className="text-2xl font-bold tracking-tight">
+            Choose an offline model
+          </h2>
+          <p className="text-sm text-muted-foreground leading-relaxed max-w-sm">
+            Pick any supported model to install. Our recommendation for your
+            device is highlighted, but the choice is yours.
+          </p>
+        </div>
+      </div>
 
-        {/* Download size */}
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">Download size</span>
-          <div className="flex items-center gap-1.5">
-            <Download className="h-3 w-3 text-muted-foreground" />
-            <span className="text-xs font-medium">{sizeLabel}</span>
+      {/* Loading / error states */}
+      {loading && !available && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading catalog…
+        </div>
+      )}
+      {loadError && (
+        <div className="w-full rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-left text-xs text-amber-300/90">
+          Couldn't load the full model catalog: {loadError}
+        </div>
+      )}
+
+      {/* M2 Air guardrail note */}
+      {showM2AirNote && (
+        <div className="w-full rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-left flex items-start gap-2.5">
+          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="text-xs text-amber-200/90 leading-relaxed">
+            <span className="font-medium text-amber-200">Heads up:</span> the
+            recommended option needs about {recommendedEntry!.ramRequiredGb} GB
+            of RAM. On an 8 GB MacBook (e.g. M2 Air) it may feel slow. The{" "}
+            <span className="font-medium">"{testEntry!.name}"</span> option is a
+            ~{testEntry!.sizeGb.toFixed(1)} GB quick-start that runs smoothly
+            on the same hardware — great for first-run testing.
           </div>
         </div>
-        <div className="h-px bg-border" />
+      )}
 
-        {/* Storage */}
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">Storage required</span>
-          <div className="flex items-center gap-1.5">
-            <HardDrive className="h-3 w-3 text-muted-foreground" />
-            <span className="text-xs font-medium">{sizeLabel}</span>
-          </div>
-        </div>
+      {/* Model list */}
+      <div
+        role="radiogroup"
+        aria-label="Offline model"
+        className="w-full space-y-2.5"
+      >
+        {ordered.map((entry) => {
+          const isRecommended = entry.id === recommendedId;
+          const isSelected = entry.id === selectedId;
+          const purpose = getPurposeMeta(entry.purpose);
+          const PurposeIcon = purpose.Icon;
+          return (
+            <button
+              key={entry.id}
+              type="button"
+              role="radio"
+              aria-checked={isSelected}
+              onClick={() => onSelect(entry.id)}
+              disabled={entry.installed}
+              className={`group flex w-full items-start gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
+                isSelected
+                  ? "border-primary/60 bg-primary/10 ring-1 ring-primary/40"
+                  : "border-border bg-secondary/30 hover:bg-secondary/60 ring-1 ring-transparent"
+              } ${entry.installed ? "opacity-60 cursor-not-allowed" : ""}`}
+            >
+              <div className="min-w-0 flex-1 space-y-2">
+                {/* Header row */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-semibold text-foreground/95">
+                    {entry.name}
+                  </span>
+                  <span className="text-[10px] font-mono text-muted-foreground/80">
+                    {entry.variantLabel}
+                  </span>
+                  {isRecommended && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 text-primary border border-primary/30 px-2 py-0.5 text-[10px] font-medium">
+                      <Sparkles className="h-2.5 w-2.5" />
+                      Recommended for your device
+                    </span>
+                  )}
+                  {entry.installed && (
+                    <span className="inline-flex items-center rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium">
+                      Already installed
+                    </span>
+                  )}
+                </div>
 
-        {/* Apple Silicon badge */}
-        {rec.profile.isAppleSilicon && (
-          <>
-            <div className="h-px bg-border" />
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Acceleration</span>
-              <span className="text-xs font-medium text-violet-400">
-                Apple Silicon · Metal GPU
-              </span>
-            </div>
-          </>
-        )}
-      </div>
+                {/* Purpose pill */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${purpose.className}`}
+                  >
+                    <PurposeIcon className="h-2.5 w-2.5" />
+                    {purpose.label}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/70">
+                    Family: {entry.family === "gemma-4" ? "Gemma 4" : "Gemma 3"}
+                  </span>
+                </div>
 
-      {/* Why this model */}
-      <div className="w-full rounded-xl border border-border/60 bg-primary/5 px-4 py-3 text-left">
-        <p className="text-xs text-primary/80 font-medium mb-1">Why {rec.label}?</p>
-        <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
+                {/* Metadata grid */}
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <Download className="h-3 w-3" />
+                    <span>~{entry.sizeGb.toFixed(1)} GB download</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <HardDrive className="h-3 w-3" />
+                    <span>~{entry.diskRequiredGb} GB disk</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Zap className="h-3 w-3" />
+                    <span>{describeSpeed(entry, isAppleSilicon)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Star className="h-3 w-3" />
+                    <span>{describeQuality(entry)}</span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-1.5">
+                    <Cpu className="h-3 w-3" />
+                    <span>{describeHardwareTier(entry)}</span>
+                  </div>
+                </div>
+
+                {/* Hardware-fit warning */}
+                {!entry.fitsHardware && entry.fitReason && (
+                  <div className="flex items-start gap-1.5 text-[11px] text-amber-300/90">
+                    <AlertTriangle className="h-3 w-3 mt-px shrink-0" />
+                    <span>{entry.fitReason}</span>
+                  </div>
+                )}
+
+                {/* Recommendation reason */}
+                {isRecommended && recommendationReason && (
+                  <div className="rounded-md border border-primary/20 bg-primary/5 px-2.5 py-2 text-[11px] text-primary/90 leading-relaxed">
+                    {recommendationReason}
+                  </div>
+                )}
+              </div>
+              <div
+                className={`mt-1 h-4 w-4 shrink-0 rounded-full border ${
+                  isSelected
+                    ? "bg-primary border-primary ring-2 ring-primary/30"
+                    : "border-border bg-transparent group-hover:border-primary/60"
+                }`}
+                aria-hidden="true"
+              />
+            </button>
+          );
+        })}
       </div>
 
       {/* CTA */}
-      <div className="flex flex-col items-center gap-3 w-full">
-        <Button className="w-full gap-2" onClick={onInstall}>
+      <div className="flex flex-col items-center gap-3 w-full sticky bottom-0 bg-background/80 backdrop-blur-sm pt-3">
+        <Button
+          className="w-full gap-2"
+          onClick={() => selected && onInstall(selected.id)}
+          disabled={!selected || selected.installed}
+        >
           <Download className="h-4 w-4" />
-          Install {rec.variantLabel} · {sizeLabel}
+          {selected
+            ? selected.installed
+              ? `${selected.name} already installed`
+              : `Install ${selected.name} · ${sizeLabel}`
+            : "Select a model"}
         </Button>
         <BackToOnlineButton />
       </div>
@@ -448,7 +701,7 @@ function InstallingScreen({ progress, modelLabel }: InstallingScreenProps) {
       </div>
 
       <div className="space-y-1.5">
-        <h2 className="text-2xl font-bold tracking-tight">Installing Gemma 4</h2>
+        <h2 className="text-2xl font-bold tracking-tight">Installing offline model</h2>
         <p className="text-sm text-muted-foreground">{modelLabel}</p>
       </div>
 
@@ -991,6 +1244,18 @@ export function OfflineSetupFlow() {
     details?: string;
   } | null>(null);
 
+  // Catalog of installable offline models, fetched from the main process so
+  // the chooser can list every supported model (not just the recommended one).
+  const [availableCatalog, setAvailableCatalog] =
+    useState<OfflineCatalogEntrySummary[] | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  // Currently-highlighted model in the chooser.  Initialised to the
+  // recommended model whenever a recommendation arrives, but the user
+  // can change it before clicking Install.
+  const [chooserSelectedId, setChooserSelectedId] = useState<string>("");
+
   /**
    * Apply failure-tracking fields from an OfflineReadiness payload to the
    * mode store so the UI can render the attempt counter, recent failure
@@ -1088,6 +1353,55 @@ export function OfflineSetupFlow() {
     };
   }, [offlineState, setInstallProgress]);
 
+  // recommendation-ready: load the full installable catalog so the chooser
+  // can list every supported offline model — not just the recommended one.
+  // Re-fetched each time we (re-)enter recommendation-ready so installed/
+  // fitsHardware flags stay accurate (e.g. after a removal).
+  useEffect(() => {
+    if (offlineState !== "recommendation-ready") return;
+
+    let cancelled = false;
+    setCatalogLoading(true);
+    setCatalogError(null);
+
+    ipc
+      .listAvailableOfflineModels()
+      .then((entries) => {
+        if (cancelled) return;
+        setAvailableCatalog(entries);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setCatalogError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [offlineState]);
+
+  // Keep the chooser highlight in sync with the recommended model whenever
+  // a fresh recommendation arrives, but only seed it once per recommendation
+  // so the user's manual selection is preserved across re-renders.
+  useEffect(() => {
+    if (!offlineRecommendation) return;
+    setChooserSelectedId((current) => {
+      // If the user hasn't picked anything yet, or their previous pick is
+      // no longer in the catalog, default to the recommendation.
+      if (!current) return offlineRecommendation.modelId;
+      if (
+        availableCatalog &&
+        !availableCatalog.some((e) => e.id === current)
+      ) {
+        return offlineRecommendation.modelId;
+      }
+      return current;
+    });
+  }, [offlineRecommendation, availableCatalog]);
+
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
   const handleStartSetup = () => {
@@ -1134,9 +1448,14 @@ export function OfflineSetupFlow() {
       });
   };
 
-  const handleInstall = () => {
-    if (!offlineRecommendation) return;
-    installModel(offlineRecommendation.modelId);
+  const handleInstall = (modelId?: string) => {
+    // Prefer the explicit chooser selection, then the chooser-state value,
+    // then fall back to the analyze recommendation.  This guarantees the
+    // user's pick is what actually gets installed.
+    const target =
+      modelId ?? chooserSelectedId ?? offlineRecommendation?.modelId;
+    if (!target) return;
+    installModel(target);
   };
 
   const handleChooseFallback = (option: OfflineRecommendation) => {
@@ -1170,6 +1489,18 @@ export function OfflineSetupFlow() {
     setMode("offline");
   };
 
+  // Resolve the user's currently-selected catalog entry so the installing
+  // screen can show the correct "Installing X" label even when the user
+  // chose something other than the default recommendation.
+  const selectedCatalogEntry = availableCatalog?.find(
+    (e) => e.id === chooserSelectedId,
+  );
+  const installingLabel =
+    selectedCatalogEntry?.name ??
+    selectedCatalogEntry?.variantLabel ??
+    offlineRecommendation?.variantLabel ??
+    "your offline model";
+
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
@@ -1182,10 +1513,17 @@ export function OfflineSetupFlow() {
           <AnalyzingScreen key="analyzing" />
         )}
         {offlineState === "recommendation-ready" && offlineRecommendation && (
-          <RecommendationScreen
+          <ModelChooserScreen
             key="recommendation"
-            rec={offlineRecommendation}
-            onInstall={handleInstall}
+            recommendedId={offlineRecommendation.modelId}
+            available={availableCatalog}
+            loading={catalogLoading}
+            loadError={catalogError}
+            recommendationReason={offlineRecommendation.reason}
+            isAppleSilicon={offlineRecommendation.profile.isAppleSilicon}
+            selectedId={chooserSelectedId || offlineRecommendation.modelId}
+            onSelect={setChooserSelectedId}
+            onInstall={(id) => handleInstall(id)}
           />
         )}
         {offlineState === "recommendation-ready" && !offlineRecommendation && (
@@ -1201,7 +1539,7 @@ export function OfflineSetupFlow() {
           <InstallingScreen
             key="installing"
             progress={installProgress}
-            modelLabel={offlineRecommendation?.variantLabel ?? "Gemma 4"}
+            modelLabel={installingLabel}
           />
         )}
         {offlineState === "installed" && (
