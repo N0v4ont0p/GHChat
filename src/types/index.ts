@@ -54,6 +54,27 @@ export interface OfflineProfileSummary {
 export type OfflineModelFamily = "gemma-4" | "gemma-3";
 
 /**
+ * Short purpose label communicating the practical role of an offline
+ * catalog entry in the model chooser.  See `OfflineModelEntry.purpose`
+ * in the main-process catalog for full semantics.
+ *
+ *   "test"      – lightweight, fast-to-download model suitable for
+ *                 quick setup validation and smooth use on modest
+ *                 hardware (e.g. an M2 MacBook Air).
+ *   "fastest"   – smallest non-test variant; quickest install.
+ *   "balanced"  – default everyday recommendation.
+ *   "advanced"  – higher quality at noticeable resource cost.
+ *   "strongest" – best quality this catalog can offer; needs a
+ *                 workstation-class machine.
+ */
+export type OfflineModelPurpose =
+  | "test"
+  | "fastest"
+  | "balanced"
+  | "advanced"
+  | "strongest";
+
+/**
  * Offline model recommendation returned by the main-process analyze step.
  * Contains everything the renderer needs to display the recommendation screen.
  */
@@ -579,6 +600,11 @@ export interface OfflineCatalogEntrySummary {
   diskRequiredGb: number;
   /** Quality / speed tradeoff tier. */
   tier: "balanced" | "quality" | "fast";
+  /**
+   * Short purpose label for the offline-setup model chooser.
+   * Independent of `tier` — see `OfflineModelPurpose` for semantics.
+   */
+  purpose: OfflineModelPurpose;
   /** True when this model is already installed. */
   installed: boolean;
   /**

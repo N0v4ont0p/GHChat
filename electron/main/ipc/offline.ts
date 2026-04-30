@@ -869,6 +869,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           ramRequiredGb: entry.ramRequiredGb,
           diskRequiredGb: entry.diskRequiredGb,
           tier: entry.tier,
+          purpose: entry.purpose,
           installed: installedIds.has(entry.id),
           fitsHardware,
           ...(fitReason ? { fitReason } : {}),

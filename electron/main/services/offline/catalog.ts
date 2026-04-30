@@ -1,6 +1,29 @@
 /** Top-level model family used for the offline install path. */
 export type OfflineModelFamily = "gemma-4" | "gemma-3";
 
+/**
+ * Short purpose label used by the offline model chooser to communicate
+ * the practical role of a catalog entry at a glance.
+ *
+ *   "test"      – lightweight, fast-to-download model intended for
+ *                 quick setup validation and smooth use on modest
+ *                 hardware (e.g. an M2 MacBook Air).  Quality is
+ *                 deliberately not maximised.
+ *   "fastest"   – smallest non-test variant; quickest install and
+ *                 lowest footprint for everyday use.
+ *   "balanced"  – default recommendation for most users — strong
+ *                 quality without huge RAM/disk demands.
+ *   "advanced"  – higher quality at a noticeable resource cost.
+ *   "strongest" – best quality this catalog can offer; needs a
+ *                 workstation-class machine.
+ */
+export type OfflineModelPurpose =
+  | "test"
+  | "fastest"
+  | "balanced"
+  | "advanced"
+  | "strongest";
+
 /** Describes a single offline-installable variant in the curated catalog. */
 export interface OfflineModelEntry {
   /** Unique catalog identifier, e.g. "gemma4-e4b-q4km" or "gemma3-4b-q4km". */
@@ -29,6 +52,14 @@ export interface OfflineModelEntry {
   diskRequiredGb: number;
   /** Quality / speed tradeoff tier. */
   tier: "balanced" | "quality" | "fast";
+  /**
+   * Short purpose label used by the offline-setup model chooser to
+   * communicate the practical role of this entry (e.g. "test",
+   * "fastest", "balanced", "strongest").  Independent of `tier` —
+   * `tier` describes the quality/speed tradeoff while `purpose`
+   * describes the user-facing role in the catalog.
+   */
+  purpose: OfflineModelPurpose;
   /** Supported OS platforms (Node.js platform strings). */
   platforms: NodeJS.Platform[];
   /**
@@ -126,6 +157,7 @@ const GEMMA4: readonly OfflineModelEntry[] = [
     ramRequiredGb: 4,
     diskRequiredGb: 4,
     tier: "fast",
+    purpose: "fastest",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-4-E2B-it-GGUF",
@@ -145,6 +177,7 @@ const GEMMA4: readonly OfflineModelEntry[] = [
     ramRequiredGb: 8,
     diskRequiredGb: 7,
     tier: "balanced",
+    purpose: "balanced",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-4-E4B-it-GGUF",
@@ -164,6 +197,7 @@ const GEMMA4: readonly OfflineModelEntry[] = [
     ramRequiredGb: 10,
     diskRequiredGb: 8,
     tier: "quality",
+    purpose: "advanced",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-4-E4B-it-GGUF",
@@ -186,6 +220,7 @@ const GEMMA4: readonly OfflineModelEntry[] = [
     ramRequiredGb: 24,
     diskRequiredGb: 20,
     tier: "quality",
+    purpose: "advanced",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-4-26B-A4B-it-GGUF",
@@ -205,6 +240,7 @@ const GEMMA4: readonly OfflineModelEntry[] = [
     ramRequiredGb: 32,
     diskRequiredGb: 24,
     tier: "quality",
+    purpose: "strongest",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-4-31B-it-GGUF",
@@ -219,7 +255,36 @@ const GEMMA4: readonly OfflineModelEntry[] = [
 // are surfaced to the user as opt-in fallbacks when Gemma 4 install attempts
 // have failed enough times that the IPC layer transitions to the
 // `fallback-offered` state.
+//
+// One special exception: the Gemma 3 1B entry below is also surfaced in the
+// regular setup model chooser as an explicit "test / quick-start" option.
+// It still keeps `isFallback: true` so the install IPC doesn't pollute the
+// Gemma 4 failure counter when the user picks it deliberately for a quick
+// end-to-end check on a modest machine (e.g. an 8 GB M2 MacBook Air).
 const GEMMA3_FALLBACK: readonly OfflineModelEntry[] = [
+  {
+    id: "gemma3-1b-q4km",
+    family: "gemma-3",
+    isFallback: true,
+    name: "Gemma 3 1B (Test)",
+    variantLabel: "1B · Q4_K_M",
+    version: "3.0",
+    // ~0.8 GB on disk — tiny compared to every other catalog entry.  Picked
+    // specifically for first-run validation: downloads in seconds on a
+    // typical home connection and runs comfortably on an 8 GB M2 Air.
+    sizeGb: 0.8,
+    quantization: "Q4_K_M",
+    ramRequiredGb: 2,
+    diskRequiredGb: 2,
+    tier: "fast",
+    purpose: "test",
+    platforms: ["darwin", "linux", "win32"],
+    downloadUrl: buildModelUrl(
+      "unsloth/gemma-3-1b-it-GGUF",
+      "gemma-3-1b-it-Q4_K_M.gguf",
+    ),
+    sha256: "pending",
+  },
   {
     id: "gemma3-4b-q4km",
     family: "gemma-3",
@@ -232,6 +297,7 @@ const GEMMA3_FALLBACK: readonly OfflineModelEntry[] = [
     ramRequiredGb: 6,
     diskRequiredGb: 5,
     tier: "balanced",
+    purpose: "balanced",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-3-4b-it-GGUF",
@@ -251,6 +317,7 @@ const GEMMA3_FALLBACK: readonly OfflineModelEntry[] = [
     ramRequiredGb: 12,
     diskRequiredGb: 10,
     tier: "quality",
+    purpose: "advanced",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-3-12b-it-GGUF",
@@ -270,6 +337,7 @@ const GEMMA3_FALLBACK: readonly OfflineModelEntry[] = [
     ramRequiredGb: 24,
     diskRequiredGb: 20,
     tier: "quality",
+    purpose: "strongest",
     platforms: ["darwin", "linux", "win32"],
     downloadUrl: buildModelUrl(
       "unsloth/gemma-3-27b-it-GGUF",

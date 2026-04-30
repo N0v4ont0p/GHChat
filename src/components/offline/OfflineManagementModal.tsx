@@ -277,6 +277,18 @@ interface CatalogRowProps {
 
 function CatalogRow({ entry, busy, onInstall }: CatalogRowProps) {
   const cantInstall = entry.installed || busy;
+  const purposeLabel: string | null =
+    entry.purpose === "test"
+      ? "Best for testing"
+      : entry.purpose === "fastest"
+        ? "Fastest setup"
+        : entry.purpose === "balanced"
+          ? "Balanced"
+          : entry.purpose === "advanced"
+            ? "Higher quality"
+            : entry.purpose === "strongest"
+              ? "Strongest"
+              : null;
   return (
     <div className="rounded-xl border border-border/40 bg-secondary/10 px-3.5 py-3 flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
@@ -285,6 +297,11 @@ function CatalogRow({ entry, busy, onInstall }: CatalogRowProps) {
           <span className="text-[10px] text-muted-foreground/70 font-mono">
             {entry.variantLabel}
           </span>
+          {purposeLabel && (
+            <span className="inline-flex items-center rounded-full bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 text-[10px] font-medium">
+              {purposeLabel}
+            </span>
+          )}
           {entry.isFallback && (
             <span className="inline-flex items-center rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 text-[10px] font-medium">
               Fallback
