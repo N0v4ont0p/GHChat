@@ -21,22 +21,25 @@ export function AppShell() {
   const currentMode = useModeStore((s) => s.currentMode);
   const offlineState = useModeStore((s) => s.offlineState);
   const setOfflineState = useModeStore((s) => s.setOfflineState);
-  const setActiveOfflineModelId = useModeStore((s) => s.setActiveOfflineModelId);
+  const setActiveOfflineModel = useModeStore((s) => s.setActiveOfflineModel);
+  const activeOfflineModelId = useModeStore((s) => s.activeOfflineModelId);
 
-  // Sync offline readiness from the main process on mount.
+  // Sync offline readiness + active model from the main process on mount.
+  // Re-runs whenever the offline setup state transitions so a fresh
+  // install (or model switch) is reflected without a full app reload.
   useEffect(() => {
     ipc.getOfflineStatus()
       .then((r) => setOfflineState(r.state))
       .catch(() => {
         console.debug("[AppShell] offline status unavailable, using default");
       });
-    // Sync the currently active offline model id so chat requests use it.
+    // Sync the currently active offline model so chat requests use it.
     ipc.getActiveOfflineModel()
-      .then((id) => setActiveOfflineModelId(id))
+      .then((info) => setActiveOfflineModel(info))
       .catch(() => {
         console.debug("[AppShell] active offline model unavailable");
       });
-  }, [setOfflineState, setActiveOfflineModelId]);
+  }, [setOfflineState, setActiveOfflineModel, offlineState]);
 
   // Auto-select the most recent conversation when conversations load
   // and none is currently selected (e.g. on launch without a persisted lastConversationId)
@@ -60,9 +63,16 @@ export function AppShell() {
   // Only "offline" mode explicitly requests offline — when not installed it
   // routes through the setup flow.  "auto" mode falls back to online silently
   // when offline is not ready, so it never forces the setup flow.
+  //
+  // We also force the setup flow when state==="installed" but no usable
+  // active model is present — this happens if every installed model was
+  // removed externally, or if the DB ended up in an inconsistent state
+  // that the startup repair couldn't recover.  Without this, the chat
+  // window would render and the user's first message would fail with a
+  // confusing "model not installed" error.
   const needsOfflineSetup =
     currentMode === "offline" &&
-    offlineState !== "installed";
+    (offlineState !== "installed" || !activeOfflineModelId);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">

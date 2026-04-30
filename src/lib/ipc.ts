@@ -14,6 +14,7 @@ import type {
   OfflineCatalogEntrySummary,
   OfflineSettings,
   OfflineHardwareProfileSnapshot,
+  OfflineActiveModelInfo,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -152,12 +153,12 @@ export const ipc = {
   /** Remove a single installed offline model by id. */
   removeOfflineModel: (modelId: string) =>
     api().invoke<{ ok: boolean; error?: string }>(IPC.OFFLINE_REMOVE_MODEL, modelId),
-  /** Set the currently active offline model (returns the id, or null on unknown). */
+  /** Set the currently active offline model (returns the new active model info, or null on unknown). */
   setActiveOfflineModel: (modelId: string) =>
-    api().invoke<string | null>(IPC.OFFLINE_SET_ACTIVE_MODEL, modelId),
-  /** Get the currently active offline model id, or null. */
+    api().invoke<OfflineActiveModelInfo | null>(IPC.OFFLINE_SET_ACTIVE_MODEL, modelId),
+  /** Get the currently active offline model info ({id,name,variantLabel}), or null. */
   getActiveOfflineModel: () =>
-    api().invoke<string | null>(IPC.OFFLINE_GET_ACTIVE_MODEL),
+    api().invoke<OfflineActiveModelInfo | null>(IPC.OFFLINE_GET_ACTIVE_MODEL),
   /** Reveal a single model's storage location in the OS file manager. */
   revealOfflineModelFolder: (modelId: string) =>
     api().invoke<void>(IPC.OFFLINE_REVEAL_MODEL_FOLDER, modelId),

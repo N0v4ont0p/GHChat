@@ -1233,6 +1233,7 @@ export function OfflineSetupFlow() {
   const setGemma4FailureThreshold = useModeStore((s) => s.setGemma4FailureThreshold);
   const setLastFailureReasons = useModeStore((s) => s.setLastFailureReasons);
   const setFallbackOptions = useModeStore((s) => s.setFallbackOptions);
+  const setActiveOfflineModel = useModeStore((s) => s.setActiveOfflineModel);
 
   // Structured error info from the last failed install attempt — shown in
   // ErrorScreen.  Includes the top-level message, a coarse category for
@@ -1435,6 +1436,21 @@ export function OfflineSetupFlow() {
         }
         // Final state from the main process.
         setOfflineState(readiness.state);
+        // On success, refresh the active offline model so the chat UI
+        // immediately picks up the just-installed model — without this,
+        // a chat sent right after "Enter chat" would still use whatever
+        // (possibly never-installed) recommendation was loaded earlier.
+        if (readiness.state === "installed") {
+          ipc
+            .getActiveOfflineModel()
+            .then((info) => setActiveOfflineModel(info))
+            .catch((err) => {
+              console.warn(
+                "[OfflineSetupFlow] failed to refresh active model after install:",
+                err,
+              );
+            });
+        }
       })
       .catch((err: unknown) => {
         // IPC-level failure (main process unreachable, etc.) — we have no
