@@ -62,6 +62,12 @@ export const offlineInstallationTable = sqliteTable("offline_installation", {
    * been recorded since the last reset.
    */
   lastFailureReasons: text("last_failure_reasons"),
+  /**
+   * Catalog ID of the currently selected (active) offline model.  The
+   * runtime manager uses this when no explicit model id is supplied.
+   * NULL when no model is installed or the user has not picked one yet.
+   */
+  activeModelId: text("active_model_id"),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -76,6 +82,8 @@ export const offlineModelsTable = sqliteTable("offline_models", {
   /** Absolute path to the model's JSON manifest inside manifests/. */
   manifestPath: text("manifest_path").notNull(),
   installedAt: integer("installed_at").notNull(),
+  /** Epoch ms of last successful chat using this model; NULL if never used. */
+  lastUsedAt: integer("last_used_at"),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -89,6 +97,40 @@ export const offlineRuntimeTable = sqliteTable("offline_runtime", {
   lastHealthCheck: integer("last_health_check"),
   /** Short status string: "ok" | "error" | "unknown". */
   healthStatus: text("health_status"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/**
+ * Offline-specific runtime settings (singleton).  Separate from the
+ * universal `settings` table so online/OpenRouter preferences and local
+ * inference knobs evolve independently.
+ *
+ * NULL columns mean "use the runtime default".  See OFFLINE_SETTINGS_DEFAULTS
+ * in the IPC layer for the values returned to the renderer.
+ */
+export const offlineSettingsTable = sqliteTable("offline_settings", {
+  id: text("id").primaryKey().default("app"),
+  /** Catalog id of the user's preferred default offline model, or null. */
+  defaultModelId: text("default_model_id"),
+  /** Performance preset name: "speed" | "balanced" | "quality" | "custom". */
+  performancePreset: text("performance_preset").default("balanced"),
+  /** llama-server context window in tokens (e.g. 4096). */
+  contextSize: integer("context_size"),
+  /** Per-request generation cap.  -1 means "unlimited". */
+  maxTokens: integer("max_tokens"),
+  /** Sampling temperature ×100 stored as integer for portability (e.g. 70 = 0.7). */
+  temperatureX100: integer("temperature_x100"),
+  /** top-p sampling ×100 (e.g. 90 = 0.9). */
+  topPX100: integer("top_p_x100"),
+  /** Worker thread override; null delegates to runtime auto-detection. */
+  threads: integer("threads"),
+  /**
+   * How long (ms) the IPC layer should wait for a graceful cancel after
+   * the user clicks Stop before hard-restarting the runtime subprocess.
+   */
+  cancelTimeoutMs: integer("cancel_timeout_ms"),
+  /** Whether to stream tokens; when false, the IPC waits for the full response. */
+  streamingEnabled: integer("streaming_enabled", { mode: "boolean" }).default(true),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -120,8 +162,13 @@ export const offlineManifestsTable = sqliteTable("offline_manifests", {
 //  v4 — added current_mode to settings
 //  v5 — added gemma4_failure_count + last_failure_reasons (JSON) to
 //        offline_installation
+//  v6 — added active_model_id to offline_installation; added
+//        last_used_at to offline_models
+//  v7 — added offline_settings table for offline-specific runtime knobs
+//        (performance preset, context size, max tokens, temperature,
+//        top-p, threads, cancel timeout, streaming flag, default model).
 //
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 7;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -487,6 +534,84 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v6 — multi-model offline support: track which installed model is
+    //       currently active, and when each model was last used.  Both
+    //       columns are nullable so existing single-model installs keep
+    //       working unchanged until the user picks an active model.
+    if (diskVersion < 6) {
+      console.log("[db] migration v6: adding multi-model offline columns…");
+      try {
+        const installCols = tableColumns("offline_installation");
+        const modelCols = tableColumns("offline_models");
+        sqliteDb.exec("BEGIN");
+        if (!installCols.includes("active_model_id")) {
+          sqliteDb.run(
+            "ALTER TABLE offline_installation ADD COLUMN active_model_id TEXT",
+          );
+          console.log("[db] migration v6: active_model_id column added");
+        }
+        if (!modelCols.includes("last_used_at")) {
+          sqliteDb.run(
+            "ALTER TABLE offline_models ADD COLUMN last_used_at INTEGER",
+          );
+          console.log("[db] migration v6: last_used_at column added");
+        }
+        // Backfill active_model_id with the first installed model so
+        // existing single-model installs continue to work without the
+        // user having to pick an active model manually.
+        sqliteDb.run(
+          `UPDATE offline_installation
+           SET active_model_id = (
+             SELECT id FROM offline_models ORDER BY installed_at ASC LIMIT 1
+           )
+           WHERE active_model_id IS NULL`,
+        );
+        sqliteDb.run("PRAGMA user_version = 6");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v6: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v6 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
+    // v7 — offline-specific runtime settings.  Creates a singleton
+    //       offline_settings row so renderer reads/writes never have to
+    //       handle the "row missing" case.  All columns are nullable so
+    //       new keys can be added without further migrations.
+    if (diskVersion < 7) {
+      console.log("[db] migration v7: creating offline_settings table…");
+      try {
+        sqliteDb.exec("BEGIN");
+        sqliteDb.run(`
+          CREATE TABLE IF NOT EXISTS offline_settings (
+            id TEXT PRIMARY KEY DEFAULT 'app',
+            default_model_id TEXT,
+            performance_preset TEXT DEFAULT 'balanced',
+            context_size INTEGER,
+            max_tokens INTEGER,
+            temperature_x100 INTEGER,
+            top_p_x100 INTEGER,
+            threads INTEGER,
+            cancel_timeout_ms INTEGER,
+            streaming_enabled INTEGER DEFAULT 1,
+            updated_at INTEGER NOT NULL
+          )
+        `);
+        sqliteDb.run(
+          `INSERT OR IGNORE INTO offline_settings (id, performance_preset, streaming_enabled, updated_at)
+           VALUES ('app', 'balanced', 1, ?)`,
+          [Date.now()],
+        );
+        sqliteDb.run("PRAGMA user_version = 7");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v7: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v7 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -641,6 +766,94 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
   return getSettings();
 }
 
+// ── Offline-specific settings ─────────────────────────────────────────────────
+
+/**
+ * Renderer-facing shape of the offline_settings row.  All fields are
+ * optional/nullable so the runtime can distinguish "unset, use default"
+ * from an explicit value (in particular maxTokens=-1 means "unlimited"
+ * while maxTokens=undefined falls back to the runtime default).
+ */
+export interface OfflineSettingsRecord {
+  /** Catalog id of the user's preferred default model, or null. */
+  defaultModelId: string | null;
+  /** Performance preset name. */
+  performancePreset: "speed" | "balanced" | "quality" | "custom";
+  /** llama-server context window in tokens, or null for default. */
+  contextSize: number | null;
+  /** Per-request generation cap.  -1 = unlimited.  null = runtime default. */
+  maxTokens: number | null;
+  /** Sampling temperature.  null = runtime default. */
+  temperature: number | null;
+  /** top-p sampling.  null = runtime default. */
+  topP: number | null;
+  /** Worker thread override.  null = auto-detect. */
+  threads: number | null;
+  /** Cancel-timeout (ms) before forcing a runtime restart.  null = default. */
+  cancelTimeoutMs: number | null;
+  /** Whether streaming is enabled for offline chats. */
+  streamingEnabled: boolean;
+  updatedAt: number;
+}
+
+export function getOfflineSettings(): OfflineSettingsRecord {
+  // Defensive: ensure the singleton row exists.  The migration creates it
+  // but a corrupted DB could lose it; we self-heal here so callers never
+  // see an exception just to read settings.
+  try {
+    sqliteDb.run(
+      `INSERT OR IGNORE INTO offline_settings (id, performance_preset, streaming_enabled, updated_at)
+       VALUES ('app', 'balanced', 1, ?)`,
+      [Date.now()],
+    );
+  } catch {
+    /* ignore — table may legitimately not yet exist during early startup */
+  }
+  const row = getDb().select().from(offlineSettingsTable).where(eq(offlineSettingsTable.id, "app")).get();
+  return {
+    defaultModelId: row?.defaultModelId ?? null,
+    performancePreset: ((row?.performancePreset ?? "balanced") as OfflineSettingsRecord["performancePreset"]),
+    contextSize: row?.contextSize ?? null,
+    maxTokens: row?.maxTokens ?? null,
+    temperature: row?.temperatureX100 != null ? row.temperatureX100 / 100 : null,
+    topP: row?.topPX100 != null ? row.topPX100 / 100 : null,
+    threads: row?.threads ?? null,
+    cancelTimeoutMs: row?.cancelTimeoutMs ?? null,
+    streamingEnabled: row?.streamingEnabled ?? true,
+    updatedAt: row?.updatedAt ?? Date.now(),
+  };
+}
+
+export function updateOfflineSettings(
+  partial: Partial<Omit<OfflineSettingsRecord, "updatedAt">>,
+): OfflineSettingsRecord {
+  // Make sure the row exists before we update it.
+  getOfflineSettings();
+  const now = Date.now();
+  getDb()
+    .update(offlineSettingsTable)
+    .set({
+      ...(partial.defaultModelId !== undefined && { defaultModelId: partial.defaultModelId }),
+      ...(partial.performancePreset !== undefined && { performancePreset: partial.performancePreset }),
+      ...(partial.contextSize !== undefined && { contextSize: partial.contextSize }),
+      ...(partial.maxTokens !== undefined && { maxTokens: partial.maxTokens }),
+      ...(partial.temperature !== undefined && {
+        temperatureX100: partial.temperature == null ? null : Math.round(partial.temperature * 100),
+      }),
+      ...(partial.topP !== undefined && {
+        topPX100: partial.topP == null ? null : Math.round(partial.topP * 100),
+      }),
+      ...(partial.threads !== undefined && { threads: partial.threads }),
+      ...(partial.cancelTimeoutMs !== undefined && { cancelTimeoutMs: partial.cancelTimeoutMs }),
+      ...(partial.streamingEnabled !== undefined && { streamingEnabled: partial.streamingEnabled }),
+      updatedAt: now,
+    })
+    .where(eq(offlineSettingsTable.id, "app"))
+    .run();
+  flushDb();
+  return getOfflineSettings();
+}
+
 export function clearAllData(): void {
   getDb().delete(messagesTable).run();
   getDb().delete(conversationsTable).run();
@@ -674,6 +887,8 @@ export interface OfflineInstallationRecord {
    * been recorded since the last reset.
    */
   lastFailureReasons: string | null;
+  /** Catalog ID of the currently selected offline model, or null. */
+  activeModelId: string | null;
   updatedAt: number;
 }
 
@@ -685,6 +900,8 @@ export interface OfflineModelRecord {
   modelPath: string;
   manifestPath: string;
   installedAt: number;
+  /** Epoch ms when the model was last used for inference, or null. */
+  lastUsedAt: number | null;
   updatedAt: number;
 }
 
@@ -723,6 +940,7 @@ export function getOfflineInstallation(): OfflineInstallationRecord | null {
     installedAt: row.installedAt ?? null,
     gemma4FailureCount: row.gemma4FailureCount ?? 0,
     lastFailureReasons: row.lastFailureReasons ?? null,
+    activeModelId: row.activeModelId ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -736,6 +954,7 @@ export function upsertOfflineInstallation(
       | "installedAt"
       | "gemma4FailureCount"
       | "lastFailureReasons"
+      | "activeModelId"
     >
   >,
 ): void {
@@ -751,6 +970,9 @@ export function upsertOfflineInstallation(
       }),
       ...(partial.lastFailureReasons !== undefined && {
         lastFailureReasons: partial.lastFailureReasons,
+      }),
+      ...(partial.activeModelId !== undefined && {
+        activeModelId: partial.activeModelId,
       }),
       updatedAt: now,
     })
@@ -775,6 +997,7 @@ export function listOfflineModels(): OfflineModelRecord[] {
       modelPath: r.modelPath,
       manifestPath: r.manifestPath,
       installedAt: r.installedAt,
+      lastUsedAt: r.lastUsedAt ?? null,
       updatedAt: r.updatedAt,
     }));
 }
@@ -794,6 +1017,7 @@ export function getOfflineModel(id: string): OfflineModelRecord | null {
     modelPath: row.modelPath,
     manifestPath: row.manifestPath,
     installedAt: row.installedAt,
+    lastUsedAt: row.lastUsedAt ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -803,6 +1027,9 @@ export function upsertOfflineModel(
     Partial<Pick<OfflineModelRecord, "quantization">>,
 ): OfflineModelRecord {
   const now = Date.now();
+  // Preserve installedAt + lastUsedAt across re-installs (they are
+  // historical facts that the install pipeline should not overwrite).
+  const existing = getOfflineModel(model.id);
   const values = {
     id: model.id,
     name: model.name,
@@ -810,7 +1037,8 @@ export function upsertOfflineModel(
     quantization: model.quantization ?? null,
     modelPath: model.modelPath,
     manifestPath: model.manifestPath,
-    installedAt: now,
+    installedAt: existing?.installedAt ?? now,
+    lastUsedAt: existing?.lastUsedAt ?? null,
     updatedAt: now,
   };
   getDb()
@@ -830,6 +1058,22 @@ export function upsertOfflineModel(
     .run();
   flushDb();
   return getOfflineModel(model.id)!;
+}
+
+/** Mark an installed model as used right now. */
+export function touchOfflineModelLastUsed(id: string): void {
+  if (!isDatabaseReady()) return;
+  try {
+    const now = Date.now();
+    getDb()
+      .update(offlineModelsTable)
+      .set({ lastUsedAt: now, updatedAt: now })
+      .where(eq(offlineModelsTable.id, id))
+      .run();
+    flushDb();
+  } catch (err) {
+    console.warn("[db] touchOfflineModelLastUsed failed:", err);
+  }
 }
 
 export function deleteOfflineModel(id: string): void {
@@ -943,6 +1187,7 @@ export function clearOfflineData(): void {
       installedAt: null,
       gemma4FailureCount: 0,
       lastFailureReasons: null,
+      activeModelId: null,
       updatedAt: Date.now(),
     })
     .where(eq(offlineInstallationTable.id, "app"))

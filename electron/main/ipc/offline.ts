@@ -1,12 +1,19 @@
 import type { IpcMain, IpcMainEvent } from "electron";
+import { dirname } from "path";
+import { existsSync, statSync } from "fs";
 import { shell } from "electron";
 import { IPC } from "../../../src/types";
 import type {
   AppMode,
+  OfflineCatalogEntrySummary,
   OfflineErrorCategory,
   OfflineFailureReason,
+  OfflineHardwareProfileSnapshot,
+  OfflineModelSummary,
+  OfflinePerformancePreset,
   OfflineReadiness,
   OfflineRecommendation,
+  OfflineSettings,
   OfflineSetupState,
 } from "../../../src/types";
 import {
@@ -16,6 +23,8 @@ import {
   listOfflineModels,
   getSettings,
   updateSettings,
+  getOfflineSettings,
+  updateOfflineSettings,
 } from "../services/database";
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
@@ -29,6 +38,88 @@ import {
   AssetDownloadInstallError,
 } from "../services/offline/install-manager";
 import type { ChatMessage } from "../services/offline/runtime-manager";
+import * as os from "os";
+
+// ── Offline settings: presets & defaults ──────────────────────────────────────
+
+/**
+ * Default cancel-timeout: how long we wait after the user clicks Stop
+ * before hard-restarting the runtime.  Picked so that on Apple Silicon
+ * generating one token of Gemma 4 (~150–800 ms typical) has time to
+ * complete cleanly, while not feeling indefinite to the user.
+ *
+ * Cross-platform note: Linux/Windows builds of llama.cpp behave the
+ * same way for HTTP cancellation — they detect a closed socket on the
+ * next emitted token and abort generation.  The 1500 ms ceiling is a
+ * safety net for the worst case (a model mid-batch on slow hardware);
+ * users on faster machines will rarely hit the timeout because the
+ * fetch unwinds first.  Users on very slow machines can raise this
+ * value via the Offline settings tab.
+ */
+const DEFAULT_CANCEL_TIMEOUT_MS = 1500;
+
+/**
+ * Resolve a complete OfflineSettings record from the persisted partial,
+ * filling in `null` fields with values derived from the active
+ * performance preset.  This is the single source of truth for what the
+ * runtime manager and chat handler should actually use.
+ */
+function resolveOfflineSettings(): Required<{
+  [K in keyof OfflineSettings]: NonNullable<OfflineSettings[K]>;
+}> {
+  const stored = isDatabaseReady() ? getOfflineSettings() : null;
+  const preset = (stored?.performancePreset ?? "balanced") as OfflinePerformancePreset;
+
+  const presetDefaults: Record<OfflinePerformancePreset, {
+    contextSize: number;
+    maxTokens: number;
+    temperature: number;
+    topP: number;
+    threads: number;
+  }> = {
+    speed: {
+      contextSize: 2048,
+      maxTokens: 512,
+      temperature: 0.7,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length * 0.75)),
+    },
+    balanced: {
+      contextSize: 4096,
+      maxTokens: 1024,
+      temperature: 0.7,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length / 2)),
+    },
+    quality: {
+      contextSize: 8192,
+      maxTokens: 2048,
+      temperature: 0.6,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length / 2)),
+    },
+    custom: {
+      contextSize: 4096,
+      maxTokens: 1024,
+      temperature: 0.7,
+      topP: 0.9,
+      threads: Math.max(1, Math.floor(os.cpus().length / 2)),
+    },
+  };
+
+  const d = presetDefaults[preset] ?? presetDefaults.balanced;
+  return {
+    defaultModelId: stored?.defaultModelId ?? "",
+    performancePreset: preset,
+    contextSize: stored?.contextSize ?? d.contextSize,
+    maxTokens: stored?.maxTokens ?? d.maxTokens,
+    temperature: stored?.temperature ?? d.temperature,
+    topP: stored?.topP ?? d.topP,
+    threads: stored?.threads ?? d.threads,
+    cancelTimeoutMs: stored?.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS,
+    streamingEnabled: stored?.streamingEnabled ?? true,
+  };
+}
 
 /**
  * Number of consecutive **Gemma 4** install failures after which GHchat
@@ -367,7 +458,17 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
 
   // ── Offline chat streaming ──────────────────────────────────────────────────
 
+  /**
+   * Map of in-flight offline chat requests → their AbortController.
+   * Removed when the stream completes naturally OR when the user cancels.
+   */
   const activeStreams = new Map<string, AbortController>();
+  /**
+   * Set of requestIds that have been cancelled by the user.  The stream
+   * handler checks this to skip sending a duplicate OFFLINE_CHAT_END (the
+   * stop handler sends one immediately so the UI is responsive).
+   */
+  const cancelledRequests = new Set<string>();
 
   ipcMain.on(
     IPC.OFFLINE_CHAT_STREAM,
@@ -388,17 +489,43 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       };
 
+      // Resolve the user's runtime knobs once per request.
+      const settings = resolveOfflineSettings();
+
       try {
         await runtimeManager.streamChat(
           modelId,
           messages,
-          (token) => send(IPC.OFFLINE_CHAT_TOKEN, { requestId, token }),
+          (token) => {
+            // Drop tokens for cancelled requests so the renderer never
+            // sees post-stop content even if llama.cpp emits a few more
+            // batches before the abort propagates.
+            if (cancelledRequests.has(requestId)) return;
+            send(IPC.OFFLINE_CHAT_TOKEN, { requestId, token });
+          },
           controller.signal,
+          {
+            spawn: {
+              contextSize: settings.contextSize,
+              threads: settings.threads,
+            },
+            generation: {
+              temperature: settings.temperature,
+              topP: settings.topP,
+              maxTokens: settings.maxTokens,
+            },
+          },
         );
-        send(IPC.OFFLINE_CHAT_END, { requestId });
-      } catch (err) {
-        if (controller.signal.aborted) {
+        // Only send END when the stop handler hasn't already done so.
+        if (!cancelledRequests.has(requestId)) {
           send(IPC.OFFLINE_CHAT_END, { requestId });
+        }
+      } catch (err) {
+        if (controller.signal.aborted || cancelledRequests.has(requestId)) {
+          // Cancel path — stop handler already sent OFFLINE_CHAT_END.
+          if (!cancelledRequests.has(requestId)) {
+            send(IPC.OFFLINE_CHAT_END, { requestId });
+          }
         } else {
           const message = err instanceof Error ? err.message : String(err);
           console.error("[offline] chat stream error:", err);
@@ -424,27 +551,227 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       } finally {
         activeStreams.delete(requestId);
+        cancelledRequests.delete(requestId);
       }
     },
   );
 
   ipcMain.on(
     IPC.OFFLINE_CHAT_STOP,
-    (_e, { requestId }: { requestId: string }) => {
-      activeStreams.get(requestId)?.abort();
-      activeStreams.delete(requestId);
+    (event: IpcMainEvent, { requestId }: { requestId: string }) => {
+      const controller = activeStreams.get(requestId);
+      if (!controller) return;
+
+      // Mark cancelled BEFORE aborting so any in-flight token callbacks
+      // racing with the abort are dropped.
+      cancelledRequests.add(requestId);
+      controller.abort();
+
+      // Tell the renderer the stream has ended *immediately*.  We don't
+      // wait for the fetch to unwind — on slow models (e.g. M2 + Gemma
+      // 4 31B) the fetch reader can be blocked for seconds on the next
+      // SSE chunk.  This makes the UI feel instantly responsive.
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(IPC.OFFLINE_CHAT_END, { requestId });
+      }
+
+      // Cancel-watchdog: if the runtime is still busy after the
+      // configured timeout, hard-restart it so the next request lands on
+      // a clean slate.  This is rare in practice (HTTP TCP close usually
+      // makes llama.cpp abort within one token), but is the safety net
+      // that guarantees Stop is always responsive.
+      const settings = resolveOfflineSettings();
+      const timeoutMs = settings.cancelTimeoutMs;
+      if (timeoutMs > 0) {
+        setTimeout(() => {
+          // If the abort already drained, activeStreams no longer
+          // contains this requestId — nothing to do.
+          if (!activeStreams.has(requestId)) return;
+          console.warn(
+            `[offline] stop watchdog: stream ${requestId} did not unwind ` +
+              `within ${timeoutMs}ms — force-restarting runtime`,
+          );
+          // Force-stop the runtime; the next chat request will lazy-start it.
+          void runtimeManager.stop({ force: true });
+        }, timeoutMs);
+      }
+    },
+  );
+
+  // ── Offline-specific settings ───────────────────────────────────────────────
+
+  ipcMain.handle(IPC.OFFLINE_SETTINGS_GET, async (): Promise<OfflineSettings> => {
+    if (!isDatabaseReady()) {
+      // Return safe defaults so the renderer never breaks even if the DB
+      // hasn't initialized yet.
+      return {
+        defaultModelId: null,
+        performancePreset: "balanced",
+        contextSize: null,
+        maxTokens: null,
+        temperature: null,
+        topP: null,
+        threads: null,
+        cancelTimeoutMs: null,
+        streamingEnabled: true,
+      };
+    }
+    const r = getOfflineSettings();
+    return {
+      defaultModelId: r.defaultModelId,
+      performancePreset: r.performancePreset,
+      contextSize: r.contextSize,
+      maxTokens: r.maxTokens,
+      temperature: r.temperature,
+      topP: r.topP,
+      threads: r.threads,
+      cancelTimeoutMs: r.cancelTimeoutMs,
+      streamingEnabled: r.streamingEnabled,
+    };
+  });
+
+  ipcMain.handle(
+    IPC.OFFLINE_SETTINGS_UPDATE,
+    async (_e, partial: Partial<OfflineSettings>): Promise<OfflineSettings> => {
+      // Any direct slider change implicitly switches the preset to
+      // "custom" so the preset label stays honest.  The renderer can
+      // still send a non-null performancePreset to take a different
+      // preset path (which then resets the per-knob overrides to null).
+      const presetSwitch = partial.performancePreset !== undefined;
+      const knobChanged =
+        partial.contextSize !== undefined ||
+        partial.maxTokens !== undefined ||
+        partial.temperature !== undefined ||
+        partial.topP !== undefined ||
+        partial.threads !== undefined;
+      const effective: Partial<OfflineSettings> = { ...partial };
+      if (knobChanged && !presetSwitch) {
+        effective.performancePreset = "custom";
+      }
+      // If the user picked a non-custom preset, clear the per-knob
+      // overrides so the preset's defaults take effect.
+      if (
+        presetSwitch &&
+        partial.performancePreset !== "custom" &&
+        partial.performancePreset !== undefined
+      ) {
+        effective.contextSize = null;
+        effective.maxTokens = null;
+        effective.temperature = null;
+        effective.topP = null;
+        effective.threads = null;
+      }
+      const r = updateOfflineSettings(effective);
+      // Stop the runtime so the next chat request picks up the new
+      // ctx-size / threads.  Cheap: a no-op if not running.
+      if (
+        partial.contextSize !== undefined ||
+        partial.threads !== undefined ||
+        presetSwitch
+      ) {
+        void runtimeManager.stop();
+      }
+      return {
+        defaultModelId: r.defaultModelId,
+        performancePreset: r.performancePreset,
+        contextSize: r.contextSize,
+        maxTokens: r.maxTokens,
+        temperature: r.temperature,
+        topP: r.topP,
+        threads: r.threads,
+        cancelTimeoutMs: r.cancelTimeoutMs,
+        streamingEnabled: r.streamingEnabled,
+      };
+    },
+  );
+
+  ipcMain.handle(IPC.OFFLINE_SETTINGS_RESET, async (): Promise<OfflineSettings> => {
+    const r = updateOfflineSettings({
+      performancePreset: "balanced",
+      contextSize: null,
+      maxTokens: null,
+      temperature: null,
+      topP: null,
+      threads: null,
+      cancelTimeoutMs: null,
+      streamingEnabled: true,
+    });
+    void runtimeManager.stop();
+    return {
+      defaultModelId: r.defaultModelId,
+      performancePreset: r.performancePreset,
+      contextSize: r.contextSize,
+      maxTokens: r.maxTokens,
+      temperature: r.temperature,
+      topP: r.topP,
+      threads: r.threads,
+      cancelTimeoutMs: r.cancelTimeoutMs,
+      streamingEnabled: r.streamingEnabled,
+    };
+  });
+
+  ipcMain.handle(
+    IPC.OFFLINE_GET_HARDWARE_PROFILE,
+    async (): Promise<OfflineHardwareProfileSnapshot | null> => {
+      try {
+        const p = await hardwareProfile.detect();
+        // Tier heuristics — calibrated to match the catalog tiers used
+        // by the recommendation engine.  Apple Silicon gets a one-tier
+        // bump because of unified memory + Metal acceleration.
+        let tier: OfflineHardwareProfileSnapshot["tier"] = "low";
+        if (p.totalRamGb >= 48) tier = "ultra";
+        else if (p.totalRamGb >= 16) tier = "high";
+        else if (p.totalRamGb >= 8) tier = "mid";
+        if (p.isAppleSilicon && tier === "mid") tier = "high";
+        return {
+          totalRamGb: p.totalRamGb,
+          freeDiskGb: p.freeDiskGb,
+          cpuCores: p.cpuCores,
+          platform: p.platform,
+          arch: p.arch,
+          isAppleSilicon: p.isAppleSilicon,
+          tier,
+        };
+      } catch (err) {
+        console.warn("[offline] get-hardware-profile failed:", err);
+        return null;
+      }
     },
   );
 
   // ── Offline management ──────────────────────────────────────────────────────
 
+  /**
+   * Resolve which model the user-facing OfflineInfo / runtime should treat
+   * as active.  Preference order:
+   *   1. The persisted active_model_id (when it points at an installed row)
+   *   2. The first installed model (legacy single-model installs)
+   *   3. null (no models installed)
+   */
+  function resolveActiveModelId(): string | null {
+    if (!isDatabaseReady()) return null;
+    try {
+      const installation = getOfflineInstallation();
+      const models = listOfflineModels();
+      const persisted = installation?.activeModelId ?? null;
+      if (persisted && models.some((m) => m.id === persisted)) return persisted;
+      return models[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   ipcMain.handle(IPC.OFFLINE_GET_INFO, async () => {
     const installRoot = storageService.getOfflineRoot();
     const storageBytesUsed = storageService.computeUsedBytes();
 
-    // Pull the first (and normally only) installed model record.
+    // Pick the *active* installed model (or the first one when no
+    // explicit selection has been made yet) so the UI shows the model
+    // that chats will actually use.
     const models = isDatabaseReady() ? listOfflineModels() : [];
-    const model = models[0] ?? null;
+    const activeId = resolveActiveModelId();
+    const model =
+      models.find((m) => m.id === activeId) ?? models[0] ?? null;
 
     // Pull install timestamp from the installation record.
     const installation = isDatabaseReady() ? getOfflineInstallation() : null;
@@ -453,10 +780,14 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     // internal state (the runtime manager tracks this without extra IPC).
     const isRuntimeRunning = runtimeManager.isRunning();
 
+    // Look up catalog metadata so we can render the variant label even
+    // when the DB row predates the multi-model schema.
+    const catalogEntry = model ? offlineCatalog.getById(model.id) : undefined;
+
     return {
       modelId: model?.id ?? "",
       modelName: model?.name ?? "Gemma 4",
-      variantLabel: model?.name ?? "Gemma 4",
+      variantLabel: catalogEntry?.variantLabel ?? model?.name ?? "Gemma 4",
       quantization: model?.quantization ?? "",
       sizeGb: model?.sizeGb ?? 0,
       storageBytesUsed,
@@ -465,6 +796,210 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       isRuntimeRunning,
     };
   });
+
+  ipcMain.handle(
+    IPC.OFFLINE_LIST_INSTALLED,
+    async (): Promise<OfflineModelSummary[]> => {
+      if (!isDatabaseReady()) return [];
+      const models = listOfflineModels();
+      const activeId = resolveActiveModelId();
+      return models.map((m): OfflineModelSummary => {
+        const check = installManager.verifyModel(m.id);
+        const catalog = offlineCatalog.getById(m.id);
+        return {
+          id: m.id,
+          name: m.name,
+          variantLabel: catalog?.variantLabel ?? m.name,
+          quantization: m.quantization ?? "",
+          family: catalog?.family ?? "unknown",
+          declaredSizeGb: m.sizeGb,
+          sizeOnDiskBytes: check.sizeBytes,
+          modelPath: m.modelPath,
+          modelDir: dirname(m.modelPath),
+          health: check.health,
+          ...(check.reason ? { healthReason: check.reason } : {}),
+          isActive: m.id === activeId,
+          installedAt: m.installedAt,
+          lastUsedAt: m.lastUsedAt,
+        };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_LIST_AVAILABLE,
+    async (): Promise<OfflineCatalogEntrySummary[]> => {
+      const installedIds = isDatabaseReady()
+        ? new Set(listOfflineModels().map((m) => m.id))
+        : new Set<string>();
+
+      // Best-effort hardware fit check.  Failures here are non-fatal —
+      // we just mark every entry as fitsHardware=true so the user can
+      // still install something.
+      let profile: Awaited<ReturnType<typeof hardwareProfile.detect>> | null = null;
+      try {
+        profile = await hardwareProfile.detect();
+      } catch (err) {
+        console.warn("[offline] hardware profile detection failed:", err);
+      }
+
+      return offlineCatalog.listAvailable().map((entry): OfflineCatalogEntrySummary => {
+        let fitsHardware = true;
+        let fitReason: string | undefined;
+        if (profile) {
+          if (!(entry.platforms as string[]).includes(profile.platform)) {
+            fitsHardware = false;
+            fitReason = `Not supported on ${profile.platform}`;
+          } else if (profile.totalRamGb < entry.ramRequiredGb) {
+            fitsHardware = false;
+            fitReason = `Requires ${entry.ramRequiredGb} GB RAM (have ${Math.round(profile.totalRamGb)} GB)`;
+          } else if (profile.freeDiskGb < entry.diskRequiredGb * 1.1) {
+            fitsHardware = false;
+            fitReason = `Requires ${entry.diskRequiredGb} GB free disk (have ${Math.round(profile.freeDiskGb)} GB)`;
+          }
+        }
+        return {
+          id: entry.id,
+          name: entry.name,
+          variantLabel: entry.variantLabel,
+          quantization: entry.quantization,
+          family: entry.family,
+          isFallback: entry.isFallback,
+          sizeGb: entry.sizeGb,
+          ramRequiredGb: entry.ramRequiredGb,
+          diskRequiredGb: entry.diskRequiredGb,
+          tier: entry.tier,
+          installed: installedIds.has(entry.id),
+          fitsHardware,
+          ...(fitReason ? { fitReason } : {}),
+        };
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_INSTALL_ADDITIONAL,
+    async (event, modelId: string): Promise<{ ok: boolean; error?: string }> => {
+      // Sanity-check the catalog entry up front.
+      const entry = offlineCatalog.getById(modelId);
+      if (!entry) {
+        return { ok: false, error: `Unknown catalog model: ${modelId}` };
+      }
+      try {
+        await installManager.install(modelId, (progress) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(IPC.OFFLINE_INSTALL_PROGRESS, progress);
+          }
+        });
+        // If this is the first model installed, promote it to active so
+        // the runtime knows what to load.  Otherwise leave the active
+        // selection alone — the user explicitly chose to add a model.
+        if (isDatabaseReady()) {
+          const installation = getOfflineInstallation();
+          if (!installation?.activeModelId) {
+            upsertOfflineInstallation({ activeModelId: modelId });
+          }
+          // Reset Gemma 4 failure counter on any successful install.
+          upsertOfflineInstallation({
+            gemma4FailureCount: 0,
+            lastFailureReasons: null,
+          });
+        }
+        return { ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[offline] additional install failed:", err);
+        return { ok: false, error: message };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_REMOVE_MODEL,
+    async (_event, modelId: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        // If the runtime is currently serving this model, stop it first
+        // so the file isn't locked on Windows and so the next chat picks
+        // up a freshly-loaded model cleanly.
+        if (runtimeManager.getCurrentModelId() === modelId) {
+          await runtimeManager.stop();
+        }
+
+        await installManager.uninstall(modelId);
+
+        // If this was the active model, pick a new one (or clear it).
+        if (isDatabaseReady()) {
+          const installation = getOfflineInstallation();
+          if (installation?.activeModelId === modelId) {
+            const remaining = listOfflineModels();
+            const nextActive = remaining[0]?.id ?? null;
+            upsertOfflineInstallation({ activeModelId: nextActive });
+          }
+
+          // If no models remain, transition the global state back so the
+          // sidebar/header reflects "no offline model installed".
+          const stillInstalled = listOfflineModels();
+          if (stillInstalled.length === 0) {
+            setOfflineReadiness({ state: "not-installed" });
+          }
+        }
+        return { ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[offline] remove-model failed:", err);
+        return { ok: false, error: message };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_SET_ACTIVE_MODEL,
+    async (_event, modelId: string): Promise<string | null> => {
+      if (!isDatabaseReady()) return null;
+      const exists = listOfflineModels().some((m) => m.id === modelId);
+      if (!exists) return null;
+      // Stop the runtime so the next chat lazy-starts with the new model.
+      if (runtimeManager.getCurrentModelId() !== modelId) {
+        try {
+          await runtimeManager.stop();
+        } catch (err) {
+          console.warn("[offline] failed to stop runtime when switching active model:", err);
+        }
+      }
+      upsertOfflineInstallation({ activeModelId: modelId });
+      return modelId;
+    },
+  );
+
+  ipcMain.handle(IPC.OFFLINE_GET_ACTIVE_MODEL, (): string | null => {
+    return resolveActiveModelId();
+  });
+
+  ipcMain.handle(IPC.OFFLINE_REVEAL_FOLDER, async (): Promise<void> => {
+    storageService.ensureDirectories();
+    const dir = storageService.getOfflineRoot();
+    await shell.openPath(dir);
+  });
+
+  ipcMain.handle(
+    IPC.OFFLINE_REVEAL_MODEL_FOLDER,
+    async (_event, modelId: string): Promise<void> => {
+      // When the model file exists, show it selected in the OS file
+      // manager so the user lands on exactly what they asked about.
+      // Otherwise fall back to opening the parent models/ directory.
+      const filePath = storageService.getModelFilePath(modelId);
+      try {
+        if (existsSync(filePath) && statSync(filePath).isFile()) {
+          shell.showItemInFolder(filePath);
+          return;
+        }
+      } catch {
+        /* fall through to folder open */
+      }
+      storageService.ensureDirectories();
+      await shell.openPath(storageService.getModelStorePath());
+    },
+  );
 
   ipcMain.handle(IPC.OFFLINE_REMOVE, async (): Promise<OfflineReadiness> => {
     try {
@@ -488,11 +1023,6 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  });
-
-  ipcMain.handle(IPC.OFFLINE_REVEAL_FOLDER, async (): Promise<void> => {
-    const dir = storageService.getOfflineRoot();
-    await shell.openPath(dir);
   });
 }
 

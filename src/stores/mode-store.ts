@@ -49,6 +49,13 @@ interface ModeState {
    * reached.  Never auto-installed.
    */
   fallbackOptions: OfflineRecommendation[];
+  /**
+   * Catalog id of the currently active offline model, mirrored from the
+   * main process via OFFLINE_GET_ACTIVE_MODEL.  Null when no offline
+   * model is installed or selected.  When set, this is the model the
+   * runtime will load for chat requests.
+   */
+  activeOfflineModelId: string | null;
   setMode: (mode: AppMode) => void;
   setOfflineState: (state: OfflineSetupState) => void;
   setOfflineRecommendation: (rec: OfflineRecommendation | null) => void;
@@ -58,6 +65,7 @@ interface ModeState {
   setGemma4FailureThreshold: (threshold: number) => void;
   setLastFailureReasons: (reasons: OfflineFailureReason[]) => void;
   setFallbackOptions: (options: OfflineRecommendation[]) => void;
+  setActiveOfflineModelId: (id: string | null) => void;
 }
 
 export const useModeStore = create<ModeState>((set) => ({
@@ -70,6 +78,7 @@ export const useModeStore = create<ModeState>((set) => ({
   gemma4FailureThreshold: 5,
   lastFailureReasons: [],
   fallbackOptions: [],
+  activeOfflineModelId: null,
   setMode: (currentMode) => set({ currentMode }),
   setOfflineState: (offlineState) => set({ offlineState }),
   setOfflineRecommendation: (offlineRecommendation) => set({ offlineRecommendation }),
@@ -79,4 +88,5 @@ export const useModeStore = create<ModeState>((set) => ({
   setGemma4FailureThreshold: (gemma4FailureThreshold) => set({ gemma4FailureThreshold }),
   setLastFailureReasons: (lastFailureReasons) => set({ lastFailureReasons }),
   setFallbackOptions: (fallbackOptions) => set({ fallbackOptions }),
+  setActiveOfflineModelId: (activeOfflineModelId) => set({ activeOfflineModelId }),
 }));

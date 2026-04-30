@@ -3,6 +3,7 @@ import * as net from "net";
 import * as os from "os";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
+import { touchOfflineModelLastUsed } from "../database";
 
 // ── Port utilities ────────────────────────────────────────────────────────────
 
@@ -55,11 +56,36 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * Per-spawn options for the llama.cpp server.  When omitted, sane
+ * defaults are used.  Changes here only take effect on the next
+ * `start()` after the runtime has been stopped.
+ */
+export interface RuntimeSpawnOptions {
+  /** Context window size; default 4096. */
+  contextSize?: number;
+  /** Worker thread count; default = floor(cpus/2). */
+  threads?: number;
+}
+
+/**
+ * Per-request generation options forwarded to the chat completion call.
+ */
+export interface RuntimeGenerationOptions {
+  temperature?: number;
+  topP?: number;
+  /** Token cap; -1 = no limit (default).  Capping prevents runaway streams. */
+  maxTokens?: number;
+}
+
 // ── Runtime manager state ─────────────────────────────────────────────────────
 
 let _proc: ChildProcess | null = null;
 let _port: number | null = null;
 let _modelId: string | null = null;
+/** Tracks the spawn options the running process was started with so
+ *  callers can detect when a setting change requires a restart. */
+let _spawnOptions: RuntimeSpawnOptions = {};
 
 // ── Runtime manager ───────────────────────────────────────────────────────────
 
@@ -82,19 +108,25 @@ export const runtimeManager = {
 
   /**
    * Start the llama.cpp server for the given installed model.
-   * If a server is already running for the same model, returns immediately.
-   * If a server is running for a different model, it is stopped first.
+   * If a server is already running for the same model AND the same spawn
+   * options, returns immediately.  If the model id or spawn options have
+   * changed, the existing process is stopped and a new one is started.
    */
-  async start(modelId: string): Promise<void> {
-    if (_proc && !_proc.killed && _modelId === modelId) {
-      // Already running the right model — verify health and return.
+  async start(modelId: string, options: RuntimeSpawnOptions = {}): Promise<void> {
+    const sameOptions =
+      _spawnOptions.contextSize === options.contextSize &&
+      _spawnOptions.threads === options.threads;
+    if (_proc && !_proc.killed && _modelId === modelId && sameOptions) {
+      // Already running the right model with the right options — verify
+      // health and return.
       if (_port !== null) {
         await pollUntilReady(_port, "/health", 5_000);
       }
       return;
     }
 
-    // Different model or dead process — stop whatever is running.
+    // Different model, different options, or dead process — stop whatever
+    // is running.
     await runtimeManager.stop();
 
     const record = modelRegistry.listInstalled().find((r) => r.id === modelId);
@@ -115,18 +147,21 @@ export const runtimeManager = {
 
     const port = await getFreePort();
 
+    const ctxSize = options.contextSize ?? 4096;
+    const threads = options.threads ?? Math.max(1, Math.floor(os.cpus().length / 2));
+
     console.log(
       `[runtimeManager] starting llama-server on port ${port} ` +
-        `with model ${record.modelPath}`,
+        `with model ${record.modelPath} (ctx=${ctxSize}, threads=${threads})`,
     );
 
     const args = [
       "--model", record.modelPath,
       "--port", String(port),
       "--host", "127.0.0.1",
-      "--ctx-size", "4096",
+      "--ctx-size", String(ctxSize),
       "--n-predict", "-1",
-      "--threads", String(Math.max(1, Math.floor(os.cpus().length / 2))),
+      "--threads", String(threads),
       "--no-display-prompt",
       "--log-disable",
     ];
@@ -138,12 +173,14 @@ export const runtimeManager = {
 
     _port = port;
     _modelId = modelId;
+    _spawnOptions = { contextSize: ctxSize, threads };
 
     _proc.on("error", (err) => {
       console.error("[runtimeManager] process error:", err);
       _proc = null;
       _port = null;
       _modelId = null;
+      _spawnOptions = {};
     });
 
     _proc.on("exit", (code, signal) => {
@@ -153,6 +190,7 @@ export const runtimeManager = {
       _proc = null;
       _port = null;
       _modelId = null;
+      _spawnOptions = {};
     });
 
     // Log stderr so failures are visible in the Electron log.
@@ -166,12 +204,20 @@ export const runtimeManager = {
     console.log(`[runtimeManager] server ready on port ${port}`);
   },
 
-  /** Stop the running inference server. Safe to call when already stopped. */
-  async stop(): Promise<void> {
+  /**
+   * Stop the running inference server. Safe to call when already stopped.
+   *
+   * Uses SIGTERM first for a graceful shutdown, then escalates to SIGKILL
+   * after a short grace period.  When `force` is true, SIGKILL is sent
+   * immediately — used by the cancel-watchdog when a hung generation
+   * needs to be aborted right now.
+   */
+  async stop(opts: { force?: boolean } = {}): Promise<void> {
     if (!_proc || _proc.killed) {
       _proc = null;
       _port = null;
       _modelId = null;
+      _spawnOptions = {};
       return;
     }
 
@@ -179,11 +225,17 @@ export const runtimeManager = {
     _proc = null;
     _port = null;
     _modelId = null;
+    _spawnOptions = {};
 
     await new Promise<void>((resolve) => {
       const onExit = () => resolve();
       proc.once("exit", onExit);
       proc.once("error", onExit);
+
+      if (opts.force) {
+        proc.kill("SIGKILL");
+        return;
+      }
 
       // Give the process 3 s to shut down gracefully, then force-kill.
       proc.kill("SIGTERM");
@@ -205,6 +257,11 @@ export const runtimeManager = {
     return _port;
   },
 
+  /** Returns the model id currently loaded in the runtime, or null. */
+  getCurrentModelId(): string | null {
+    return _modelId;
+  },
+
   // ── Inference ───────────────────────────────────────────────────────────────
 
   /**
@@ -224,15 +281,31 @@ export const runtimeManager = {
     messages: ChatMessage[],
     onToken: (token: string) => void,
     signal?: AbortSignal,
+    options: {
+      spawn?: RuntimeSpawnOptions;
+      generation?: RuntimeGenerationOptions;
+    } = {},
   ): Promise<void> {
-    // Ensure the server is running (lazy start).
-    await runtimeManager.start(modelId);
+    // Ensure the server is running with the requested spawn options
+    // (this may stop and restart the runtime when the user changed
+    // context size or thread count between requests).
+    await runtimeManager.start(modelId, options.spawn ?? {});
+
+    // Mark this model as used now so the management UI can render
+    // a meaningful "last used" timestamp for each installed model.
+    touchOfflineModelLastUsed(modelId);
 
     if (_port === null) {
       throw new Error("[runtimeManager] server port not available after start");
     }
 
     const url = `http://127.0.0.1:${_port}/v1/chat/completions`;
+
+    const gen = options.generation ?? {};
+    // Cap generation by default so a runaway model can't stream forever.
+    // The IPC layer feeds this from offline_settings; here we keep a
+    // sane fallback so direct callers are still safe.
+    const maxTokens = gen.maxTokens ?? 1024;
 
     const response = await fetch(url, {
       method: "POST",
@@ -241,8 +314,12 @@ export const runtimeManager = {
         model: "local",
         messages,
         stream: true,
-        temperature: 0.7,
-        top_p: 0.9,
+        temperature: gen.temperature ?? 0.7,
+        top_p: gen.topP ?? 0.9,
+        // -1 means "no cap" for llama.cpp.  Any positive value is honored
+        // so the server stops generating after N tokens — critical for
+        // killing runaway generations on low-end hardware.
+        max_tokens: maxTokens,
       }),
       signal,
     });
@@ -265,6 +342,11 @@ export const runtimeManager = {
 
     try {
       while (true) {
+        // Eagerly bail when the caller has aborted — the underlying
+        // fetch read may already have buffered chunks, so we don't
+        // need to wait for those to drain.
+        if (signal?.aborted) return;
+
         const { value, done } = await reader.read();
         if (done) break;
 
@@ -273,6 +355,8 @@ export const runtimeManager = {
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
+          if (signal?.aborted) return;
+
           const trimmed = line.trim();
           if (!trimmed.startsWith("data:")) continue;
 
@@ -303,7 +387,19 @@ export const runtimeManager = {
       }
       throw err;
     } finally {
-      reader.releaseLock();
+      // Best-effort cancel of the reader so the underlying socket is
+      // released immediately.  Without this, the read() future can hang
+      // around for the duration of the next token batch on slow models.
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      try {
+        reader.releaseLock();
+      } catch {
+        /* ignore */
+      }
     }
   },
 };

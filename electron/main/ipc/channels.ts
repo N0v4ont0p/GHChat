@@ -82,4 +82,32 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  /** Returns OfflineModelSummary[] — every installed offline model. */
+  OFFLINE_LIST_INSTALLED: "offline:list-installed",
+  /** Returns OfflineCatalogEntrySummary[] — installable catalog entries. */
+  OFFLINE_LIST_AVAILABLE: "offline:list-available",
+  /** Install an additional offline model w/o flipping global state. */
+  OFFLINE_INSTALL_ADDITIONAL: "offline:install-additional",
+  /** Remove a single installed offline model by id. */
+  OFFLINE_REMOVE_MODEL: "offline:remove-model",
+  /** Set the currently active offline model. */
+  OFFLINE_SET_ACTIVE_MODEL: "offline:set-active-model",
+  /** Get the currently active offline model id, or null. */
+  OFFLINE_GET_ACTIVE_MODEL: "offline:get-active-model",
+  /** Reveal a specific offline model file/folder in the OS file manager. */
+  OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
+  /** Reset Gemma 4 install failure counter (renderer-facing copy of internal handler). */
+  OFFLINE_RESET_FAILURES: "offline:reset-failures",
+  /** Get the offline-specific settings record. */
+  OFFLINE_SETTINGS_GET: "offline:settings-get",
+  /** Update one or more offline-specific settings. */
+  OFFLINE_SETTINGS_UPDATE: "offline:settings-update",
+  /** Reset offline-specific settings to defaults. */
+  OFFLINE_SETTINGS_RESET: "offline:settings-reset",
+  /**
+   * Get the cached HardwareProfile snapshot used by the recommendation
+   * engine.  Used by the management UI to render hardware tier and to
+   * warn when the active model exceeds the local capacity.
+   */
+  OFFLINE_GET_HARDWARE_PROFILE: "offline:get-hardware-profile",
 } as const;

@@ -21,6 +21,7 @@ export function AppShell() {
   const currentMode = useModeStore((s) => s.currentMode);
   const offlineState = useModeStore((s) => s.offlineState);
   const setOfflineState = useModeStore((s) => s.setOfflineState);
+  const setActiveOfflineModelId = useModeStore((s) => s.setActiveOfflineModelId);
 
   // Sync offline readiness from the main process on mount.
   useEffect(() => {
@@ -29,7 +30,13 @@ export function AppShell() {
       .catch(() => {
         console.debug("[AppShell] offline status unavailable, using default");
       });
-  }, [setOfflineState]);
+    // Sync the currently active offline model id so chat requests use it.
+    ipc.getActiveOfflineModel()
+      .then((id) => setActiveOfflineModelId(id))
+      .catch(() => {
+        console.debug("[AppShell] active offline model unavailable");
+      });
+  }, [setOfflineState, setActiveOfflineModelId]);
 
   // Auto-select the most recent conversation when conversations load
   // and none is currently selected (e.g. on launch without a persisted lastConversationId)

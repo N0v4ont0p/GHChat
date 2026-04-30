@@ -10,6 +10,10 @@ import type {
   OfflineReadiness,
   OfflineInstallProgress,
   OfflineInfo,
+  OfflineModelSummary,
+  OfflineCatalogEntrySummary,
+  OfflineSettings,
+  OfflineHardwareProfileSnapshot,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -127,6 +131,48 @@ export const ipc = {
    * Open the offline root directory in the OS file manager.
    */
   revealOfflineFolder: () => api().invoke<void>(IPC.OFFLINE_REVEAL_FOLDER),
+
+  // ── Multi-model offline management ────────────────────────────────────
+  /** List every installed offline model with health, active flag, and timestamps. */
+  listInstalledOfflineModels: () =>
+    api().invoke<OfflineModelSummary[]>(IPC.OFFLINE_LIST_INSTALLED),
+  /** List installable catalog entries with installed/fitsHardware flags. */
+  listAvailableOfflineModels: () =>
+    api().invoke<OfflineCatalogEntrySummary[]>(IPC.OFFLINE_LIST_AVAILABLE),
+  /**
+   * Install an additional offline model from the management UI without
+   * touching the global offline state machine.  Live progress is delivered
+   * via the same OFFLINE_INSTALL_PROGRESS push events as the setup flow.
+   */
+  installAdditionalOfflineModel: (modelId: string) =>
+    api().invoke<{ ok: boolean; error?: string }>(
+      IPC.OFFLINE_INSTALL_ADDITIONAL,
+      modelId,
+    ),
+  /** Remove a single installed offline model by id. */
+  removeOfflineModel: (modelId: string) =>
+    api().invoke<{ ok: boolean; error?: string }>(IPC.OFFLINE_REMOVE_MODEL, modelId),
+  /** Set the currently active offline model (returns the id, or null on unknown). */
+  setActiveOfflineModel: (modelId: string) =>
+    api().invoke<string | null>(IPC.OFFLINE_SET_ACTIVE_MODEL, modelId),
+  /** Get the currently active offline model id, or null. */
+  getActiveOfflineModel: () =>
+    api().invoke<string | null>(IPC.OFFLINE_GET_ACTIVE_MODEL),
+  /** Reveal a single model's storage location in the OS file manager. */
+  revealOfflineModelFolder: (modelId: string) =>
+    api().invoke<void>(IPC.OFFLINE_REVEAL_MODEL_FOLDER, modelId),
+
+  // ── Offline-specific settings ─────────────────────────────────────────
+  /** Read the persisted offline-specific settings record. */
+  getOfflineSettings: () => api().invoke<OfflineSettings>(IPC.OFFLINE_SETTINGS_GET),
+  /** Update one or more offline-specific settings; returns the new state. */
+  updateOfflineSettings: (partial: Partial<OfflineSettings>) =>
+    api().invoke<OfflineSettings>(IPC.OFFLINE_SETTINGS_UPDATE, partial),
+  /** Reset all offline-specific settings to defaults. */
+  resetOfflineSettings: () => api().invoke<OfflineSettings>(IPC.OFFLINE_SETTINGS_RESET),
+  /** Get a snapshot of host hardware (RAM/CPU/disk + tier) for diagnostics. */
+  getOfflineHardwareProfile: () =>
+    api().invoke<OfflineHardwareProfileSnapshot | null>(IPC.OFFLINE_GET_HARDWARE_PROFILE),
 
   /**
    * Reset the consecutive Gemma 4 install failure counter.  Used when

@@ -43,6 +43,15 @@ interface RoutingPayload {
 const OFFLINE_MODEL_ID = "offline-local";
 
 /**
+ * How long after a user-initiated stop the renderer keeps the requestId
+ * in its `cancelledRequestIds` set so any late token events arriving
+ * from the runtime are still suppressed.  Slightly longer than the IPC
+ * cancel-watchdog (1500 ms default) so the watchdog has time to either
+ * drain or force-restart before we forget about the request.
+ */
+const CANCELLED_REQUEST_CLEANUP_DELAY_MS = 5_000;
+
+/**
  * Returns true when a chat request should be routed to the local llama.cpp
  * runtime rather than OpenRouter.
  * - "offline" mode: always use local runtime.
@@ -95,13 +104,25 @@ export function useChat(conversationId: string | null) {
     addIncognitoMessage,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineState, offlineRecommendation } = useModeStore();
+  const { currentMode, offlineState, offlineRecommendation, activeOfflineModelId } = useModeStore();
 
-  // The installed offline model ID — falls back to OFFLINE_MODEL_ID sentinel
-  // if no recommendation is available (e.g. after an install with no reco step).
-  const offlineModelId = offlineRecommendation?.modelId ?? OFFLINE_MODEL_ID;
+  // The installed offline model ID — prefer the user's currently-selected
+  // active model (multi-model UI), fall back to the analyze-step
+  // recommendation, and finally to a sentinel string when neither is set
+  // (the main process will reject a chat request with this id, which is
+  // the desired outcome — no model installed means no chat).
+  const offlineModelId =
+    activeOfflineModelId ?? offlineRecommendation?.modelId ?? OFFLINE_MODEL_ID;
 
   const activeRequestId = useRef<string | null>(null);
+  /**
+   * Set of requestIds the user has cancelled.  Used to drop any
+   * in-flight token events that race with the stop call.  The main
+   * process applies the same suppression on its side, but a race
+   * window still exists between when stopStream() runs and when the
+   * cancel reaches the main process.
+   */
+  const cancelledRequestIds = useRef<Set<string>>(new Set());
   // Mirror of streamingText in a ref so event callbacks see the latest value
   const streamingTextRef = useRef(streamingText);
   streamingTextRef.current = streamingText;
@@ -221,6 +242,7 @@ export function useChat(conversationId: string | null) {
       IPC.OFFLINE_CHAT_TOKEN,
       (_e: IpcRendererEvent, payload: unknown) => {
         const { requestId, token } = payload as TokenPayload;
+        if (cancelledRequestIds.current.has(requestId)) return;
         if (requestId === activeRequestId.current) {
           appendStreamingToken(token);
         }
@@ -231,6 +253,10 @@ export function useChat(conversationId: string | null) {
       IPC.OFFLINE_CHAT_END,
       (_e: IpcRendererEvent, payload: unknown) => {
         const { requestId } = payload as EndPayload;
+        // If the user already stopped this stream, the renderer-side
+        // stopStream() has already persisted the partial reply and
+        // reset state.  Don't re-process the END event.
+        if (cancelledRequestIds.current.has(requestId)) return;
         if (requestId !== activeRequestId.current) return;
 
         const fullText = streamingTextRef.current;
@@ -418,18 +444,71 @@ export function useChat(conversationId: string | null) {
   );
 
   // ── Stop the active stream ─────────────────────────────────────────────────
+  // For online streams we just signal the main process and wait for OR_CHAT_END
+  // (server-side cancellation is fast).  For offline streams we have to
+  // assume the runtime may take a beat to unwind on slow hardware, so we
+  // *immediately* drop any further tokens and reset UI state — the main
+  // process also sends OFFLINE_CHAT_END right away to keep state in sync.
   const stopStream = useCallback(() => {
     const id = activeRequestId.current;
     if (!id) return;
     setStreamState("stopping");
     const usingOffline = shouldUseOfflineBackend(currentMode, offlineState);
     if (usingOffline) {
+      // Mark the request as cancelled so any in-flight token events that
+      // race with the stop are dropped on the renderer side too.
+      cancelledRequestIds.current.add(id);
       ipc.stopOfflineStream(id);
+
+      // Persist whatever was already streamed and reset UI state right
+      // now.  Without this, a slow runtime could keep the user staring
+      // at "Stopping…" for several seconds while llama.cpp unwinds.
+      const fullText = streamingTextRef.current;
+      activeRequestId.current = null;
+
+      const finalize = () => {
+        setStreamState("completed");
+        resetStreaming();
+        // Drop the entry after a few seconds — long enough that any
+        // late tokens from the runtime are still suppressed.
+        setTimeout(() => cancelledRequestIds.current.delete(id), CANCELLED_REQUEST_CLEANUP_DELAY_MS);
+      };
+
+      if (!fullText.trim()) {
+        finalize();
+        return;
+      }
+      const convId = conversationIdRef.current;
+      if (incognitoModeRef.current) {
+        if (convId) {
+          addIncognitoMessageRef.current(
+            makeIncognitoMessage(convId, "assistant", fullText),
+          );
+        }
+        finalize();
+        return;
+      }
+      if (!convId) {
+        finalize();
+        return;
+      }
+      ipc
+        .appendMessage({ conversationId: convId, role: "assistant", content: fullText })
+        .then(() => {
+          qc.invalidateQueries({ queryKey: ["messages", convId] });
+          finalize();
+        })
+        .catch(() => {
+          setStreamState("failed");
+          resetStreaming();
+          setTimeout(() => cancelledRequestIds.current.delete(id), CANCELLED_REQUEST_CLEANUP_DELAY_MS);
+        });
     } else {
       ipc.stopStream(id);
+      // The main process sends OR_CHAT_END after aborting — wait for it
+      // to drive the UI transition (online cancellation is fast).
     }
-    // The main process sends the appropriate *_CHAT_END after aborting
-  }, [currentMode, offlineState, setStreamState]);
+  }, [currentMode, offlineState, setStreamState, qc, resetStreaming]);
 
   // ── Regenerate the last assistant reply ────────────────────────────────────
   const regenerate = useCallback(async () => {
