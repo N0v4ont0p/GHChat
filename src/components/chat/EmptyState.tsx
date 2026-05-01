@@ -45,7 +45,7 @@ export function EmptyState() {
   const selectedModel = useSettingsStore((s) => s.selectedModel);
   const { setDraft, incognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
-  const { currentMode, offlineState, activeOfflineModelLabel, offlineRecommendation } = useModeStore();
+  const { currentMode, offlineState, activeOfflineModelLabel, setOfflineManagementOpen } = useModeStore();
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
@@ -55,13 +55,15 @@ export function EmptyState() {
     currentMode === "offline" ||
     (currentMode === "auto" && offlineState === "installed");
 
-  // Show the *active installed* offline model rather than a recommendation
-  // or a hard-coded Gemma 4 default — see the same rationale in ChatHeader.
-  const localModelName =
-    activeOfflineModelLabel ??
-    (offlineRecommendation
-      ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
-      : "Local model");
+  // Show the *active installed* offline model only.  Falling back to
+  // the analyze-step recommendation here would advertise a model the
+  // user has not actually installed (e.g. Gemma 4 E4B as the default
+  // recommendation), giving the wrong impression about what their next
+  // message will hit.  When no active model is set, render a neutral
+  // "Choose an offline model" affordance that opens the management
+  // modal.  See ChatHeader for the same rule.
+  const localModelName = activeOfflineModelLabel ?? "Choose an offline model";
+  const hasActiveOffline = activeOfflineModelLabel !== null;
 
   const handlePromptClick = async (prompt: string) => {
     await createConversation.mutateAsync();
@@ -118,10 +120,31 @@ export function EmptyState() {
           </p>
         ) : isLocalMode ? (
           <p className="text-sm text-muted-foreground leading-relaxed">
-            Chat with{" "}
-            <span className="font-medium text-foreground">{localModelName}</span>
-            {" "}running locally on your device.{" "}
-            <span className="text-emerald-400/80 text-[12px]">No internet required.</span>
+            {hasActiveOffline ? (
+              <>
+                Chat with{" "}
+                <button
+                  type="button"
+                  onClick={() => setOfflineManagementOpen(true)}
+                  className="font-medium text-foreground underline-offset-4 hover:underline"
+                >
+                  {localModelName}
+                </button>
+                {" "}running locally on your device.{" "}
+                <span className="text-emerald-400/80 text-[12px]">No internet required.</span>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setOfflineManagementOpen(true)}
+                  className="font-medium text-amber-300 underline-offset-4 hover:underline"
+                >
+                  Choose an offline model
+                </button>
+                {" "}to start chatting locally.
+              </>
+            )}
           </p>
         ) : (
           <p className="text-sm text-muted-foreground leading-relaxed">

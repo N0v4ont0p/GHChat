@@ -87,20 +87,20 @@ export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
-  const { currentMode, activeOfflineModelLabel, offlineRecommendation, setOfflineManagementOpen } = useModeStore();
+  const { currentMode, activeOfflineModelLabel, setOfflineManagementOpen } = useModeStore();
 
   const isOffline = currentMode === "offline";
 
-  // In offline mode show the *active installed* model — never a hard-coded
-  // Gemma 4 default, and never the analyze-step recommendation (which can
-  // point at a model the user has not actually installed).  Fall back to
-  // the recommendation only if no active model is known yet, then to a
-  // generic "Local" placeholder so the header always renders something.
-  const offlineModelLabel =
-    activeOfflineModelLabel ??
-    (offlineRecommendation
-      ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
-      : "Local model");
+  // In offline mode show the *active installed* model only.  The
+  // analyze-step recommendation is intentionally NOT used as a fallback
+  // — it points at a model the user may have never installed (e.g.
+  // Gemma 4 E4B as the recommendation while the user actually installed
+  // a lightweight test variant), which would mislead the user about
+  // what their next message will hit.  When no active label is known
+  // we render a neutral affordance that opens the management modal so
+  // the user can pick or install one.
+  const offlineModelLabel = activeOfflineModelLabel ?? "Choose an offline model";
+  const hasActiveOffline = activeOfflineModelLabel !== null;
 
   const preset = getPreset(models, selectedModel);
   const displayName = isOffline ? offlineModelLabel : (preset?.name ?? selectedModel.split("/").pop() ?? selectedModel);
@@ -146,12 +146,20 @@ export function ChatHeader() {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => !isOffline && setSettingsOpen(true)}
+                onClick={() => {
+                  if (isOffline) {
+                    // Always allow opening the management modal in
+                    // offline mode — both to switch active model and
+                    // to install one when no active model exists yet.
+                    setOfflineManagementOpen(true);
+                  } else {
+                    setSettingsOpen(true);
+                  }
+                }}
                 className={cn(
                   "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-all",
-                  isOffline
-                    ? "text-muted-foreground cursor-default"
-                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+                  "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+                  isOffline && !hasActiveOffline && "border border-dashed border-amber-500/40 text-amber-300 hover:text-amber-200",
                 )}
               >
                 {isStreaming ? (

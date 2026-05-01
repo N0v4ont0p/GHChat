@@ -639,6 +639,21 @@ export interface Conversation {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * AppMode this conversation is bound to.  Stamped on the first user
+   * message; persists for the life of the conversation so global mode
+   * switches do not retroactively rewrite older chats.
+   */
+  mode: AppMode;
+  /**
+   * Model id this conversation is bound to.
+   *   - For `mode === "online"` this is an OpenRouter model id.
+   *   - For `mode === "offline"` this is an offline catalog id.
+   *   - NULL for an "unbound" conversation (no message has been sent
+   *     yet); the resolver falls back to the current globals in that
+   *     case so the empty state stays flexible until first send.
+   */
+  modelId: string | null;
 }
 
 export interface Message {
@@ -654,6 +669,8 @@ export const IPC = {
   CONVERSATIONS_CREATE: "conversations:create",
   CONVERSATIONS_RENAME: "conversations:rename",
   CONVERSATIONS_DELETE: "conversations:delete",
+  /** Update the mode/model binding of a conversation (recovery flow + first-send stamp). */
+  CONVERSATIONS_UPDATE_MODEL: "conversations:update-model",
   MESSAGES_LIST: "messages:list",
   MESSAGES_APPEND: "messages:append",
   MESSAGES_DELETE: "messages:delete",
@@ -785,6 +802,13 @@ export const IPC = {
    * itself selected; otherwise opens the models/ directory.
    */
   OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
+  /**
+   * Push event (main → renderer) fired whenever the active offline
+   * model changes (install/remove/explicit set/auto-promotion in the
+   * resolver).  Lets every open window refresh without polling.
+   * Payload: OfflineActiveModelInfo | null
+   */
+  OFFLINE_ACTIVE_MODEL_CHANGED: "offline:active-model-changed",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */

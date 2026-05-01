@@ -32,12 +32,24 @@ function api() {
 export const ipc = {
   // Conversations
   listConversations: () => api().invoke<Conversation[]>(IPC.CONVERSATIONS_LIST),
-  createConversation: (title?: string) =>
-    api().invoke<Conversation>(IPC.CONVERSATIONS_CREATE, title),
+  createConversation: (
+    payload?:
+      | string
+      | { title?: string; mode?: AppMode; modelId?: string | null },
+  ) => api().invoke<Conversation>(IPC.CONVERSATIONS_CREATE, payload),
   renameConversation: (id: string, title: string) =>
     api().invoke<void>(IPC.CONVERSATIONS_RENAME, id, title),
   deleteConversation: (id: string) =>
     api().invoke<void>(IPC.CONVERSATIONS_DELETE, id),
+  /**
+   * Update the mode/model binding for a conversation.  Used to stamp
+   * the resolved mode/model on first send and from the missing-model
+   * recovery surface to migrate a stuck conversation.
+   */
+  updateConversationModel: (
+    id: string,
+    partial: { mode?: AppMode; modelId?: string | null },
+  ) => api().invoke<void>(IPC.CONVERSATIONS_UPDATE_MODEL, id, partial),
 
   // Messages
   listMessages: (conversationId: string) =>

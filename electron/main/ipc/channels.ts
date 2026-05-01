@@ -3,6 +3,7 @@ export const IPC = {
   CONVERSATIONS_CREATE: "conversations:create",
   CONVERSATIONS_RENAME: "conversations:rename",
   CONVERSATIONS_DELETE: "conversations:delete",
+  CONVERSATIONS_UPDATE_MODEL: "conversations:update-model",
   MESSAGES_LIST: "messages:list",
   MESSAGES_APPEND: "messages:append",
   MESSAGES_DELETE: "messages:delete",
@@ -98,6 +99,8 @@ export const IPC = {
   OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
   /** Reset Gemma 4 install failure counter (renderer-facing copy of internal handler). */
   OFFLINE_RESET_FAILURES: "offline:reset-failures",
+  /** Push (main → renderer): active offline model changed. */
+  OFFLINE_ACTIVE_MODEL_CHANGED: "offline:active-model-changed",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */

@@ -4,11 +4,12 @@ import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { IPC } from "@/types";
 import { AUTO_MODEL_ID } from "@/lib/models";
+import { resolveActiveModel, resolveConversationModel } from "@/lib/active-model";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModeStore } from "@/stores/mode-store";
 import type { IpcRendererEvent } from "electron";
-import type { ChatErrorRecoveryAction, StructuredChatError, ChatFailureKind, Message } from "@/types";
+import type { ChatErrorRecoveryAction, Conversation, StructuredChatError, ChatFailureKind, Message } from "@/types";
 
 interface TokenPayload {
   requestId: string;
@@ -101,17 +102,29 @@ export function useChat(conversationId: string | null) {
     addIncognitoMessage,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineState, activeOfflineModelId } = useModeStore();
+  const { currentMode, offlineState, activeOfflineModelId, setOfflineManagementOpen, setMode } = useModeStore();
 
-  // Resolved offline model id for chat dispatch.  ONLY the active
-  // installed model id is honoured here — we deliberately do NOT fall
-  // back to the analyze-step recommendation, which is just a "what we
-  // recommend you install" hint and may point at a model the user has
-  // never installed (e.g. Gemma 4 E4B even though they only installed
-  // the lightweight test model).  When this is null, dispatchStream
-  // refuses to start an offline chat and prompts the user to install or
-  // pick a model first.
-  const offlineModelId = activeOfflineModelId;
+  /**
+   * The current conversation row pulled from the React-Query cache.
+   * Used by `dispatchStream` to honour the conversation's stamped
+   * mode/model binding (so flipping the global switcher cannot
+   * retroactively rewrite an existing chat).
+   *
+   * Returns null for the incognito session (no row exists) or before
+   * the conversations cache has loaded — in those cases the resolver
+   * falls back to the live globals.
+   */
+  const getConversationFromCache = useCallback((): Conversation | null => {
+    if (!conversationId) return null;
+    const list = qc.getQueryData<Conversation[]>(["conversations"]);
+    return list?.find((c) => c.id === conversationId) ?? null;
+  }, [conversationId, qc]);
+
+  // Resolved offline model id is now produced by resolveActiveModel /
+  // resolveConversationModel inside dispatchStream — see src/lib/active-model.ts.
+  // Keeping a thin alias so the existing stop-stream branch (which only
+  // needs to know whether the *next* send would be offline) still has a
+  // straight boolean to read.
 
   const activeRequestId = useRef<string | null>(null);
   /**
@@ -341,29 +354,61 @@ export function useChat(conversationId: string | null) {
       setLastStreamError(null);
       setRoutingInfo(null);
 
-      if (shouldUseOfflineBackend(currentMode, offlineState)) {
-        // ── Offline / Auto-with-offline path: local llama.cpp runtime ──────
+      // Resolve the target model through the central resolver.  When a
+      // conversation is bound (modelId stamped) the resolver honours the
+      // binding; otherwise it falls back to live globals.  The resolver
+      // is the only place that knows the per-mode rules — every UI
+      // surface and the dispatcher all read from the same function so
+      // they can never disagree.
+      const conversation = getConversationFromCache();
+      const globals = {
+        currentMode,
+        offlineState,
+        activeOfflineModelId,
+        selectedOnlineModel: modelId,
+      };
+      const resolved = conversation
+        ? resolveConversationModel(conversation, globals)
+        : resolveActiveModel(globals);
+
+      if (resolved.kind === "needs-setup") {
+        // Offline mode requested but nothing is installed yet — route
+        // the user to the setup flow rather than attempting to send.
+        // Switching mode also fires the AppShell `needsOfflineSetup`
+        // branch, which renders OfflineSetupFlow in place of the chat
+        // window without losing the user's selected conversation.
+        setMode("offline");
+        const msg =
+          "Offline mode is selected but no offline model is installed. Set one up to continue.";
+        setLastStreamError({ message: msg, actions: ["retry"] });
+        toast.error(msg, { duration: 5000 });
+        setStreamState("failed");
+        activeRequestId.current = null;
+        setStreaming(false);
+        return;
+      }
+
+      if (resolved.kind === "no-offline-model-installed") {
+        // Degenerate state: state==='installed' but no usable model id.
+        // Open the management modal so the user can install or pick one.
+        setOfflineManagementOpen(true);
+        const msg =
+          "No offline model is currently active. Pick or install one in Offline Models to continue.";
+        setLastStreamError({ message: msg, actions: ["retry"] });
+        toast.error(msg, { duration: 5000 });
+        setStreamState("failed");
+        activeRequestId.current = null;
+        setStreaming(false);
+        return;
+      }
+
+      if (resolved.kind === "offline") {
+        // ── Offline path: local llama.cpp runtime ──────────────────────
         // No API key required; the runtime manager handles the rest.
-        if (!offlineModelId) {
-          // No installed/active offline model — refuse to dispatch
-          // rather than silently sending a wrong (e.g. recommended-but-
-          // not-installed) model id that the runtime would reject.
-          const msg =
-            "No offline model is installed yet. Open Offline Models to install one before chatting.";
-          toast.error(msg, { duration: 5000 });
-          setLastStreamError({
-            message: msg,
-            actions: ["retry"],
-          });
-          setStreamState("failed");
-          activeRequestId.current = null;
-          setStreaming(false);
-          return;
-        }
         setStreamState("streaming");
         ipc.sendOfflineChatStream({
           requestId,
-          modelId: offlineModelId,
+          modelId: resolved.modelId,
           messages: messages as Array<{ role: "user" | "assistant" | "system"; content: string }>,
         });
         return;
@@ -380,7 +425,7 @@ export function useChat(conversationId: string | null) {
       }
       window.ghchat.send(IPC.OR_CHAT_STREAM, {
         requestId,
-        model: modelId,
+        model: resolved.modelId,
         messages,
         apiKey,
         webSearch: advancedParams.webSearch,
@@ -389,7 +434,8 @@ export function useChat(conversationId: string | null) {
       });
       setStreamState("streaming");
     },
-    [currentMode, offlineState, offlineModelId, setStreaming, setStreamState, setLastStreamError, setRoutingInfo, advancedParams],
+    [currentMode, offlineState, activeOfflineModelId, getConversationFromCache, setStreaming,
+     setStreamState, setLastStreamError, setRoutingInfo, advancedParams, setMode, setOfflineManagementOpen],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
@@ -443,6 +489,39 @@ export function useChat(conversationId: string | null) {
               console.error("[useChat] auto-rename failed:", err);
             });
           }
+
+          // Stamp the resolved mode/model onto the conversation row so
+          // future sends keep talking to the same model regardless of
+          // what the global switcher does.  Conversations stay "unbound"
+          // (model_id IS NULL) until this point so the user can flip
+          // mode in the empty state without surprising results.
+          const conversation = getConversationFromCache();
+          if (conversation && !conversation.modelId) {
+            const resolvedForBinding = resolveActiveModel({
+              currentMode,
+              offlineState,
+              activeOfflineModelId,
+              selectedOnlineModel: selectedModel,
+            });
+            if (
+              resolvedForBinding.kind === "online" ||
+              resolvedForBinding.kind === "offline"
+            ) {
+              const modeForBinding =
+                resolvedForBinding.kind === "online" ? "online" : "offline";
+              ipc
+                .updateConversationModel(conversationId, {
+                  mode: modeForBinding,
+                  modelId: resolvedForBinding.modelId,
+                })
+                .then(() => {
+                  qc.invalidateQueries({ queryKey: ["conversations"] });
+                })
+                .catch((err: unknown) => {
+                  console.error("[useChat] conversation stamp failed:", err);
+                });
+            }
+          }
         }
 
         const messages = await ipc.listMessages(conversationId);
@@ -454,8 +533,8 @@ export function useChat(conversationId: string | null) {
         resetStreaming();
       }
     },
-    [conversationId, isStreaming, currentMode, offlineState, selectedModel, dispatchStream, qc, setStreamState,
-     setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage],
+    [conversationId, isStreaming, currentMode, offlineState, activeOfflineModelId, selectedModel, dispatchStream, qc, setStreamState,
+     setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage, getConversationFromCache],
   );
 
   // ── Stop the active stream ─────────────────────────────────────────────────

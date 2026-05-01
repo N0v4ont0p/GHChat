@@ -1,7 +1,7 @@
 import type { IpcMain, IpcMainEvent } from "electron";
 import { dirname } from "path";
 import { existsSync, statSync } from "fs";
-import { shell } from "electron";
+import { shell, BrowserWindow } from "electron";
 import { IPC } from "../../../src/types";
 import type {
   AppMode,
@@ -339,6 +339,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
               lastFailureReasons: null,
               activeModelId: modelId,
             });
+            broadcastActiveModelChanged(modelId);
           } catch (err) {
             console.warn("[offline] failed to reset failure counter:", err);
           }
@@ -756,6 +757,24 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
    *   2. The first installed model (legacy single-model installs)
    *   3. null (no models installed)
    */
+  /**
+   * Broadcast the new active offline model to every open renderer
+   * window so the header/empty-state/sidebar refresh without polling.
+   * Best-effort — any send failures are swallowed.
+   */
+  function broadcastActiveModelChanged(modelId: string | null): void {
+    try {
+      const info = buildActiveModelInfo(modelId);
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.OFFLINE_ACTIVE_MODEL_CHANGED, info);
+        }
+      }
+    } catch (err) {
+      console.warn("[offline] failed to broadcast active-model-changed:", err);
+    }
+  }
+
   function resolveActiveModelId(): string | null {
     if (!isDatabaseReady()) return null;
     try {
@@ -763,7 +782,24 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       const models = listOfflineModels();
       const persisted = installation?.activeModelId ?? null;
       if (persisted && models.some((m) => m.id === persisted)) return persisted;
-      return models[0]?.id ?? null;
+      // Auto-promote: when the persisted active model is missing/null but
+      // installed models exist, promote the first one and persist that
+      // choice so the DB stops drifting and every consumer (renderer +
+      // runtime) sees the same answer on the very next read.  Notify
+      // listeners so any open window updates its label in-place.
+      const promoted = models[0]?.id ?? null;
+      if (promoted && persisted !== promoted) {
+        try {
+          upsertOfflineInstallation({ activeModelId: promoted });
+          broadcastActiveModelChanged(promoted);
+        } catch (err) {
+          console.warn(
+            "[offline] auto-promote of active_model_id failed (read still returns the promoted id):",
+            err,
+          );
+        }
+      }
+      return promoted;
     } catch {
       return null;
     }
@@ -914,6 +950,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             gemma4FailureCount: 0,
             lastFailureReasons: null,
           });
+          broadcastActiveModelChanged(modelId);
         }
         return { ok: true };
       } catch (err) {
@@ -944,6 +981,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             const remaining = listOfflineModels();
             const nextActive = remaining[0]?.id ?? null;
             upsertOfflineInstallation({ activeModelId: nextActive });
+            broadcastActiveModelChanged(nextActive);
           }
 
           // If no models remain, transition the global state back so the
@@ -995,6 +1033,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       }
       upsertOfflineInstallation({ activeModelId: modelId });
+      broadcastActiveModelChanged(modelId);
       return buildActiveModelInfo(modelId);
     },
   );

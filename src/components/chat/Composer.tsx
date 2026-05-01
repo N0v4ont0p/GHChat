@@ -12,6 +12,14 @@ interface Props {
   onSend: (content: string) => void;
   onStop: () => void;
   isStreaming: boolean;
+  /**
+   * When true, the composer is fully disabled and shows a hint placeholder.
+   * Used by the missing-model recovery surface in ChatWindow to prevent
+   * sends while the conversation's bound model is unavailable.
+   */
+  disabled?: boolean;
+  /** Optional placeholder override used when `disabled` is true. */
+  disabledPlaceholder?: string;
 }
 
 const MAX_HEIGHT = 180; // ~7 lines
@@ -19,7 +27,7 @@ const CHAR_WARN_THRESHOLD = 1800;
 const CHAR_MAX = 4000;
 const DEFAULT_MAX_TOKENS = 2048;
 
-export function Composer({ onSend, onStop, isStreaming }: Props) {
+export function Composer({ onSend, onStop, isStreaming, disabled = false, disabledPlaceholder }: Props) {
   const { draft, setDraft, incognitoMode } = useChatStore();
   const { selectedModel, advancedParams, setAdvancedParams } = useSettingsStore();
   const { data: models = [] } = useModels();
@@ -63,28 +71,30 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
 
   const handleSend = useCallback(() => {
     const text = draft.trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || disabled) return;
     setDraft("");
     onSend(text);
     requestAnimationFrame(() => ref.current?.focus());
-  }, [draft, isStreaming, setDraft, onSend]);
+  }, [draft, isStreaming, disabled, setDraft, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === "Enter" && !e.shiftKey && !isStreaming) {
+      if (e.key === "Enter" && !e.shiftKey && !isStreaming && !disabled) {
         e.preventDefault();
         handleSend();
       }
     },
-    [handleSend, isStreaming],
+    [handleSend, isStreaming, disabled],
   );
 
   const charCount = draft.length;
   const overWarn = charCount >= CHAR_WARN_THRESHOLD;
   const overMax = charCount >= CHAR_MAX;
-  const canSend = draft.trim().length > 0 && !isStreaming && !overMax;
+  const canSend = draft.trim().length > 0 && !isStreaming && !overMax && !disabled;
 
-  const placeholder = incognitoMode
+  const placeholder = disabled
+    ? (disabledPlaceholder ?? "Resolve the issue above to continue chatting…")
+    : incognitoMode
     ? (isStreaming ? "Draft next message…" : "Incognito chat — messages not saved…")
     : (isStreaming ? "Draft next message…" : "Message GHChat…");
 
@@ -177,7 +187,8 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40"
+          disabled={disabled}
+          className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40 disabled:cursor-not-allowed"
           rows={1}
           style={{ maxHeight: MAX_HEIGHT }}
         />
