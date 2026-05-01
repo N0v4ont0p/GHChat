@@ -331,6 +331,28 @@ export function useChat(conversationId: string | null) {
       },
     );
 
+    // Coarse offline lifecycle phases — emitted by the main process so the
+    // UI can show "starting runtime" / "loading model" / "processing prompt"
+    // / "generating" instead of a generic "streaming" label that hides slow
+    // on-device boot.  Late events for cancelled or stale requests are
+    // dropped so the indicator doesn't flicker after the user stops.
+    const offOfflinePhase = window.ghchat.on(
+      IPC.OFFLINE_CHAT_PHASE,
+      (_e: IpcRendererEvent, payload: unknown) => {
+        const p = payload as {
+          requestId: string;
+          phase:
+            | "runtime-starting"
+            | "loading-model"
+            | "processing-prompt"
+            | "generating";
+        };
+        if (cancelledRequestIds.current.has(p.requestId)) return;
+        if (p.requestId !== activeRequestId.current) return;
+        setStreamState(p.phase);
+      },
+    );
+
     return () => {
       offToken();
       offRouting();
@@ -339,6 +361,7 @@ export function useChat(conversationId: string | null) {
       offOfflineToken();
       offOfflineEnd();
       offOfflineError();
+      offOfflinePhase();
     };
   }, [appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState]);
 

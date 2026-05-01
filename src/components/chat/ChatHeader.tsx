@@ -1,4 +1,4 @@
-import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye, Cpu } from "lucide-react";
+import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye, Cpu, CircleDot, CircleSlash } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
+import { useConversations } from "@/hooks/useConversations";
+import { useOfflineState } from "@/hooks/useOfflineState";
 import type { ModelVerificationStatus, ModelPreset } from "@/types";
 const CATEGORY_COLORS: Record<string, string> = {
   auto: "bg-cyan-500/15 text-cyan-400",
@@ -85,11 +87,24 @@ function CapabilityBadges({ preset }: { preset: ModelPreset | undefined }) {
 
 export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
-  const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode } = useChatStore();
+  const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode, selectedConversationId } = useChatStore();
   const { data: models = [] } = useModels();
+  const { data: conversations = [] } = useConversations();
   const { currentMode, activeOfflineModelLabel, setOfflineManagementOpen } = useModeStore();
+  // Offline-state snapshot for the runtime/readiness pill.  Reads are
+  // cheap (cached + push-invalidated) so it's safe to subscribe even
+  // when offline mode isn't active — the pill is only rendered in
+  // offline mode anyway.
+  const { data: offlineSnapshot } = useOfflineState();
 
   const isOffline = currentMode === "offline";
+
+  // Title for the active conversation — shown as the leftmost element so
+  // the user always knows which thread they're in.  Falls back gracefully
+  // when no conversation is selected (which the empty state already
+  // handles upstream, but render-safe just in case).
+  const activeConversation = conversations.find((c) => c.id === selectedConversationId);
+  const conversationTitle = activeConversation?.title?.trim() || "New chat";
 
   // In offline mode show the *active installed* model only.  The
   // analyze-step recommendation is intentionally NOT used as a fallback
@@ -115,14 +130,30 @@ export function ChatHeader() {
     <TooltipProvider delayDuration={400}>
       <div
         className={cn(
-          "flex h-12 shrink-0 items-center justify-between border-b px-4 backdrop-blur-sm transition-colors",
+          "flex h-12 shrink-0 items-center justify-between border-b px-4 backdrop-blur-sm transition-colors gap-3",
           incognitoMode
             ? "border-amber-500/30 bg-amber-950/20"
             : "border-border/40 bg-card/20",
         )}
       >
-        {/* Model indicator */}
-        <div className="flex items-center gap-2">
+        {/* Conversation title (always visible) — single line, truncated so
+            long titles don't push the model selector off-screen. */}
+        <div className="min-w-0 flex-1 flex items-center">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <h1
+                className="truncate text-sm font-semibold text-foreground/90 select-text"
+                title={conversationTitle}
+              >
+                {conversationTitle}
+              </h1>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{conversationTitle}</TooltipContent>
+          </Tooltip>
+        </div>
+
+        {/* Mode badge + active model selector + readiness indicator */}
+        <div className="flex items-center gap-2 shrink-0">
           {incognitoMode && (
             <span className="flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
               <EyeOff className="h-2.5 w-2.5" />
@@ -141,6 +172,37 @@ export function ChatHeader() {
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Manage Offline Mode</TooltipContent>
+            </Tooltip>
+          )}
+          {/* Runtime / readiness pill — offline mode only.  Reflects the
+              actual llama.cpp subprocess state from the main process so
+              the user sees an honest "running" / "idle" indicator rather
+              than guessing from the chat state. */}
+          {isOffline && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setOfflineManagementOpen(true)}
+                  className={cn(
+                    "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors",
+                    offlineSnapshot?.runtimeRunning
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                      : "border-border/40 bg-secondary/40 text-muted-foreground/70 hover:text-foreground",
+                  )}
+                >
+                  {offlineSnapshot?.runtimeRunning ? (
+                    <CircleDot className="h-2.5 w-2.5" />
+                  ) : (
+                    <CircleSlash className="h-2.5 w-2.5" />
+                  )}
+                  {offlineSnapshot?.runtimeRunning ? "Runtime running" : "Runtime idle"}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[260px]">
+                {offlineSnapshot?.runtimeRunning
+                  ? "llama.cpp is running. The first message after idle starts it; it stays warm between messages."
+                  : "llama.cpp is not running. The next message will start it — slow models may take a few seconds to boot."}
+              </TooltipContent>
             </Tooltip>
           )}
           <Tooltip>

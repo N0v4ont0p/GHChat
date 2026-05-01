@@ -498,14 +498,51 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       };
 
+      // Coarse lifecycle hook — gated by `cancelledRequests` so a user-cancel
+      // mid-boot doesn't leak a stale "loading model" label after the END
+      // event has already fired.  Phase events are advisory; the renderer
+      // is responsible for ignoring late events for a request it cancelled.
+      let firstTokenSeen = false;
+      const emitPhase = (
+        phase:
+          | "runtime-starting"
+          | "loading-model"
+          | "processing-prompt"
+          | "generating",
+      ) => {
+        if (cancelledRequests.has(requestId)) return;
+        send(IPC.OFFLINE_CHAT_PHASE, { requestId, phase });
+      };
+
       // Resolve the user's runtime knobs once per request.
       const settings = resolveOfflineSettings();
+
+      // Decide whether the upcoming start() is a cold spawn (label
+      // "starting runtime") or a warm request against an already-running
+      // server.  When the runtime is up but on a different model, label
+      // "loading model" instead so the user knows the wait is real.
+      const sameModelRunning =
+        runtimeManager.isRunning() &&
+        runtimeManager.getCurrentModelId() === modelId;
+      if (!runtimeManager.isRunning()) {
+        emitPhase("runtime-starting");
+      } else if (!sameModelRunning) {
+        emitPhase("loading-model");
+      } else {
+        emitPhase("processing-prompt");
+      }
 
       try {
         await runtimeManager.streamChat(
           modelId,
           messages,
           (token) => {
+            // First token marks the transition to "generating".  Emit
+            // exactly once per request so the renderer doesn't churn.
+            if (!firstTokenSeen) {
+              firstTokenSeen = true;
+              emitPhase("generating");
+            }
             // Drop tokens for cancelled requests so the renderer never
             // sees post-stop content even if llama.cpp emits a few more
             // batches before the abort propagates.
@@ -522,6 +559,11 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
               temperature: settings.temperature,
               topP: settings.topP,
               maxTokens: settings.maxTokens,
+            },
+            // After the runtime is healthy and we've POSTed the request
+            // body, we're waiting on the model to ingest the prompt.
+            onPromptSent: () => {
+              if (!firstTokenSeen) emitPhase("processing-prompt");
             },
           },
         );

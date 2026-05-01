@@ -69,6 +69,15 @@ export const IPC = {
   /** Push (main → renderer): stream error. Payload: { requestId, error } */
   OFFLINE_CHAT_ERROR: "offline:chat:error",
   /**
+   * Push (main → renderer): coarse lifecycle phase for the offline stream.
+   * Lets the UI render honest progress through "starting runtime", "loading
+   * model", "processing prompt", "generating response" instead of a generic
+   * "streaming" spinner that hides slow on-device boot.
+   * Payload: { requestId, phase: "runtime-starting" | "loading-model" |
+   *   "processing-prompt" | "generating" }
+   */
+  OFFLINE_CHAT_PHASE: "offline:chat:phase",
+  /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
    */

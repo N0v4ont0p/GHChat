@@ -460,7 +460,14 @@ export type StreamLifecycleState =
   | "stopping"
   | "completed"
   | "fallback-switching"
-  | "failed";
+  | "failed"
+  // Offline-specific lifecycle phases — shown by StreamingIndicator so the
+  // user can see real progress through llama.cpp boot rather than a generic
+  // "streaming" spinner that masks slow on-device load times.
+  | "runtime-starting"
+  | "loading-model"
+  | "processing-prompt"
+  | "generating";
 
 export interface ProviderHealthResult {
   ok: boolean;

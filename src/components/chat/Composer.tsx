@@ -1,12 +1,15 @@
 import { useRef, useEffect, useCallback, useState } from "react";
-import { Send, Square, Globe, Brain, ChevronDown, ChevronUp } from "lucide-react";
+import { Send, Square, Globe, Brain, ChevronDown, ChevronUp, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useChatStore } from "@/stores/chat-store";
 import { getPreset } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
+import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface Props {
   onSend: (content: string) => void;
@@ -28,18 +31,55 @@ const CHAR_MAX = 4000;
 const DEFAULT_MAX_TOKENS = 2048;
 
 export function Composer({ onSend, onStop, isStreaming, disabled = false, disabledPlaceholder }: Props) {
-  const { draft, setDraft, incognitoMode } = useChatStore();
+  const { draft, setDraft, incognitoMode, streamState } = useChatStore();
   const { selectedModel, advancedParams, setAdvancedParams } = useSettingsStore();
+  const { currentMode, activeOfflineModelLabel, offlineState } = useModeStore();
   const { data: models = [] } = useModels();
   const ref = useRef<HTMLTextAreaElement>(null);
   const hadFocusBeforeStreamRef = useRef(false);
   const [showMaxTokens, setShowMaxTokens] = useState(false);
+  // After the user clicks Stop, we wait this long for the graceful unwind
+  // before exposing a "Force stop runtime" affordance.  Set just below the
+  // IPC-side cancel watchdog (offline_settings.cancel_timeout_ms, default
+  // 1500 ms — see electron/main/ipc/offline.ts) so the button appears for
+  // the user a moment before the watchdog itself would have force-killed
+  // the runtime.  Hardcoded rather than read from settings because the
+  // composer doesn't have a reactive subscription to offline_settings.
+  const FORCE_STOP_REVEAL_MS = 1200;
+  const [forceStopAvailable, setForceStopAvailable] = useState(false);
 
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const cap = preset?.capabilities;
   const hasWebSearch = Boolean(cap?.webSearch);
   const hasReasoning = Boolean(cap?.reasoningMode ?? cap?.reasoning ?? cap?.specialReasoning);
+
+  // True when the next message will be routed to the offline runtime.
+  // Mirrors the routing rule in shouldUseOfflineBackend() in useChat.ts.
+  const willUseOffline =
+    currentMode === "offline" ||
+    (currentMode === "auto" && offlineState === "installed");
+
+  // Reveal the force-stop button only after a graceful stop has lingered
+  // long enough that the user might reasonably wonder if the app is stuck.
+  useEffect(() => {
+    if (streamState !== "stopping" || !willUseOffline) {
+      setForceStopAvailable(false);
+      return;
+    }
+    const t = setTimeout(() => setForceStopAvailable(true), FORCE_STOP_REVEAL_MS);
+    return () => clearTimeout(t);
+  }, [streamState, willUseOffline]);
+
+  const handleForceStop = useCallback(async () => {
+    try {
+      await ipc.forceStopOfflineRuntime();
+      toast.success("Offline runtime force-stopped.");
+    } catch (err) {
+      console.error("[Composer] force-stop runtime failed:", err);
+      toast.error("Failed to force-stop the offline runtime.");
+    }
+  }, []);
 
   // Auto-resize textarea
   const resize = useCallback(() => {
@@ -92,11 +132,29 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
   const overMax = charCount >= CHAR_MAX;
   const canSend = draft.trim().length > 0 && !isStreaming && !overMax && !disabled;
 
+  // Mode-aware placeholder so the user always knows which backend will
+  // handle the next message.  In auto mode the live backend is whichever
+  // offline+installed/online combination is currently in effect.
+  const offlineLabel = activeOfflineModelLabel ?? "offline model";
+  const composerModelHint = willUseOffline
+    ? `${offlineLabel} (offline)`
+    : currentMode === "auto"
+      ? `Auto · ${modelName}`
+      : modelName;
+  const isOfflineUnready =
+    currentMode === "offline" && activeOfflineModelLabel === null;
+  const baseModePlaceholder = willUseOffline
+    ? isOfflineUnready
+      ? "Choose an offline model to start chatting…"
+      : `Message ${offlineLabel} (offline)…`
+    : currentMode === "auto"
+      ? `Auto routing · message ${modelName}…`
+      : `Message ${modelName}…`;
   const placeholder = disabled
     ? (disabledPlaceholder ?? "Resolve the issue above to continue chatting…")
     : incognitoMode
     ? (isStreaming ? "Draft next message…" : "Incognito chat — messages not saved…")
-    : (isStreaming ? "Draft next message…" : "Message GHChat…");
+    : (isStreaming ? "Draft next message…" : baseModePlaceholder);
 
   return (
     <div className="shrink-0 border-t border-border/30 bg-card/10 px-4 py-3">
@@ -194,16 +252,34 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
         />
 
         {isStreaming ? (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95"
-            onClick={onStop}
-            onMouseDown={(e) => e.preventDefault()}
-            title="Stop generating"
-          >
-            <Square className="h-3.5 w-3.5 fill-current" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {/* Force-stop runtime: revealed only after a graceful stop has
+                been pending too long.  Hard-kills llama-server so the user
+                isn't left staring at "Stopping…" on a slow on-device model. */}
+            {forceStopAvailable && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1 px-2 text-[10px] font-medium text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 border border-amber-500/30"
+                onClick={() => void handleForceStop()}
+                onMouseDown={(e) => e.preventDefault()}
+                title="Force-kill the offline runtime if it isn't unwinding"
+              >
+                <Zap className="h-3 w-3" />
+                Force stop
+              </Button>
+            )}
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95"
+              onClick={onStop}
+              onMouseDown={(e) => e.preventDefault()}
+              title="Stop generating"
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+            </Button>
+          </div>
         ) : (
           <Button
             size="icon"
@@ -223,7 +299,7 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
 
       <div className="mt-1.5 flex items-center justify-between px-1">
         <p className="text-[10px] text-muted-foreground/50">
-          {modelName}
+          {composerModelHint}
           {!isStreaming && (
             <span className="ml-2 opacity-60">↵ send · ⇧↵ newline</span>
           )}

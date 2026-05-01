@@ -1,7 +1,13 @@
 import { useChatStore } from "@/stores/chat-store";
+import { useModeStore } from "@/stores/mode-store";
 
 export function StreamingIndicator() {
   const { routingInfo, streamState } = useChatStore();
+  const activeOfflineModelLabel = useModeStore((s) => s.activeOfflineModelLabel);
+  // Map every lifecycle state to a friendly label.  Offline-specific phases
+  // (runtime-starting / loading-model / processing-prompt / generating) make
+  // slow on-device boot legible — without them, "streaming" lingers for many
+  // seconds while llama.cpp spawns and loads the model file from disk.
   const label =
     streamState === "validating"
       ? "Validating connection…"
@@ -11,7 +17,15 @@ export function StreamingIndicator() {
           ? "Switching to fallback model…"
           : streamState === "stopping"
             ? "Stopping…"
-            : "Streaming response…";
+            : streamState === "runtime-starting"
+              ? "Starting offline runtime…"
+              : streamState === "loading-model"
+                ? `Loading ${activeOfflineModelLabel ?? "model"}…`
+                : streamState === "processing-prompt"
+                  ? "Processing your prompt…"
+                  : streamState === "generating"
+                    ? "Generating response…"
+                    : "Streaming response…";
 
   return (
     <div className="flex items-center gap-2 px-6 py-4">
