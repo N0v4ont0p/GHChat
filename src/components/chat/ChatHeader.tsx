@@ -162,6 +162,14 @@ export function ChatHeader() {
   const { data: offlineSnapshot } = useOfflineState();
 
   const isOffline = currentMode === "offline";
+  // True when Auto mode is currently routing to the offline runtime —
+  // mirrors the rule in shouldUseOfflineBackend()/Composer.willUseOffline.
+  const isAutoOnLocal =
+    currentMode === "auto" && Boolean(offlineSnapshot?.activeModel);
+  // Whether the *active backend* the next message will hit is an offline
+  // model, regardless of the high-level mode.  Drives the top-bar model
+  // selector + capability badges so the user isn't misled in Auto mode.
+  const showingLocal = isOffline || isAutoOnLocal;
 
   // Title for the active conversation — shown as the leftmost element so
   // the user always knows which thread they're in.  Falls back gracefully
@@ -182,9 +190,9 @@ export function ChatHeader() {
   const hasActiveOffline = activeOfflineModelLabel !== null;
 
   const preset = getPreset(models, selectedModel);
-  const displayName = isOffline ? offlineModelLabel : (preset?.name ?? selectedModel.split("/").pop() ?? selectedModel);
-  const vendor = isOffline ? "Local" : preset?.vendor;
-  const category = isOffline ? "general" : (preset?.category ?? "general");
+  const displayName = showingLocal ? offlineModelLabel : (preset?.name ?? selectedModel.split("/").pop() ?? selectedModel);
+  const vendor = showingLocal ? "Local" : preset?.vendor;
+  const category = showingLocal ? "general" : (preset?.category ?? "general");
   const verifiedStatus = preset?.verifiedStatus ?? "unknown";
   const healthTags = preset?.healthTags ?? [];
   const categoryMeta = CATEGORY_META[category] ?? CATEGORY_META.general;
@@ -368,10 +376,12 @@ export function ChatHeader() {
             <TooltipTrigger asChild>
               <button
                 onClick={() => {
-                  if (isOffline) {
-                    // Always allow opening the management modal in
-                    // offline mode — both to switch active model and
-                    // to install one when no active model exists yet.
+                  if (showingLocal) {
+                    // Always allow opening the management modal when the
+                    // active backend is local (offline mode, or auto mode
+                    // currently routing to an installed offline model) —
+                    // both to switch active model and to install one when
+                    // no active model exists yet.
                     setOfflineManagementOpen(true);
                   } else {
                     setSettingsOpen(true);
@@ -385,7 +395,7 @@ export function ChatHeader() {
               >
                 {isStreaming ? (
                   <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-primary animate-glow-pulse" />
-                ) : isOffline ? (
+                ) : showingLocal ? (
                   <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-emerald-400/80" />
                 ) : (
                   <HealthIndicator status={verifiedStatus} modelId={selectedModel} />
@@ -396,18 +406,22 @@ export function ChatHeader() {
                     {vendor}
                   </span>
                 )}
-                {!isOffline && (
+                {!showingLocal && (
                   <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight", categoryColorClass)}>
                     {categoryMeta.emoji} {categoryMeta.label}
                   </span>
                 )}
-                {!isStreaming && !isOffline && <CapabilityBadges preset={preset} />}
+                {!isStreaming && !showingLocal && <CapabilityBadges preset={preset} />}
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="space-y-0.5 max-w-[240px]">
-              {isOffline ? (
+              {showingLocal ? (
                 <>
-                  <p>Local inference — no internet required</p>
+                  <p>
+                    {isAutoOnLocal
+                      ? "Auto mode — routing to local model"
+                      : "Local inference — no internet required"}
+                  </p>
                   <p className="text-[11px] text-muted-foreground">
                     Running on-device via llama.cpp
                   </p>

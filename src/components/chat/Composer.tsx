@@ -50,6 +50,7 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
 
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
+  const vendor = preset?.vendor;
   const cap = preset?.capabilities;
   const hasWebSearch = Boolean(cap?.webSearch);
   const hasReasoning = Boolean(cap?.reasoningMode ?? cap?.reasoning ?? cap?.specialReasoning);
@@ -136,20 +137,25 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
   // handle the next message.  In auto mode the live backend is whichever
   // offline+installed/online combination is currently in effect.
   const offlineLabel = activeOfflineModelLabel ?? "offline model";
+  const onlineModelHint = vendor ? `${modelName} · ${vendor}` : modelName;
   const composerModelHint = willUseOffline
-    ? `${offlineLabel} (offline)`
+    ? currentMode === "auto"
+      ? `Auto → ${offlineLabel} (offline)`
+      : `${offlineLabel} (offline)`
     : currentMode === "auto"
-      ? `Auto · ${modelName}`
-      : modelName;
+      ? `Auto → ${onlineModelHint} (online)`
+      : onlineModelHint;
   const isOfflineUnready =
     currentMode === "offline" && activeOfflineModelLabel === null;
   const baseModePlaceholder = willUseOffline
     ? isOfflineUnready
       ? "Choose an offline model to start chatting…"
-      : `Message ${offlineLabel} (offline)…`
+      : currentMode === "auto"
+        ? `Auto routing · message ${offlineLabel} (offline)…`
+        : `Message ${offlineLabel} (offline)…`
     : currentMode === "auto"
-      ? `Auto routing · message ${modelName}…`
-      : `Message ${modelName}…`;
+      ? `Auto routing · message ${onlineModelHint} (online)…`
+      : `Message ${onlineModelHint}…`;
   const placeholder = disabled
     ? (disabledPlaceholder ?? "Resolve the issue above to continue chatting…")
     : incognitoMode
