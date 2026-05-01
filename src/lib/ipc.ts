@@ -51,6 +51,11 @@ export const ipc = {
     partial: { mode?: AppMode; modelId?: string | null },
   ) => api().invoke<void>(IPC.CONVERSATIONS_UPDATE_MODEL, id, partial),
 
+  duplicateConversation: (
+    id: string,
+    binding?: { mode?: AppMode; modelId?: string | null },
+  ) => api().invoke<Conversation>(IPC.CONVERSATIONS_DUPLICATE, id, binding),
+
   // Messages
   listMessages: (conversationId: string) =>
     api().invoke<Message[]>(IPC.MESSAGES_LIST, conversationId),
@@ -194,4 +199,11 @@ export const ipc = {
    */
   resetOfflineFailures: () =>
     api().invoke<OfflineReadiness>(IPC.OFFLINE_RESET_FAILURES),
+
+  /** Stop the offline runtime subprocess gracefully. */
+  stopOfflineRuntime: () =>
+    api().invoke<{ ok: boolean }>(IPC.OFFLINE_RUNTIME_STOP),
+  /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
+  forceStopOfflineRuntime: () =>
+    api().invoke<{ ok: boolean }>(IPC.OFFLINE_RUNTIME_FORCE_STOP),
 };

@@ -5,6 +5,7 @@ import {
   renameConversation,
   deleteConversation,
   updateConversationModel,
+  duplicateConversation,
   isDatabaseReady,
   getDbInitError,
 } from "../services/database";
@@ -95,6 +96,23 @@ export function registerConversationHandlers(ipcMain: IpcMain): void {
         updateConversationModel(id, partial);
       } catch (err) {
         console.error("[ipc:conversations:update-model] failed:", err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.CONVERSATIONS_DUPLICATE,
+    (
+      _e,
+      id: string,
+      binding?: { mode?: AppMode; modelId?: string | null },
+    ) => {
+      try {
+        requireDb();
+        return duplicateConversation(id, binding);
+      } catch (err) {
+        console.error("[ipc:conversations:duplicate] failed:", err);
         throw err;
       }
     },

@@ -47,6 +47,28 @@ export function useRenameConversation() {
   });
 }
 
+export function useDuplicateConversation() {
+  const qc = useQueryClient();
+  const setSelected = useChatStore((s) => s.setSelectedConversationId);
+  return useMutation({
+    mutationFn: ({
+      id,
+      binding,
+    }: {
+      id: string;
+      binding?: { mode?: import("@/types").AppMode; modelId?: string | null };
+    }) => ipc.duplicateConversation(id, binding),
+    onSuccess: (conv) => {
+      qc.invalidateQueries({ queryKey: KEY });
+      setSelected(conv.id);
+    },
+    onError: (err) => {
+      console.error("[useDuplicateConversation] failed:", err);
+      toast.error("Failed to duplicate conversation.");
+    },
+  });
+}
+
 export function useDeleteConversation() {
   const qc = useQueryClient();
   const { selectedConversationId, setSelectedConversationId } = useChatStore();

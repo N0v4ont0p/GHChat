@@ -796,6 +796,60 @@ export function updateConversationModel(
   flushDb();
 }
 
+/**
+ * Duplicate a conversation — create a new conversation with the same title
+ * (appended with " (copy)") and copy all its messages into the new row.
+ * The new conversation can optionally receive a different mode/model binding;
+ * when omitted it inherits the source conversation's binding.
+ *
+ * Used by the missing-model recovery surface so the user can fork a stuck
+ * offline conversation into one bound to a currently-available model.
+ */
+export function duplicateConversation(
+  sourceId: string,
+  binding?: { mode?: Conversation["mode"]; modelId?: string | null },
+): Conversation {
+  const db = getDb();
+  const src = db
+    .select()
+    .from(conversationsTable)
+    .where(eq(conversationsTable.id, sourceId))
+    .get();
+  if (!src) throw new Error(`Conversation not found: ${sourceId}`);
+
+  const messages = db
+    .select()
+    .from(messagesTable)
+    .where(eq(messagesTable.conversationId, sourceId))
+    .orderBy(messagesTable.createdAt)
+    .all();
+
+  const now = Date.now();
+  const newId = randomUUID();
+  const newTitle = `${src.title} (copy)`;
+  const mode = binding?.mode ?? ((src.mode ?? "online") as Conversation["mode"]);
+  const modelId = binding?.modelId !== undefined ? binding.modelId : (src.modelId ?? null);
+
+  db.insert(conversationsTable)
+    .values({ id: newId, title: newTitle, createdAt: now, updatedAt: now, mode, modelId })
+    .run();
+
+  for (const m of messages) {
+    db.insert(messagesTable)
+      .values({
+        id: randomUUID(),
+        conversationId: newId,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+      })
+      .run();
+  }
+
+  flushDb();
+  return { id: newId, title: newTitle, createdAt: now, updatedAt: now, mode, modelId };
+}
+
 export function renameConversation(id: string, title: string): void {
   getDb()
     .update(conversationsTable)

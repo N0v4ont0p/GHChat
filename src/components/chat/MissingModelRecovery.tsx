@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { AlertTriangle, Download, RefreshCw, Wifi } from "lucide-react";
+import { AlertTriangle, Copy, Download, RefreshCw, Settings2, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ipc } from "@/lib/ipc";
 import { useModeStore } from "@/stores/mode-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useInvalidateOfflineState } from "@/hooks/useOfflineState";
+import { useDuplicateConversation } from "@/hooks/useConversations";
 
 interface MissingModelRecoveryProps {
   conversationId: string;
@@ -35,8 +36,9 @@ export function MissingModelRecovery({
 }: MissingModelRecoveryProps) {
   const qc = useQueryClient();
   const invalidateOffline = useInvalidateOfflineState();
-  const { activeOfflineModelId, activeOfflineModelLabel } = useModeStore();
+  const { activeOfflineModelId, activeOfflineModelLabel, setOfflineManagementOpen } = useModeStore();
   const selectedOnlineModel = useSettingsStore((s) => s.selectedModel);
+  const duplicateConversation = useDuplicateConversation();
 
   const [pending, setPending] = useState<
     "install" | "switch-active" | "switch-online" | null
@@ -114,7 +116,17 @@ export function MissingModelRecovery({
     }
   }
 
-  const busy = pending !== null;
+  const busy = pending !== null || duplicateConversation.isPending;
+
+  function onDuplicate() {
+    // Fork the conversation bound to the current active offline model (or
+    // online if no offline model is available).  The user ends up in a new
+    // conversation that is ready to chat immediately.
+    const binding = activeOfflineModelId
+      ? { mode: "offline" as const, modelId: activeOfflineModelId }
+      : { mode: "online" as const, modelId: selectedOnlineModel };
+    duplicateConversation.mutate({ id: conversationId, binding });
+  }
 
   return (
     <div className="mx-3 mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
@@ -166,6 +178,34 @@ export function MissingModelRecovery({
         >
           <Wifi className="mr-1.5 h-3.5 w-3.5" />
           Switch this conversation to Online
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onDuplicate}
+          disabled={busy}
+          title={
+            activeOfflineModelId
+              ? `Fork this conversation bound to ${activeOfflineModelLabel ?? activeOfflineModelId}`
+              : "Fork this conversation in Online mode"
+          }
+        >
+          {duplicateConversation.isPending ? (
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Copy className="mr-1.5 h-3.5 w-3.5" />
+          )}
+          Duplicate with{" "}
+          {activeOfflineModelLabel ?? (activeOfflineModelId ? activeOfflineModelId : "Online")}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setOfflineManagementOpen(true)}
+          disabled={busy}
+        >
+          <Settings2 className="mr-1.5 h-3.5 w-3.5" />
+          Manage offline models
         </Button>
       </div>
     </div>

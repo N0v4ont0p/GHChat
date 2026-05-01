@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { TitleBar } from "./TitleBar";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, SidebarErrorBoundary } from "./Sidebar";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { SettingsModal } from "@/components/settings/SettingsModal";
 import { OfflineSetupFlow } from "@/components/offline/OfflineSetupFlow";
@@ -68,7 +68,9 @@ export function AppShell() {
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
+        <SidebarErrorBoundary>
+          <Sidebar />
+        </SidebarErrorBoundary>
         <main className="flex flex-1 overflow-hidden">
           {needsOfflineSetup ? <OfflineSetupFlow /> : <ChatWindow />}
         </main>

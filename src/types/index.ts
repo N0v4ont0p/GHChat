@@ -671,6 +671,8 @@ export const IPC = {
   CONVERSATIONS_DELETE: "conversations:delete",
   /** Update the mode/model binding of a conversation (recovery flow + first-send stamp). */
   CONVERSATIONS_UPDATE_MODEL: "conversations:update-model",
+  /** Duplicate a conversation (copies all messages) with an optional new mode/model binding. */
+  CONVERSATIONS_DUPLICATE: "conversations:duplicate",
   MESSAGES_LIST: "messages:list",
   MESSAGES_APPEND: "messages:append",
   MESSAGES_DELETE: "messages:delete",
@@ -809,6 +811,10 @@ export const IPC = {
    * Payload: OfflineActiveModelInfo | null
    */
   OFFLINE_ACTIVE_MODEL_CHANGED: "offline:active-model-changed",
+  /** Stop the offline runtime subprocess gracefully. */
+  OFFLINE_RUNTIME_STOP: "offline:runtime:stop",
+  /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
+  OFFLINE_RUNTIME_FORCE_STOP: "offline:runtime:force-stop",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */

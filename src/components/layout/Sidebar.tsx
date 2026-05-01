@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu } from "lucide-react";
+import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu, Globe, WifiOff } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,7 @@ import {
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModeStore } from "@/stores/mode-store";
+import { useOfflineState } from "@/hooks/useOfflineState";
 import type { Conversation } from "@/types";
 
 /** Error keywords that indicate a native module ABI mismatch requiring a rebuild. */
@@ -52,13 +53,15 @@ function ConversationItem({
   conv,
   isSelected,
   onSelect,
-  onRename,
   onDelete,
+  installedOfflineModelIds,
 }: {
   conv: Conversation;
   isSelected: boolean;
   onSelect: () => void;
   onDelete: (e: React.MouseEvent) => void;
+  /** Set of installed offline catalog ids — used to flag missing-model conversations. */
+  installedOfflineModelIds: Set<string>;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [value, setValue] = useState(conv.title);
@@ -75,6 +78,22 @@ function ConversationItem({
     setRenaming(true);
   };
 
+  // Derive a display label for the bound model.
+  const modelLabel = useMemo(() => {
+    if (!conv.modelId) return null;
+    if (conv.mode === "offline") return conv.modelId.replace(/-/g, " ");
+    // For online IDs like "meta-llama/llama-3.1-8b-instruct:free", show the
+    // last path segment without the ":free" tier suffix.
+    const base = conv.modelId.split("/").pop() ?? conv.modelId;
+    return base.replace(/:.*$/, "");
+  }, [conv.mode, conv.modelId]);
+
+  // Is this an offline conversation whose model is no longer installed?
+  const isModelMissing =
+    conv.mode === "offline" &&
+    !!conv.modelId &&
+    !installedOfflineModelIds.has(conv.modelId);
+
   return (
     <motion.div
       key={conv.id}
@@ -83,7 +102,7 @@ function ConversationItem({
       exit={{ opacity: 0, x: -6, height: 0, marginBottom: 0 }}
       transition={{ duration: 0.13 }}
       className={cn(
-        "sidebar-active-item group relative mb-0.5 flex items-center rounded-lg px-2.5 py-2 text-sm cursor-pointer select-none",
+        "sidebar-active-item group relative mb-0.5 flex items-start rounded-lg px-2.5 py-2 text-sm cursor-pointer select-none",
         "hover:bg-secondary/50 transition-colors duration-100",
         isSelected && "bg-secondary/70 text-foreground",
       )}
@@ -104,15 +123,44 @@ function ConversationItem({
         />
       ) : (
         <>
-          <span
-            className={cn(
-              "flex-1 truncate text-xs",
-              isSelected ? "text-foreground" : "text-muted-foreground",
+          <div className="min-w-0 flex-1 pr-12">
+            <div className="flex items-center gap-1.5">
+              {isModelMissing && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex shrink-0">
+                      <AlertTriangle className="h-3 w-3 text-amber-400/80" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-[200px]">
+                    Offline model not installed — click to recover
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              <span
+                className={cn(
+                  "truncate text-xs leading-tight",
+                  isSelected ? "text-foreground" : "text-muted-foreground",
+                  isModelMissing && "text-amber-300/80",
+                )}
+              >
+                {conv.title}
+              </span>
+            </div>
+            {modelLabel && (
+              <div className="mt-0.5 flex items-center gap-1 text-[9px] text-muted-foreground/45 leading-tight truncate">
+                {conv.mode === "offline" ? (
+                  <Cpu className="h-2.5 w-2.5 shrink-0 text-emerald-500/50" />
+                ) : conv.mode === "auto" ? (
+                  <WifiOff className="h-2.5 w-2.5 shrink-0 text-muted-foreground/40" />
+                ) : (
+                  <Globe className="h-2.5 w-2.5 shrink-0 text-primary/40" />
+                )}
+                <span className="truncate">{modelLabel}</span>
+              </div>
             )}
-          >
-            {conv.title}
-          </span>
-          <div className="absolute right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          </div>
+          <div className="absolute right-1.5 top-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -152,6 +200,13 @@ export function Sidebar() {
   const dbInitError = useSettingsStore((s) => s.dbInitError);
   const { currentMode, offlineState, setOfflineManagementOpen } = useModeStore();
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Offline state used to flag conversations whose model is no longer installed.
+  const { data: offlineSnap } = useOfflineState();
+  const installedOfflineModelIds = useMemo<Set<string>>(
+    () => new Set((offlineSnap?.installedModels ?? []).map((m) => m.id)),
+    [offlineSnap],
+  );
 
   const isOfflineInstalled = currentMode === "offline" && offlineState === "installed";
 
@@ -278,6 +333,7 @@ export function Sidebar() {
                       isSelected={selectedConversationId === conv.id}
                       onSelect={() => setSelectedConversationId(conv.id)}
                       onDelete={(e) => { e.stopPropagation(); deleteConversation.mutate(conv.id); }}
+                      installedOfflineModelIds={installedOfflineModelIds}
                     />
                   ))}
                 </div>
@@ -332,5 +388,58 @@ export function Sidebar() {
       </aside>
     </TooltipProvider>
   );
+}
+
+// ── Error boundary wrapper ───────────────────────────────────────────────────
+
+import { Component, type ReactNode, type ErrorInfo } from "react";
+
+interface SidebarErrorBoundaryState {
+  error: Error | null;
+}
+
+/**
+ * Wraps the Sidebar so that any uncaught render error inside it renders a
+ * degraded (but visible) fallback instead of crashing the whole application.
+ * Without this, a JavaScript error inside a conversation item or offline hook
+ * would propagate to the root and blank the entire UI.
+ */
+export class SidebarErrorBoundary extends Component<
+  { children: ReactNode },
+  SidebarErrorBoundaryState
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  override componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[Sidebar] uncaught render error:", error, info);
+  }
+
+  override render() {
+    if (this.state.error) {
+      return (
+        <aside className="flex h-full w-[240px] shrink-0 flex-col border-r border-border/40 bg-card/10 items-center justify-center gap-3 px-4 py-8 text-center">
+          <AlertTriangle className="h-7 w-7 text-amber-400/60" />
+          <p className="text-xs text-amber-400/80 font-medium">Sidebar error</p>
+          <p className="text-[11px] text-muted-foreground/60 leading-relaxed break-all">
+            {this.state.error.message}
+          </p>
+          <button
+            className="mt-2 rounded-lg border border-border/40 px-3 py-1 text-xs text-muted-foreground hover:bg-secondary/50 transition-colors"
+            onClick={() => this.setState({ error: null })}
+          >
+            Retry
+          </button>
+        </aside>
+      );
+    }
+    return this.props.children;
+  }
 }
 

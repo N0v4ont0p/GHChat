@@ -15,6 +15,10 @@ import {
   Activity,
   Layers,
   ArrowLeft,
+  Power,
+  RefreshCw,
+  Zap,
+  Circle,
 } from "lucide-react";
 import {
   Dialog,
@@ -128,9 +132,10 @@ interface InstalledRowProps {
   onActivate: (id: string) => void;
   onReveal: (id: string) => void;
   onRemove: (id: string) => void;
+  onRepair: (id: string) => void;
 }
 
-function InstalledRow({ model, busy, onActivate, onReveal, onRemove }: InstalledRowProps) {
+function InstalledRow({ model, busy, onActivate, onReveal, onRemove, onRepair }: InstalledRowProps) {
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   return (
@@ -219,6 +224,19 @@ function InstalledRow({ model, busy, onActivate, onReveal, onRemove }: Installed
             <FolderOpen className="h-3 w-3" />
             Reveal
           </Button>
+          {(model.health === "missing" || model.health === "incomplete") && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-[11px] gap-1.5 text-amber-400 border-amber-500/30 hover:bg-amber-500/10 hover:text-amber-300"
+              onClick={() => onRepair(model.id)}
+              disabled={busy}
+              title="Re-download and reinstall this model"
+            >
+              <RefreshCw className="h-3 w-3" />
+              Repair
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -362,10 +380,12 @@ export function OfflineManagementModal() {
   const [available, setAvailable] = useState<OfflineCatalogEntrySummary[] | null>(null);
   const [storageBytes, setStorageBytes] = useState<number>(0);
   const [installPath, setInstallPath] = useState<string>("");
+  const [isRuntimeRunning, setIsRuntimeRunning] = useState<boolean>(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [installProgress, setInstallProgress] = useState<OfflineInstallProgress | null>(null);
   const [hwProfile, setHwProfile] = useState<import("@/types").OfflineHardwareProfileSnapshot | null>(null);
 
@@ -385,6 +405,7 @@ export function OfflineManagementModal() {
       setAvailable(catalog);
       setStorageBytes(info.storageBytesUsed);
       setInstallPath(info.installPath);
+      setIsRuntimeRunning(info.isRuntimeRunning);
       setActiveOfflineModel(activeInfo);
       setHwProfile(hw);
     } catch (err: unknown) {
@@ -462,6 +483,40 @@ export function OfflineManagementModal() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleStopRuntime = async (force = false) => {
+    setRuntimeBusy(true);
+    try {
+      if (force) {
+        await ipc.forceStopOfflineRuntime();
+      } else {
+        await ipc.stopOfflineRuntime();
+      }
+      setIsRuntimeRunning(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  };
+
+  const handleRepair = async (id: string) => {
+    setBusyId(id);
+    setInstallProgress({ phase: "preflight", step: "Starting repair…", pct: 0 });
+    try {
+      const res = await ipc.installAdditionalOfflineModel(id);
+      if (!res.ok) {
+        setError(res.error ?? "Repair failed.");
+      } else {
+        await reload();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+      setInstallProgress(null);
     }
   };
 
@@ -583,6 +638,61 @@ export function OfflineManagementModal() {
           {/* ── List view ────────────────────────────────────────────────── */}
           {view === "list" && installed && (
             <>
+              {/* Runtime status row */}
+              <div className={cn(
+                "flex items-center justify-between rounded-xl border px-3.5 py-2.5",
+                isRuntimeRunning
+                  ? "border-emerald-500/30 bg-emerald-500/5"
+                  : "border-border/40 bg-secondary/20",
+              )}>
+                <div className="flex items-center gap-2">
+                  {isRuntimeRunning ? (
+                    <Zap className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  ) : (
+                    <Circle className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                  )}
+                  <div>
+                    <div className="text-[11px] font-medium">
+                      Runtime:{" "}
+                      <span className={isRuntimeRunning ? "text-emerald-400" : "text-muted-foreground/60"}>
+                        {isRuntimeRunning ? "Running" : "Stopped"}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground/50">
+                      {isRuntimeRunning
+                        ? "Inference server is active — streaming is available"
+                        : "Runtime will start automatically on next chat message"}
+                    </div>
+                  </div>
+                </div>
+                {isRuntimeRunning && (
+                  <div className="flex gap-1.5 shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1.5"
+                      onClick={() => void handleStopRuntime(false)}
+                      disabled={runtimeBusy || busyId !== null}
+                      title="Gracefully stop the runtime process"
+                    >
+                      {runtimeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
+                      Stop
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1.5 text-red-400 border-red-500/30 hover:bg-red-500/10 hover:text-red-300"
+                      onClick={() => void handleStopRuntime(true)}
+                      disabled={runtimeBusy || busyId !== null}
+                      title="Force-kill the runtime process immediately"
+                    >
+                      <Zap className="h-3 w-3" />
+                      Force stop
+                    </Button>
+                  </div>
+                )}
+              </div>
+
               {/* Storage summary */}
               <div className="flex items-center justify-between rounded-xl border border-border/40 bg-secondary/20 px-3.5 py-2.5">
                 <div className="flex items-center gap-2 min-w-0">
@@ -686,6 +796,7 @@ export function OfflineManagementModal() {
                       onActivate={handleActivate}
                       onReveal={handleReveal}
                       onRemove={handleRemove}
+                      onRepair={handleRepair}
                     />
                   ))}
                 </div>

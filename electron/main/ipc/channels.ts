@@ -13,6 +13,8 @@ export const IPC = {
   KEYCHAIN_SET: "keychain:set",
   KEYCHAIN_DELETE: "keychain:delete",
   CLEAR_ALL_DATA: "data:clear-all",
+  /** Duplicate a conversation (copies all messages) into a new conversation with an optional new mode/model binding. */
+  CONVERSATIONS_DUPLICATE: "conversations:duplicate",
   /** Returns { ready: boolean; error: string | null } — whether the DB initialized successfully */
   DB_STATUS: "db:status",
   OR_MODELS_LIST: "or:models:list",
@@ -107,6 +109,10 @@ export const IPC = {
   OFFLINE_SETTINGS_UPDATE: "offline:settings-update",
   /** Reset offline-specific settings to defaults. */
   OFFLINE_SETTINGS_RESET: "offline:settings-reset",
+  /** Stop the offline runtime subprocess gracefully. */
+  OFFLINE_RUNTIME_STOP: "offline:runtime:stop",
+  /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
+  OFFLINE_RUNTIME_FORCE_STOP: "offline:runtime:force-stop",
   /**
    * Get the cached HardwareProfile snapshot used by the recommendation
    * engine.  Used by the management UI to render hardware tier and to

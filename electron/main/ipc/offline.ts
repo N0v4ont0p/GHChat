@@ -748,6 +748,32 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     },
   );
 
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_STOP,
+    async (): Promise<{ ok: boolean }> => {
+      try {
+        await runtimeManager.stop();
+        return { ok: true };
+      } catch (err) {
+        console.warn("[offline] runtime stop failed:", err);
+        return { ok: false };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_FORCE_STOP,
+    async (): Promise<{ ok: boolean }> => {
+      try {
+        await runtimeManager.stop({ force: true });
+        return { ok: true };
+      } catch (err) {
+        console.warn("[offline] runtime force-stop failed:", err);
+        return { ok: false };
+      }
+    },
+  );
+
   // ── Offline management ──────────────────────────────────────────────────────
 
   /**
