@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu, Globe, WifiOff } from "lucide-react";
+import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu, Globe, WifiOff, Zap } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,8 @@ import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModeStore } from "@/stores/mode-store";
 import { useOfflineState } from "@/hooks/useOfflineState";
-import type { Conversation } from "@/types";
+import { ipc } from "@/lib/ipc";
+import type { AppMode, Conversation } from "@/types";
 
 /** Error keywords that indicate a native module ABI mismatch requiring a rebuild. */
 const NATIVE_MODULE_ERROR_RE = /NODE_MODULE_VERSION|invalid ELF|napi/i;
@@ -47,6 +48,79 @@ function groupByDate(convs: Conversation[]): Array<{ label: string; items: Conve
   return Object.entries(groups)
     .filter(([, items]) => items.length > 0)
     .map(([label, items]) => ({ label, items }));
+}
+
+// ── Mode switcher ────────────────────────────────────────────────────────────
+//
+// Compact Online / Auto / Offline pill row, surfaced at the top of the
+// sidebar so the user can always see (and change) the active mode while
+// keeping the chat top bar focused on title + model + readiness.
+
+const MODE_CONFIG: Record<AppMode, { label: string; icon: React.ElementType; activeClass: string; tooltip: string }> = {
+  online: {
+    label: "Online",
+    icon: Globe,
+    activeClass: "bg-blue-500/20 text-blue-400",
+    tooltip: "Online — uses OpenRouter free models",
+  },
+  auto: {
+    label: "Auto",
+    icon: Zap,
+    activeClass: "bg-cyan-500/20 text-cyan-400",
+    tooltip: "Auto — uses your installed offline model when available, otherwise online",
+  },
+  offline: {
+    label: "Offline",
+    icon: Cpu,
+    activeClass: "bg-emerald-500/20 text-emerald-400",
+    tooltip: "Offline — runs locally on your device, no internet required",
+  },
+};
+
+function ModeSwitcher() {
+  const { currentMode, setMode, setOfflineState } = useModeStore();
+
+  const handleModeChange = async (mode: AppMode) => {
+    if (mode === currentMode) return;
+    await ipc.setMode(mode);
+    setMode(mode);
+    // Sync offline state from the main process so AppShell routing is
+    // immediately correct (e.g. clicking Offline with no install shows setup).
+    const readiness = await ipc.getOfflineStatus();
+    setOfflineState(readiness.state);
+  };
+
+  return (
+    <div
+      className="flex items-center justify-between rounded-full border border-border/40 bg-secondary/40 p-0.5 gap-0"
+      role="radiogroup"
+      aria-label="Mode"
+    >
+      {(["online", "auto", "offline"] as AppMode[]).map((m) => {
+        const { label, icon: Icon, activeClass, tooltip } = MODE_CONFIG[m];
+        const isActive = currentMode === m;
+        return (
+          <Tooltip key={m}>
+            <TooltipTrigger asChild>
+              <button
+                role="radio"
+                aria-checked={isActive}
+                onClick={() => void handleModeChange(m)}
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium transition-all select-none",
+                  isActive ? activeClass : "text-muted-foreground/55 hover:text-muted-foreground",
+                )}
+              >
+                <Icon className="h-2.5 w-2.5" />
+                {label}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{tooltip}</TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
 }
 
 function ConversationItem({
@@ -208,12 +282,20 @@ export function Sidebar() {
     [offlineSnap],
   );
 
-  const isOfflineInstalled = currentMode === "offline" && offlineState === "installed";
+  // Show the Offline Manager shortcut whenever there is anything to manage:
+  // either the user is currently in offline mode (so they can pick / install
+  // a model) OR they already have at least one installed offline model
+  // available — even from online mode they may want to manage their cache.
+  const hasInstalledOfflineModels = (offlineSnap?.installedModels?.length ?? 0) > 0;
+  const showOfflineManager =
+    currentMode === "offline" ||
+    (currentMode === "auto" && offlineState === "installed") ||
+    hasInstalledOfflineModels;
 
   const newChatDisabled = createConversation.isPending || !dbAvailable;
   const newChatTooltip = !dbAvailable
     ? "Database unavailable — restart the app or run: pnpm run rebuild:native"
-    : "New chat";
+    : "Start a new chat";
 
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return conversations;
@@ -225,51 +307,57 @@ export function Sidebar() {
 
   return (
     <TooltipProvider delayDuration={400}>
-      <aside className="flex h-full w-[240px] shrink-0 flex-col border-r border-border/40 bg-card/10">
-        {/* Header */}
-        <div className="flex items-center justify-between px-3 pt-3 pb-2">
-          <div className="flex items-center gap-1.5 pl-1">
-            <img src={logoUrl} alt="GHchat" className="h-5 w-5 object-contain" />
-            <span className="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-widest">
-              Chats
-            </span>
-          </div>
+      <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/40 bg-card/10">
+        {/* Brand header */}
+        <div className="flex items-center gap-2 px-3 pt-3 pb-2 select-none">
+          <img src={logoUrl} alt="GHchat" className="h-5 w-5 object-contain" />
+          <span className="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-widest">
+            Chats
+          </span>
+        </div>
+
+        {/* New Chat — primary, full-width action */}
+        <div className="px-3 pb-2">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7 text-muted-foreground hover:text-foreground active:scale-95 transition-transform"
                 onClick={() => createConversation.mutate()}
                 disabled={newChatDisabled}
+                className="h-8 w-full justify-start gap-2 text-xs font-medium active:scale-[0.99] transition-transform"
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
+                New chat
               </Button>
             </TooltipTrigger>
             <TooltipContent side="right">{newChatTooltip}</TooltipContent>
           </Tooltip>
         </div>
 
-        {/* Search */}
-        {conversations.length > 3 && (
-          <div className="relative px-2 pb-2">
-            <Search className="absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50 pointer-events-none" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search…"
-              className="h-7 pl-7 pr-7 text-xs bg-secondary/50 border-border/40"
-            />
-            {searchQuery && (
-              <button
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
-                onClick={() => setSearchQuery("")}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-        )}
+        {/* Mode switcher */}
+        <div className="px-3 pb-2">
+          <ModeSwitcher />
+        </div>
+
+        {/* Search — always visible so the user can filter without
+            waiting for a conversation threshold */}
+        <div className="relative px-3 pb-2">
+          <Search className="absolute left-5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50 pointer-events-none" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search conversations…"
+            className="h-7 pl-7 pr-7 text-xs bg-secondary/50 border-border/40"
+          />
+          {searchQuery && (
+            <button
+              className="absolute right-5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear search"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
 
         {/* Conversation list */}
         <ScrollArea className="flex-1 px-2">
@@ -363,7 +451,7 @@ export function Sidebar() {
               {incognitoMode ? "Disable incognito mode" : "Enable incognito — messages won't be saved"}
             </TooltipContent>
           </Tooltip>
-          {isOfflineInstalled && (
+          {showOfflineManager && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -371,19 +459,24 @@ export function Sidebar() {
                   className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-emerald-400/80 hover:bg-emerald-500/10 hover:text-emerald-400 transition-colors"
                 >
                   <Cpu className="h-3.5 w-3.5" />
-                  Offline Mode
+                  Offline Manager
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="right">Manage Offline Mode</TooltipContent>
+              <TooltipContent side="right">Manage installed offline models</TooltipContent>
             </Tooltip>
           )}
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-colors"
-          >
-            <Settings className="h-3.5 w-3.5" />
-            Settings
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-colors"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                Settings
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">Open settings</TooltipContent>
+          </Tooltip>
         </div>
       </aside>
     </TooltipProvider>
@@ -424,7 +517,7 @@ export class SidebarErrorBoundary extends Component<
   override render() {
     if (this.state.error) {
       return (
-        <aside className="flex h-full w-[240px] shrink-0 flex-col border-r border-border/40 bg-card/10 items-center justify-center gap-3 px-4 py-8 text-center">
+        <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/40 bg-card/10 items-center justify-center gap-3 px-4 py-8 text-center">
           <AlertTriangle className="h-7 w-7 text-amber-400/60" />
           <p className="text-xs text-amber-400/80 font-medium">Sidebar error</p>
           <p className="text-[11px] text-muted-foreground/60 leading-relaxed break-all">

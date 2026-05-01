@@ -1,4 +1,4 @@
-import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye, Cpu, CircleDot, CircleSlash } from "lucide-react";
+import { Settings, AlertTriangle, ShieldAlert, Clock, EyeOff, Eye, Cpu, CircleDot, CircleSlash, Globe, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -9,7 +9,7 @@ import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
 import { useConversations } from "@/hooks/useConversations";
 import { useOfflineState } from "@/hooks/useOfflineState";
-import type { ModelVerificationStatus, ModelPreset } from "@/types";
+import type { AppMode, ModelVerificationStatus, ModelPreset } from "@/types";
 const CATEGORY_COLORS: Record<string, string> = {
   auto: "bg-cyan-500/15 text-cyan-400",
   general: "bg-blue-500/15 text-blue-400",
@@ -85,6 +85,70 @@ function CapabilityBadges({ preset }: { preset: ModelPreset | undefined }) {
   );
 }
 
+// ── Mode badge ───────────────────────────────────────────────────────────────
+//
+// Always rendered in the chat top bar so the user can see — at a glance —
+// which backend the next message will hit.  Mirrors the sidebar mode
+// switcher's color scheme for visual continuity.
+
+const MODE_BADGE_CONFIG: Record<AppMode, { label: string; icon: React.ElementType; className: string }> = {
+  online: {
+    label: "Online",
+    icon: Globe,
+    className: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+  },
+  auto: {
+    label: "Auto",
+    icon: Zap,
+    className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
+  },
+  offline: {
+    label: "Offline",
+    icon: Cpu,
+    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+  },
+};
+
+function ModeBadge({ mode, onClick }: { mode: AppMode; onClick?: () => void }) {
+  const { label, icon: Icon, className } = MODE_BADGE_CONFIG[mode];
+  const tooltip =
+    mode === "offline"
+      ? "Offline mode — running locally on your device"
+      : mode === "auto"
+        ? "Auto mode — uses installed offline model when available, otherwise online"
+        : "Online mode — using OpenRouter free models";
+  const interactive = !!onClick;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {interactive ? (
+          <button
+            onClick={onClick}
+            className={cn(
+              "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors hover:brightness-110",
+              className,
+            )}
+          >
+            <Icon className="h-2.5 w-2.5" />
+            {label}
+          </button>
+        ) : (
+          <span
+            className={cn(
+              "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+              className,
+            )}
+          >
+            <Icon className="h-2.5 w-2.5" />
+            {label}
+          </span>
+        )}
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode, selectedConversationId } = useChatStore();
@@ -126,6 +190,81 @@ export function ChatHeader() {
   const categoryMeta = CATEGORY_META[category] ?? CATEGORY_META.general;
   const categoryColorClass = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.general;
 
+  // Online / Auto readiness pill — derived from the active model's
+  // verification status so the user always sees whether the next message
+  // is likely to succeed.  Auto mode advertises "Auto routing" because
+  // OpenRouter picks the actual target model at request time.
+  const readiness = ((): {
+    label: string;
+    tooltip: string;
+    Icon: React.ElementType;
+    className: string;
+  } => {
+    if (currentMode === "auto") {
+      // In auto mode an offline-installed model takes precedence; show
+      // that as the active backend so the user isn't surprised.
+      if (offlineSnapshot?.activeModel) {
+        return {
+          label: "Local ready",
+          tooltip: "Auto mode: an installed offline model is available — the next message will run on-device.",
+          Icon: CircleDot,
+          className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+        };
+      }
+      return {
+        label: "Auto routing",
+        tooltip: "Auto mode: routes to the best free model via OpenRouter.",
+        Icon: CircleDot,
+        className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-300",
+      };
+    }
+    // Online mode — reflect verification status.
+    switch (verifiedStatus) {
+      case "verified":
+        return {
+          label: "Ready",
+          tooltip: "Model verified and ready for the next message.",
+          Icon: CircleDot,
+          className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+        };
+      case "gated":
+        return {
+          label: "Access required",
+          tooltip: "This model requires access approval from the provider.",
+          Icon: ShieldAlert,
+          className: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        };
+      case "rate-limited":
+        return {
+          label: "Rate limited",
+          tooltip: "Recent requests were rate-limited. The next attempt may auto-retry.",
+          Icon: Clock,
+          className: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        };
+      case "billing-blocked":
+        return {
+          label: "Billing blocked",
+          tooltip: "API key valid, but billing currently blocks inference.",
+          Icon: AlertTriangle,
+          className: "border-red-500/30 bg-red-500/10 text-red-300",
+        };
+      case "unavailable":
+        return {
+          label: "Unavailable",
+          tooltip: "Model currently unavailable — switch to Auto to reroute.",
+          Icon: AlertTriangle,
+          className: "border-red-500/30 bg-red-500/10 text-red-300",
+        };
+      default:
+        return {
+          label: "Connecting",
+          tooltip: "Model not yet probed for your account.",
+          Icon: CircleSlash,
+          className: "border-border/40 bg-secondary/40 text-muted-foreground/70",
+        };
+    }
+  })();
+
   return (
     <TooltipProvider delayDuration={400}>
       <div
@@ -152,7 +291,7 @@ export function ChatHeader() {
           </Tooltip>
         </div>
 
-        {/* Mode badge + active model selector + readiness indicator */}
+        {/* Mode badge + readiness indicator + active model selector */}
         <div className="flex items-center gap-2 shrink-0">
           {incognitoMode && (
             <span className="flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
@@ -160,25 +299,28 @@ export function ChatHeader() {
               Incognito
             </span>
           )}
-          {isOffline && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => setOfflineManagementOpen(true)}
-                  className="flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors"
-                >
-                  <Cpu className="h-2.5 w-2.5" />
-                  Offline
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Manage Offline Mode</TooltipContent>
-            </Tooltip>
-          )}
-          {/* Runtime / readiness pill — offline mode only.  Reflects the
-              actual llama.cpp subprocess state from the main process so
-              the user sees an honest "running" / "idle" indicator rather
-              than guessing from the chat state. */}
-          {isOffline && (
+
+          {/* Mode badge — always visible.  Clickable in offline mode so
+              the user can jump straight into management; in online/auto
+              modes it stays informational since the mode switcher lives
+              in the sidebar. */}
+          <ModeBadge
+            mode={currentMode}
+            onClick={isOffline ? () => setOfflineManagementOpen(true) : undefined}
+          />
+
+          {/* Readiness / status pill — always rendered so the user can
+              see at a glance whether the next message is ready to go.
+              Offline:  reflects the real llama.cpp subprocess state.
+              Online / Auto:  reflects model verification (verified /
+              gated / unavailable / unknown).  Streaming overrides both
+              with a "Generating…" state. */}
+          {isStreaming ? (
+            <span className="flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary animate-glow-pulse" />
+              Generating…
+            </span>
+          ) : isOffline ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -202,6 +344,23 @@ export function ChatHeader() {
                 {offlineSnapshot?.runtimeRunning
                   ? "llama.cpp is running. The first message after idle starts it; it stays warm between messages."
                   : "llama.cpp is not running. The next message will start it — slow models may take a few seconds to boot."}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className={cn(
+                    "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                    readiness.className,
+                  )}
+                >
+                  <readiness.Icon className="h-2.5 w-2.5" />
+                  {readiness.label}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[260px]">
+                {readiness.tooltip}
               </TooltipContent>
             </Tooltip>
           )}
