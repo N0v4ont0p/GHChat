@@ -97,6 +97,8 @@ export function MessageBubble({ message, isLastAssistant, isLastUser, isStreamin
 
   const wordCount = message.content.trim().split(/\s+/).filter(Boolean).length;
   const canEdit = isUser && isLastUser && !isStreaming && !!onEdit;
+  const trimmedDraft = isEditing ? draft.trim() : "";
+  const editDirty = trimmedDraft.length > 0 && trimmedDraft !== message.content.trim();
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -161,7 +163,7 @@ export function MessageBubble({ message, isLastAssistant, isLastUser, isStreamin
                   </button>
                   <button
                     onClick={submitEdit}
-                    disabled={!draft.trim() || draft.trim() === message.content.trim()}
+                    disabled={!editDirty}
                     className="flex items-center gap-1 rounded-md bg-primary-foreground/95 px-2.5 py-1 text-[11px] font-medium text-primary transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Check className="h-3 w-3" />
