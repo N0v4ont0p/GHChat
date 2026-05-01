@@ -200,15 +200,18 @@ function InstalledRow({ model, busy, onActivate, onReveal, onRemove, onRepair }:
               <Clock className="h-2.5 w-2.5" />
               {fmtRelative(model.lastUsedAt)}
             </span>
-            {tierSpeedLabel(model.tier) && (
-              <span
-                className="inline-flex items-center gap-1"
-                title="Catalog speed/quality tier — relative speed estimate on typical hardware"
-              >
-                <Gauge className="h-2.5 w-2.5" />
-                {tierSpeedLabel(model.tier)}
-              </span>
-            )}
+            {(() => {
+              const speedLabel = tierSpeedLabel(model.tier);
+              return speedLabel ? (
+                <span
+                  className="inline-flex items-center gap-1"
+                  title="Catalog speed/quality tier — relative speed estimate on typical hardware"
+                >
+                  <Gauge className="h-2.5 w-2.5" />
+                  {speedLabel}
+                </span>
+              ) : null;
+            })()}
           </div>
           <div className="mt-1 text-[10px] font-mono text-muted-foreground/50 break-all">
             {model.modelDir}
