@@ -597,6 +597,14 @@ export interface OfflineModelSummary {
   installedAt: number;
   /** Epoch ms of last successful chat with this model, or null. */
   lastUsedAt: number | null;
+  /**
+   * Catalog quality/speed tier for this model — "fast" runs quickest on
+   * modest hardware, "quality" is the slowest but best-output variant.
+   * Optional because some installed records may not have a matching
+   * entry in the current catalog (e.g. removed/legacy variants); when
+   * absent the management UI omits the speed estimate.
+   */
+  tier?: "fast" | "balanced" | "quality";
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   Power,
   RefreshCw,
   Zap,
+  Gauge,
   Circle,
 } from "lucide-react";
 import {
@@ -86,6 +87,25 @@ function familyLabel(family: OfflineModelSummary["family"]): string {
       return "Gemma 3";
     default:
       return "Unknown";
+  }
+}
+
+/**
+ * Human-readable speed estimate label, derived from the catalog's
+ * quality/speed tier.  Returned only when the model has a catalog match
+ * — the caller hides the badge entirely when this returns null so we
+ * never render a misleading estimate for unknown variants.
+ */
+function tierSpeedLabel(tier: OfflineModelSummary["tier"]): string | null {
+  switch (tier) {
+    case "fast":
+      return "Fast";
+    case "balanced":
+      return "Balanced";
+    case "quality":
+      return "Quality";
+    default:
+      return null;
   }
 }
 
@@ -180,6 +200,15 @@ function InstalledRow({ model, busy, onActivate, onReveal, onRemove, onRepair }:
               <Clock className="h-2.5 w-2.5" />
               {fmtRelative(model.lastUsedAt)}
             </span>
+            {tierSpeedLabel(model.tier) && (
+              <span
+                className="inline-flex items-center gap-1"
+                title="Catalog speed/quality tier — relative speed estimate on typical hardware"
+              >
+                <Gauge className="h-2.5 w-2.5" />
+                {tierSpeedLabel(model.tier)}
+              </span>
+            )}
           </div>
           <div className="mt-1 text-[10px] font-mono text-muted-foreground/50 break-all">
             {model.modelDir}

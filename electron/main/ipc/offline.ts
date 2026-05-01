@@ -933,6 +933,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           isActive: m.id === activeId,
           installedAt: m.installedAt,
           lastUsedAt: m.lastUsedAt,
+          ...(catalog?.tier ? { tier: catalog.tier } : {}),
         };
       });
     },
