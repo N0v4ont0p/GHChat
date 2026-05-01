@@ -119,7 +119,16 @@ export function resolveConversationModel(
   }
 
   // mode === 'auto' on a conversation row is treated like the global
-  // auto rule but anchored to the stored modelId where possible.
+  // auto rule but anchored to the stored modelId where possible.  We
+  // intentionally do NOT honour `conversation.modelId` directly here:
+  // an auto-bound conversation is meant to follow the live globals
+  // (that's the point of the auto choice), so the dispatcher should
+  // pick up whatever the user has currently active rather than pinning
+  // to the model that happened to be active when the conversation was
+  // first stamped.  In practice we never actually stamp `mode='auto'`
+  // — the first-send stamp resolves to a concrete `online`/`offline`
+  // before writing — so this branch is a defensive backstop for legacy
+  // rows or for any future code path that might bind in auto mode.
   if (globals.offlineState === "installed" && globals.activeOfflineModelId) {
     return { kind: "offline", modelId: globals.activeOfflineModelId };
   }
