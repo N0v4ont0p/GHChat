@@ -123,6 +123,13 @@ export const IPC = {
   /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
   OFFLINE_RUNTIME_FORCE_STOP: "offline:runtime:force-stop",
   /**
+   * Restart the offline runtime subprocess: stop it (gracefully), then
+   * start it again for the currently active model.  Used by the offline
+   * manager's "Restart" action when the user wants to recover from a
+   * runtime hiccup without sending a chat message first.
+   */
+  OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
+  /**
    * Get the cached HardwareProfile snapshot used by the recommendation
    * engine.  Used by the management UI to render hardware tier and to
    * warn when the active model exceeds the local capacity.

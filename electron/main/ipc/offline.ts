@@ -816,6 +816,33 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     },
   );
 
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_RESTART,
+    async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const activeId = resolveActiveModelId();
+        if (!activeId) {
+          return { ok: false, error: "No active offline model to restart." };
+        }
+        // Stop first so start() spawns a fresh process even when the
+        // current spawn options match — restart must always recycle.
+        await runtimeManager.stop();
+        const settings = resolveOfflineSettings();
+        await runtimeManager.start(activeId, {
+          contextSize: settings.contextSize,
+          threads: settings.threads,
+        });
+        return { ok: true };
+      } catch (err) {
+        console.warn("[offline] runtime restart failed:", err);
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
   // ── Offline management ──────────────────────────────────────────────────────
 
   /**

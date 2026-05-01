@@ -206,4 +206,12 @@ export const ipc = {
   /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
   forceStopOfflineRuntime: () =>
     api().invoke<{ ok: boolean }>(IPC.OFFLINE_RUNTIME_FORCE_STOP),
+  /**
+   * Restart the offline runtime: stop it, then start it again for the
+   * currently active model.  Resolves with `{ ok: false, error }` when
+   * there is no active model or start fails — callers should surface
+   * the error to the user.
+   */
+  restartOfflineRuntime: () =>
+    api().invoke<{ ok: boolean; error?: string }>(IPC.OFFLINE_RUNTIME_RESTART),
 };

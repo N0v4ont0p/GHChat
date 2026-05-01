@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   Power,
   RefreshCw,
+  RotateCw,
   Zap,
   Gauge,
   Circle,
@@ -534,6 +535,25 @@ export function OfflineManagementModal() {
     }
   };
 
+  const handleRestartRuntime = async () => {
+    setRuntimeBusy(true);
+    try {
+      const res = await ipc.restartOfflineRuntime();
+      if (!res.ok) {
+        setError(res.error ?? "Restart failed.");
+        // start may have failed mid-way; reflect actual state from the
+        // backend rather than guessing.
+        await reload();
+      } else {
+        setIsRuntimeRunning(true);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  };
+
   const handleRepair = async (id: string) => {
     setBusyId(id);
     setInstallProgress({ phase: "preflight", step: "Starting repair…", pct: 0 });
@@ -697,8 +717,19 @@ export function OfflineManagementModal() {
                     </div>
                   </div>
                 </div>
-                {isRuntimeRunning && (
+                {isRuntimeRunning ? (
                   <div className="flex gap-1.5 shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1.5"
+                      onClick={() => void handleRestartRuntime()}
+                      disabled={runtimeBusy || busyId !== null || installedCount === 0}
+                      title="Stop the runtime and immediately start it again for the active model"
+                    >
+                      {runtimeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCw className="h-3 w-3" />}
+                      Restart
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -722,6 +753,22 @@ export function OfflineManagementModal() {
                       Force stop
                     </Button>
                   </div>
+                ) : (
+                  installedCount > 0 && (
+                    <div className="flex gap-1.5 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[11px] gap-1.5"
+                        onClick={() => void handleRestartRuntime()}
+                        disabled={runtimeBusy || busyId !== null}
+                        title="Start the runtime now for the active model (otherwise it starts on the next chat message)"
+                      >
+                        {runtimeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
+                        Start
+                      </Button>
+                    </div>
+                  )
                 )}
               </div>
 
