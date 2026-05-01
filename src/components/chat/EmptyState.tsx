@@ -45,7 +45,7 @@ export function EmptyState() {
   const selectedModel = useSettingsStore((s) => s.selectedModel);
   const { setDraft, incognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
-  const { currentMode, offlineState, offlineRecommendation } = useModeStore();
+  const { currentMode, offlineState, activeOfflineModelLabel, offlineRecommendation } = useModeStore();
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
   const category = preset?.category ?? "general";
@@ -55,9 +55,13 @@ export function EmptyState() {
     currentMode === "offline" ||
     (currentMode === "auto" && offlineState === "installed");
 
-  const localModelName = offlineRecommendation
-    ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
-    : "Gemma 4 · Local";
+  // Show the *active installed* offline model rather than a recommendation
+  // or a hard-coded Gemma 4 default — see the same rationale in ChatHeader.
+  const localModelName =
+    activeOfflineModelLabel ??
+    (offlineRecommendation
+      ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
+      : "Local model");
 
   const handlePromptClick = async (prompt: string) => {
     await createConversation.mutateAsync();

@@ -5,6 +5,7 @@ import type {
   OfflineRecommendation,
   OfflineInstallProgress,
   OfflineFailureReason,
+  OfflineActiveModelInfo,
 } from "@/types";
 
 interface ModeState {
@@ -56,6 +57,14 @@ interface ModeState {
    * runtime will load for chat requests.
    */
   activeOfflineModelId: string | null;
+  /**
+   * Human-readable label for the active offline model, e.g.
+   * "Gemma 3 1B (Test) · 1B · Q4_K_M".  Mirrored from the main process
+   * alongside `activeOfflineModelId` so UI surfaces (chat header, empty
+   * state) can show the model that chats will actually use without
+   * re-deriving it from a stale recommendation.
+   */
+  activeOfflineModelLabel: string | null;
   setMode: (mode: AppMode) => void;
   setOfflineState: (state: OfflineSetupState) => void;
   setOfflineRecommendation: (rec: OfflineRecommendation | null) => void;
@@ -65,7 +74,13 @@ interface ModeState {
   setGemma4FailureThreshold: (threshold: number) => void;
   setLastFailureReasons: (reasons: OfflineFailureReason[]) => void;
   setFallbackOptions: (options: OfflineRecommendation[]) => void;
-  setActiveOfflineModelId: (id: string | null) => void;
+  /**
+   * Update the active offline model (id + display label) atomically.
+   * Pass `null` to clear it (e.g. after the last installed model is
+   * removed).  Accepts the OfflineActiveModelInfo payload returned by
+   * OFFLINE_GET_ACTIVE_MODEL / OFFLINE_SET_ACTIVE_MODEL directly.
+   */
+  setActiveOfflineModel: (info: OfflineActiveModelInfo | null) => void;
 }
 
 export const useModeStore = create<ModeState>((set) => ({
@@ -79,6 +94,7 @@ export const useModeStore = create<ModeState>((set) => ({
   lastFailureReasons: [],
   fallbackOptions: [],
   activeOfflineModelId: null,
+  activeOfflineModelLabel: null,
   setMode: (currentMode) => set({ currentMode }),
   setOfflineState: (offlineState) => set({ offlineState }),
   setOfflineRecommendation: (offlineRecommendation) => set({ offlineRecommendation }),
@@ -88,5 +104,11 @@ export const useModeStore = create<ModeState>((set) => ({
   setGemma4FailureThreshold: (gemma4FailureThreshold) => set({ gemma4FailureThreshold }),
   setLastFailureReasons: (lastFailureReasons) => set({ lastFailureReasons }),
   setFallbackOptions: (fallbackOptions) => set({ fallbackOptions }),
-  setActiveOfflineModelId: (activeOfflineModelId) => set({ activeOfflineModelId }),
+  setActiveOfflineModel: (info) =>
+    set({
+      activeOfflineModelId: info?.id ?? null,
+      activeOfflineModelLabel: info
+        ? `${info.name} · ${info.variantLabel}`
+        : null,
+    }),
 }));

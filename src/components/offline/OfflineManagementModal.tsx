@@ -355,7 +355,7 @@ export function OfflineManagementModal() {
   const setOfflineState = useModeStore((s) => s.setOfflineState);
   const setMode = useModeStore((s) => s.setMode);
   const setOfflineRecommendation = useModeStore((s) => s.setOfflineRecommendation);
-  const setActiveOfflineModelId = useModeStore((s) => s.setActiveOfflineModelId);
+  const setActiveOfflineModel = useModeStore((s) => s.setActiveOfflineModel);
 
   const [view, setView] = useState<View>("list");
   const [installed, setInstalled] = useState<OfflineModelSummary[] | null>(null);
@@ -374,7 +374,7 @@ export function OfflineManagementModal() {
     setLoading(true);
     setError(null);
     try {
-      const [list, catalog, info, activeId, hw] = await Promise.all([
+      const [list, catalog, info, activeInfo, hw] = await Promise.all([
         ipc.listInstalledOfflineModels(),
         ipc.listAvailableOfflineModels(),
         ipc.getOfflineInfo(),
@@ -385,14 +385,14 @@ export function OfflineManagementModal() {
       setAvailable(catalog);
       setStorageBytes(info.storageBytesUsed);
       setInstallPath(info.installPath);
-      setActiveOfflineModelId(activeId);
+      setActiveOfflineModel(activeInfo);
       setHwProfile(hw);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [setActiveOfflineModelId]);
+  }, [setActiveOfflineModel]);
 
   useEffect(() => {
     if (!offlineManagementOpen) {
@@ -415,8 +415,8 @@ export function OfflineManagementModal() {
   const handleActivate = async (id: string) => {
     setBusyId(id);
     try {
-      const newId = await ipc.setActiveOfflineModel(id);
-      setActiveOfflineModelId(newId);
+      const newInfo = await ipc.setActiveOfflineModel(id);
+      setActiveOfflineModel(newInfo);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

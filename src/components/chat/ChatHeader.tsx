@@ -87,15 +87,20 @@ export function ChatHeader() {
   const { selectedModel, setSettingsOpen } = useSettingsStore();
   const { isStreaming, streamingTokenCount, incognitoMode, setIncognitoMode } = useChatStore();
   const { data: models = [] } = useModels();
-  const { currentMode, offlineRecommendation, setOfflineManagementOpen } = useModeStore();
+  const { currentMode, activeOfflineModelLabel, offlineRecommendation, setOfflineManagementOpen } = useModeStore();
 
   const isOffline = currentMode === "offline";
 
-  // In offline mode show the installed model name; fall back to a generic label.
+  // In offline mode show the *active installed* model — never a hard-coded
+  // Gemma 4 default, and never the analyze-step recommendation (which can
+  // point at a model the user has not actually installed).  Fall back to
+  // the recommendation only if no active model is known yet, then to a
+  // generic "Local" placeholder so the header always renders something.
   const offlineModelLabel =
-    offlineRecommendation
+    activeOfflineModelLabel ??
+    (offlineRecommendation
       ? `${offlineRecommendation.label} · ${offlineRecommendation.variantLabel}`
-      : "Gemma 4 · Local";
+      : "Local model");
 
   const preset = getPreset(models, selectedModel);
   const displayName = isOffline ? offlineModelLabel : (preset?.name ?? selectedModel.split("/").pop() ?? selectedModel);

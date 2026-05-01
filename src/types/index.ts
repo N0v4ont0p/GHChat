@@ -538,6 +538,24 @@ export interface OfflineInfo {
 export type OfflineModelHealth = "ok" | "missing" | "incomplete" | "unknown";
 
 /**
+ * Identity of the currently active offline model — the model that the
+ * runtime will load and that new offline chats will use by default.
+ *
+ * Returned by OFFLINE_GET_ACTIVE_MODEL / OFFLINE_SET_ACTIVE_MODEL.  When
+ * no installed offline model is available this is `null` and the renderer
+ * is expected to route the user back through the offline install flow
+ * before attempting to chat.
+ */
+export interface OfflineActiveModelInfo {
+  /** Catalog ID, e.g. "gemma3-1b-q4km". */
+  id: string;
+  /** Human-readable model name (e.g. "Gemma 3 1B (Test)"). */
+  name: string;
+  /** Short variant label (e.g. "1B · Q4_K_M"). */
+  variantLabel: string;
+}
+
+/**
  * Renderer-facing summary for one installed offline model.  Returned from
  * OFFLINE_LIST_INSTALLED, one entry per model row in the offline_models DB
  * table.  Includes whatever the renderer needs to render a row in the
@@ -752,12 +770,13 @@ export const IPC = {
   /**
    * Set the currently active offline model.  Stops the runtime so the
    * next chat picks up the new model cleanly.  Returns the new active
-   * model id (echo of the argument) or null if the id is unknown.
+   * model info ({id,name,variantLabel}) or null if the id is unknown
+   * / not installed.
    */
   OFFLINE_SET_ACTIVE_MODEL: "offline:set-active-model",
   /**
-   * Returns the id of the currently active offline model, or null when
-   * no model is active.
+   * Returns the currently active offline model as
+   * {id,name,variantLabel}, or null when no offline model is installed.
    */
   OFFLINE_GET_ACTIVE_MODEL: "offline:get-active-model",
   /**

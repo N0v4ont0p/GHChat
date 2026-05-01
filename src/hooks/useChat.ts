@@ -39,9 +39,6 @@ interface RoutingPayload {
   isFallback: boolean;
 }
 
-/** The local-model ID used for offline chat streaming. */
-const OFFLINE_MODEL_ID = "offline-local";
-
 /**
  * How long after a user-initiated stop the renderer keeps the requestId
  * in its `cancelledRequestIds` set so any late token events arriving
@@ -104,15 +101,17 @@ export function useChat(conversationId: string | null) {
     addIncognitoMessage,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineState, offlineRecommendation, activeOfflineModelId } = useModeStore();
+  const { currentMode, offlineState, activeOfflineModelId } = useModeStore();
 
-  // The installed offline model ID — prefer the user's currently-selected
-  // active model (multi-model UI), fall back to the analyze-step
-  // recommendation, and finally to a sentinel string when neither is set
-  // (the main process will reject a chat request with this id, which is
-  // the desired outcome — no model installed means no chat).
-  const offlineModelId =
-    activeOfflineModelId ?? offlineRecommendation?.modelId ?? OFFLINE_MODEL_ID;
+  // Resolved offline model id for chat dispatch.  ONLY the active
+  // installed model id is honoured here — we deliberately do NOT fall
+  // back to the analyze-step recommendation, which is just a "what we
+  // recommend you install" hint and may point at a model the user has
+  // never installed (e.g. Gemma 4 E4B even though they only installed
+  // the lightweight test model).  When this is null, dispatchStream
+  // refuses to start an offline chat and prompts the user to install or
+  // pick a model first.
+  const offlineModelId = activeOfflineModelId;
 
   const activeRequestId = useRef<string | null>(null);
   /**
@@ -345,6 +344,22 @@ export function useChat(conversationId: string | null) {
       if (shouldUseOfflineBackend(currentMode, offlineState)) {
         // ── Offline / Auto-with-offline path: local llama.cpp runtime ──────
         // No API key required; the runtime manager handles the rest.
+        if (!offlineModelId) {
+          // No installed/active offline model — refuse to dispatch
+          // rather than silently sending a wrong (e.g. recommended-but-
+          // not-installed) model id that the runtime would reject.
+          const msg =
+            "No offline model is installed yet. Open Offline Models to install one before chatting.";
+          toast.error(msg, { duration: 5000 });
+          setLastStreamError({
+            message: msg,
+            actions: ["retry"],
+          });
+          setStreamState("failed");
+          activeRequestId.current = null;
+          setStreaming(false);
+          return;
+        }
         setStreamState("streaming");
         ipc.sendOfflineChatStream({
           requestId,

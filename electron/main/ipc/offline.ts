@@ -325,11 +325,19 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         // Successful install — reset the Gemma 4 failure counter so future
         // attempts start fresh.  We reset on ANY successful install (even
         // a fallback) so the user is never left with stale failure state.
+        //
+        // Also promote the just-installed model to active so the runtime
+        // and new chats use it.  Per product requirements: any installed
+        // model becomes the active default unless the user has explicitly
+        // selected something else via the management UI.  This keeps the
+        // installed-model state, active-model setting, and new-chat
+        // default in sync after a setup-flow install.
         if (isDatabaseReady()) {
           try {
             upsertOfflineInstallation({
               gemma4FailureCount: 0,
               lastFailureReasons: null,
+              activeModelId: modelId,
             });
           } catch (err) {
             console.warn("[offline] failed to reset failure counter:", err);
@@ -786,8 +794,8 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
 
     return {
       modelId: model?.id ?? "",
-      modelName: model?.name ?? "Gemma 4",
-      variantLabel: catalogEntry?.variantLabel ?? model?.name ?? "Gemma 4",
+      modelName: model?.name ?? "",
+      variantLabel: catalogEntry?.variantLabel ?? model?.name ?? "",
       quantization: model?.quantization ?? "",
       sizeGb: model?.sizeGb ?? 0,
       storageBytesUsed,
@@ -892,14 +900,15 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             event.sender.send(IPC.OFFLINE_INSTALL_PROGRESS, progress);
           }
         });
-        // If this is the first model installed, promote it to active so
-        // the runtime knows what to load.  Otherwise leave the active
-        // selection alone — the user explicitly chose to add a model.
+        // Promote the just-installed model to active so the runtime
+        // knows what to load and new offline chats use it.  This matches
+        // the OFFLINE_INSTALL behaviour and keeps the installed-model
+        // state, active-model setting, and new-chat default in sync —
+        // installing a model is an implicit "use this model" gesture
+        // unless/until the user explicitly switches active model via
+        // setActiveOfflineModel.
         if (isDatabaseReady()) {
-          const installation = getOfflineInstallation();
-          if (!installation?.activeModelId) {
-            upsertOfflineInstallation({ activeModelId: modelId });
-          }
+          upsertOfflineInstallation({ activeModelId: modelId });
           // Reset Gemma 4 failure counter on any successful install.
           upsertOfflineInstallation({
             gemma4FailureCount: 0,
@@ -953,9 +962,27 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     },
   );
 
+  /**
+   * Build a renderer-facing OfflineActiveModelInfo for a given installed
+   * model id (joins DB row + catalog metadata).  Returns null when the id
+   * is not actually installed.
+   */
+  function buildActiveModelInfo(modelId: string | null) {
+    if (!modelId) return null;
+    if (!isDatabaseReady()) return null;
+    const record = listOfflineModels().find((m) => m.id === modelId);
+    if (!record) return null;
+    const catalog = offlineCatalog.getById(modelId);
+    return {
+      id: record.id,
+      name: record.name,
+      variantLabel: catalog?.variantLabel ?? record.name,
+    };
+  }
+
   ipcMain.handle(
     IPC.OFFLINE_SET_ACTIVE_MODEL,
-    async (_event, modelId: string): Promise<string | null> => {
+    async (_event, modelId: string) => {
       if (!isDatabaseReady()) return null;
       const exists = listOfflineModels().some((m) => m.id === modelId);
       if (!exists) return null;
@@ -968,12 +995,12 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       }
       upsertOfflineInstallation({ activeModelId: modelId });
-      return modelId;
+      return buildActiveModelInfo(modelId);
     },
   );
 
-  ipcMain.handle(IPC.OFFLINE_GET_ACTIVE_MODEL, (): string | null => {
-    return resolveActiveModelId();
+  ipcMain.handle(IPC.OFFLINE_GET_ACTIVE_MODEL, () => {
+    return buildActiveModelInfo(resolveActiveModelId());
   });
 
   ipcMain.handle(IPC.OFFLINE_REVEAL_FOLDER, async (): Promise<void> => {
@@ -1104,6 +1131,50 @@ export function checkAndRepairOnStartup(): void {
         state: "repair-needed",
         message: check.reason ?? "Offline files appear to be missing or corrupt.",
       });
+      return;
+    }
+
+    // Self-heal stale active_model_id state.  This catches the case where
+    // an earlier version persisted (or failed to update) active_model_id
+    // pointing at a model that is no longer installed (e.g. user removed
+    // the previous active model before installing a new one, or upgraded
+    // from a build that did not promote new installs to active).  Without
+    // this, OFFLINE_GET_ACTIVE_MODEL would still return a sensible
+    // fallback via resolveActiveModelId, but the persisted DB column
+    // would stay wrong forever and the renderer's old sessionStorage
+    // could keep sending the wrong modelId until restart.
+    try {
+      const installation = getOfflineInstallation();
+      const installedModels = listOfflineModels();
+      if (installedModels.length === 0) {
+        // "installed" state with no model rows is impossible to recover
+        // from without a fresh install — bounce back to not-installed
+        // so the UI offers the setup flow rather than failing mid-chat.
+        console.warn(
+          "[offline] state=installed but no offline models registered — transitioning to not-installed",
+        );
+        setOfflineReadiness({ state: "not-installed" });
+        // Also clear the stale active_model_id so a future install isn't
+        // shadowed by a dangling reference.
+        upsertOfflineInstallation({ activeModelId: null });
+        return;
+      }
+      const persisted = installation?.activeModelId ?? null;
+      const persistedExists =
+        persisted != null && installedModels.some((m) => m.id === persisted);
+      if (!persistedExists) {
+        // Repair: pick the first installed model (most recently installed
+        // first via installed_at desc would be nicer, but listOfflineModels
+        // returns install-order — either way the user always ends up on
+        // an actually-installed model, never on a missing Gemma 4 ghost).
+        const repaired = installedModels[0].id;
+        console.warn(
+          `[offline] active_model_id "${persisted ?? "<null>"}" is not installed — repairing to "${repaired}"`,
+        );
+        upsertOfflineInstallation({ activeModelId: repaired });
+      }
+    } catch (err) {
+      console.warn("[offline] active model repair on startup failed:", err);
     }
   }
 }
