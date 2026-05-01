@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu, Globe, WifiOff, Zap } from "lucide-react";
+import { Plus, Settings, Trash2, Pencil, MessageSquare, Search, X, EyeOff, Eye, AlertTriangle, Cpu, Globe, Zap } from "lucide-react";
 import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -123,6 +123,58 @@ function ModeSwitcher() {
   );
 }
 
+/**
+ * Format a unix-ms timestamp as a compact, human-readable label suitable
+ * for the sidebar conversation list:
+ *   - <1 min      → "now"
+ *   - <60 min     → "5m"
+ *   - <24 h       → "3h"
+ *   - <7 days     → weekday name ("Mon", "Tue", …)
+ *   - same year   → "Mar 4"
+ *   - older       → "Mar 4, 2024"
+ *
+ * Kept timezone-naive on purpose — the database stores epoch ms in the
+ * user's local clock and the sidebar only needs human-friendly hints.
+ */
+function formatRelativeTime(ts: number): string {
+  const now = Date.now();
+  const diff = Math.max(0, now - ts);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return "now";
+  if (diff < hour) return `${Math.floor(diff / minute)}m`;
+  if (diff < day) return `${Math.floor(diff / hour)}h`;
+  if (diff < 7 * day) {
+    return new Date(ts).toLocaleDateString(undefined, { weekday: "short" });
+  }
+  const sameYear = new Date(ts).getFullYear() === new Date().getFullYear();
+  return new Date(ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
+/** Mode-pill style + icon for the conversation list item. */
+const CONV_MODE_BADGE: Record<AppMode, { icon: React.ElementType; className: string; label: string }> = {
+  online: {
+    icon: Globe,
+    className: "border-blue-500/25 bg-blue-500/10 text-blue-300/80",
+    label: "Online",
+  },
+  auto: {
+    icon: Zap,
+    className: "border-cyan-500/25 bg-cyan-500/10 text-cyan-300/80",
+    label: "Auto",
+  },
+  offline: {
+    icon: Cpu,
+    className: "border-emerald-500/25 bg-emerald-500/10 text-emerald-300/80",
+    label: "Offline",
+  },
+};
+
 function ConversationItem({
   conv,
   isSelected,
@@ -168,6 +220,11 @@ function ConversationItem({
     !!conv.modelId &&
     !installedOfflineModelIds.has(conv.modelId);
 
+  const modeBadge = CONV_MODE_BADGE[conv.mode] ?? CONV_MODE_BADGE.online;
+  const ModeIcon = modeBadge.icon;
+  const timeLabel = formatRelativeTime(conv.updatedAt);
+  const fullTimeTitle = new Date(conv.updatedAt).toLocaleString();
+
   return (
     <motion.div
       key={conv.id}
@@ -198,6 +255,7 @@ function ConversationItem({
       ) : (
         <>
           <div className="min-w-0 flex-1 pr-12">
+            {/* Title row: warning icon (if missing model) + title + timestamp */}
             <div className="flex items-center gap-1.5">
               {isModelMissing && (
                 <Tooltip>
@@ -206,33 +264,64 @@ function ConversationItem({
                       <AlertTriangle className="h-3 w-3 text-amber-400/80" />
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="right" className="max-w-[200px]">
-                    Offline model not installed — click to recover
+                  <TooltipContent side="right" className="max-w-[220px]">
+                    Offline model not installed — open this conversation to recover
                   </TooltipContent>
                 </Tooltip>
               )}
               <span
                 className={cn(
-                  "truncate text-xs leading-tight",
+                  "truncate text-xs leading-tight flex-1",
                   isSelected ? "text-foreground" : "text-muted-foreground",
                   isModelMissing && "text-amber-300/80",
                 )}
               >
                 {conv.title}
               </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="shrink-0 text-[9px] tabular-nums text-muted-foreground/45 leading-tight"
+                    aria-label={`Updated ${fullTimeTitle}`}
+                  >
+                    {timeLabel}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="right">Updated {fullTimeTitle}</TooltipContent>
+              </Tooltip>
             </div>
-            {modelLabel && (
-              <div className="mt-0.5 flex items-center gap-1 text-[9px] text-muted-foreground/45 leading-tight truncate">
-                {conv.mode === "offline" ? (
-                  <Cpu className="h-2.5 w-2.5 shrink-0 text-emerald-500/50" />
-                ) : conv.mode === "auto" ? (
-                  <WifiOff className="h-2.5 w-2.5 shrink-0 text-muted-foreground/40" />
-                ) : (
-                  <Globe className="h-2.5 w-2.5 shrink-0 text-primary/40" />
+
+            {/* Metadata row: mode badge (always) + model badge (when bound).
+                Both stay compact so a long model name truncates rather than
+                wrapping the row. */}
+            <div className="mt-1 flex items-center gap-1 leading-tight min-w-0">
+              <span
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-0.5 rounded border px-1 py-0 text-[9px] font-medium uppercase tracking-wide",
+                  modeBadge.className,
                 )}
-                <span className="truncate">{modelLabel}</span>
-              </div>
-            )}
+              >
+                <ModeIcon className="h-2 w-2" />
+                {modeBadge.label}
+              </span>
+              {modelLabel && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className={cn(
+                        "min-w-0 truncate rounded border border-border/40 bg-secondary/40 px-1 py-0 text-[9px] text-muted-foreground/70",
+                        isModelMissing && "border-amber-500/30 bg-amber-500/10 text-amber-300/80",
+                      )}
+                    >
+                      {modelLabel}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-[260px]">
+                    <span className="font-mono text-[11px]">{conv.modelId}</span>
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
           </div>
           <div className="absolute right-1.5 top-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
             <Tooltip>
