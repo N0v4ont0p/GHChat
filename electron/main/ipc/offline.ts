@@ -822,7 +822,10 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       try {
         const activeId = resolveActiveModelId();
         if (!activeId) {
-          return { ok: false, error: "No active offline model to restart." };
+          return {
+            ok: false,
+            error: "No active offline model to restart. Install or activate a model first.",
+          };
         }
         // Stop first so start() spawns a fresh process even when the
         // current spawn options match — restart must always recycle.
