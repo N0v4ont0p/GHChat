@@ -48,21 +48,21 @@ export function ChatErrorPanel({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: "easeOut" }}
-      className="mx-4 mb-4 rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-3"
+      className="mx-4 mb-4 sm:mx-6 rounded-xl border border-red-500/15 bg-red-500/[0.04] p-4 space-y-3"
     >
       {/* Header */}
-      <div className="flex items-start gap-2.5">
-        <div className="mt-0.5 flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full bg-red-500/15">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-full bg-red-500/12 ring-1 ring-red-500/20">
           <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-foreground leading-snug">{error.message}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{context}</p>
+          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">{context}</p>
         </div>
       </div>
 
       {/* Recovery actions */}
-      <div className="flex flex-wrap gap-2 pl-8">
+      <div className="flex flex-wrap gap-2 pl-10">
         {error.actions.includes("retry") && (
           <Button
             size="sm"

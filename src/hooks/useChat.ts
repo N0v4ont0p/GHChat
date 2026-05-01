@@ -100,6 +100,7 @@ export function useChat(conversationId: string | null) {
     incognitoMode,
     incognitoMessages,
     addIncognitoMessage,
+    setIncognitoMessages,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
   const { currentMode, offlineState, activeOfflineModelId, setOfflineManagementOpen, setMode } = useModeStore();
@@ -627,6 +628,60 @@ export function useChat(conversationId: string | null) {
     }
   }, [currentMode, offlineState, setStreamState, qc, resetStreaming]);
 
+  // ── Edit the last user message and re-stream ───────────────────────────────
+  // Removes the last user message + any assistant reply that follows it,
+  // appends the edited content as a fresh user turn, and re-streams.  Mirrors
+  // the regenerate flow so the conversation rolls cleanly back one round.
+  const editLastUserMessage = useCallback(
+    async (newContent: string) => {
+      const trimmed = newContent.trim();
+      if (!conversationId || isStreaming || !trimmed) return;
+
+      try {
+        if (incognitoMode) {
+          const msgs = incognitoMessages;
+          const lastUserIdx = msgs.map((m) => m.role).lastIndexOf("user");
+          if (lastUserIdx < 0) return;
+          const remaining = msgs.slice(0, lastUserIdx);
+          const edited = makeIncognitoMessage(conversationId, "user", trimmed);
+          setIncognitoMessages([...remaining, edited]);
+          setForceScrollToBottom(true);
+          await dispatchStream(
+            selectedModel,
+            [...remaining, edited].map((m) => ({ role: m.role, content: m.content })),
+          );
+          return;
+        }
+
+        const messages = await ipc.listMessages(conversationId);
+        const lastUserIdx = messages.map((m) => m.role).lastIndexOf("user");
+        if (lastUserIdx < 0) return;
+
+        // Drop the last user message and anything after it (usually one
+        // assistant reply, possibly nothing if the previous turn errored).
+        for (let i = messages.length - 1; i >= lastUserIdx; i -= 1) {
+          await ipc.deleteMessage(messages[i].id);
+        }
+        await ipc.appendMessage({ conversationId, role: "user", content: trimmed });
+        qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+        setForceScrollToBottom(true);
+        const refreshed = await ipc.listMessages(conversationId);
+        await dispatchStream(
+          selectedModel,
+          refreshed.map((m) => ({ role: m.role, content: m.content })),
+        );
+      } catch (err) {
+        console.error("[useChat] editLastUserMessage failed:", err);
+        toast.error(err instanceof Error ? err.message : "Failed to edit message. Please try again.");
+        setStreamState("failed");
+        resetStreaming();
+      }
+    },
+    [conversationId, isStreaming, selectedModel, dispatchStream, qc, resetStreaming, setStreamState,
+     setForceScrollToBottom, setIncognitoMessages, incognitoMode, incognitoMessages],
+  );
+
   // ── Regenerate the last assistant reply ────────────────────────────────────
   const regenerate = useCallback(async () => {
     if (!conversationId || isStreaming) return;
@@ -711,6 +766,7 @@ export function useChat(conversationId: string | null) {
     sendMessage,
     stopStream,
     regenerate,
+    editLastUserMessage,
     retryStream,
     switchToAutoMode,
     refreshModelAvailability,

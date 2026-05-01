@@ -13,7 +13,7 @@ export function ChatWindow() {
   const { selectedConversationId } = useChatStore();
   const { setSettingsOpen } = useSettingsStore();
   const { data: messages = [] } = useMessages(selectedConversationId);
-  const { sendMessage, stopStream, regenerate, retryStream, switchToAutoMode, refreshModelAvailability, isStreaming } =
+  const { sendMessage, stopStream, regenerate, editLastUserMessage, retryStream, switchToAutoMode, refreshModelAvailability, isStreaming } =
     useChat(selectedConversationId);
   const health = useConversationModelHealth(selectedConversationId);
 
@@ -33,6 +33,7 @@ export function ChatWindow() {
       <MessageList
         messages={messages}
         onRegenerate={regenerate}
+        onEditUserMessage={(content) => void editLastUserMessage(content)}
         onRetry={() => void retryStream()}
         onSwitchFallback={(modelId) => void retryStream(modelId)}
         onUseAuto={() => void switchToAutoMode()}

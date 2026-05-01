@@ -30,6 +30,7 @@ interface ChatState {
   setForceScrollToBottom: (v: boolean) => void;
   setIncognitoMode: (v: boolean) => void;
   addIncognitoMessage: (msg: Message) => void;
+  setIncognitoMessages: (msgs: Message[]) => void;
   clearIncognitoMessages: () => void;
 }
 
@@ -64,5 +65,6 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ incognitoMode, incognitoMessages: [] }),
   addIncognitoMessage: (msg) =>
     set((s) => ({ incognitoMessages: [...s.incognitoMessages, msg] })),
+  setIncognitoMessages: (incognitoMessages) => set({ incognitoMessages }),
   clearIncognitoMessages: () => set({ incognitoMessages: [] }),
 }));

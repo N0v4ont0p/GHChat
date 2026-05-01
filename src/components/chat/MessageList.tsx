@@ -11,6 +11,7 @@ import type { Message, StructuredChatError } from "@/types";
 interface Props {
   messages: Message[];
   onRegenerate: () => void;
+  onEditUserMessage: (newContent: string) => void;
   onRetry: () => void;
   onSwitchFallback: (modelId: string) => void;
   onUseAuto: () => void;
@@ -44,7 +45,7 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-export function MessageList({ messages: dbMessages, onRegenerate, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings }: Props) {
+export function MessageList({ messages: dbMessages, onRegenerate, onEditUserMessage, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings }: Props) {
   const {
     isStreaming, streamingText, streamState, lastStreamError,
     forceScrollToBottom, setForceScrollToBottom,
@@ -131,6 +132,10 @@ export function MessageList({ messages: dbMessages, onRegenerate, onRetry, onSwi
     (acc, m, i) => (m.role === "assistant" ? i : acc),
     -1,
   );
+  const lastUserIndex = messages.reduce(
+    (acc, m, i) => (m.role === "user" ? i : acc),
+    -1,
+  );
 
   // Build list with date dividers
   const items: Array<{ type: "divider"; label: string } | { type: "message"; msg: Message; idx: number }> = [];
@@ -157,7 +162,9 @@ export function MessageList({ messages: dbMessages, onRegenerate, onRetry, onSwi
                 message={item.msg}
                 index={item.idx}
                 isLastAssistant={!isStreaming && item.idx === lastAssistantIndex}
+                isLastUser={!isStreaming && item.idx === lastUserIndex}
                 onRegenerate={onRegenerate}
+                onEdit={onEditUserMessage}
               />
             ),
           )}
