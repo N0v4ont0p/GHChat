@@ -50,6 +50,19 @@ interface RoutingPayload {
 const CANCELLED_REQUEST_CLEANUP_DELAY_MS = 5_000;
 
 /**
+ * Maximum time the renderer will wait for *any* progress signal
+ * (token, lifecycle phase, end, or error) on an in-flight offline
+ * stream before assuming the local llama.cpp runtime has hung.
+ *
+ * Loading a 26B-class model from a slow disk can legitimately take
+ * a minute or more, so the budget is generous; the goal is only to
+ * prevent a permanently stuck "Generating…" indicator if the runtime
+ * silently dies.  When the watchdog fires, the renderer cancels the
+ * stream and surfaces a structured error so the user can retry.
+ */
+const OFFLINE_STREAM_IDLE_TIMEOUT_MS = 180_000;
+
+/**
  * Returns true when a chat request should be routed to the local llama.cpp
  * runtime rather than OpenRouter.
  * - "offline" mode: always use local runtime.
@@ -136,6 +149,14 @@ export function useChat(conversationId: string | null) {
    * cancel reaches the main process.
    */
   const cancelledRequestIds = useRef<Set<string>>(new Set());
+  /**
+   * Watchdog timer for the active offline stream.  Reset on every
+   * token / phase event from the local runtime, cleared on END /
+   * ERROR / user-stop.  When it fires the stream is considered hung
+   * and the renderer transitions to `failed` so the indicator never
+   * gets pinned forever on a generic label.
+   */
+  const offlineWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirror of streamingText in a ref so event callbacks see the latest value
   const streamingTextRef = useRef(streamingText);
   streamingTextRef.current = streamingText;
@@ -146,6 +167,46 @@ export function useChat(conversationId: string | null) {
   conversationIdRef.current = conversationId;
   const addIncognitoMessageRef = useRef(addIncognitoMessage);
   addIncognitoMessageRef.current = addIncognitoMessage;
+
+  // ── Offline stream watchdog helpers ────────────────────────────────────────
+  // Kept as refs / inline closures (not callbacks) so the IPC effect below
+  // can read them without re-subscribing every render.  `clearOfflineWatchdog`
+  // is also called on unmount via the effect cleanup.
+  const clearOfflineWatchdog = useCallback(() => {
+    if (offlineWatchdog.current) {
+      clearTimeout(offlineWatchdog.current);
+      offlineWatchdog.current = null;
+    }
+  }, []);
+  const kickOfflineWatchdog = useCallback(
+    (requestId: string) => {
+      clearOfflineWatchdog();
+      offlineWatchdog.current = setTimeout(() => {
+        // Abort only if this request is still the active one — late
+        // events (e.g. after a previous request) must never trip a
+        // newer in-flight stream.
+        if (activeRequestId.current !== requestId) return;
+        cancelledRequestIds.current.add(requestId);
+        try {
+          ipc.stopOfflineStream(requestId);
+        } catch (err) {
+          console.error("[useChat] stop after watchdog timeout failed:", err);
+        }
+        activeRequestId.current = null;
+        setStreamState("failed");
+        resetStreaming();
+        const message =
+          "The offline runtime stopped responding. It may still be loading the model — try again, or restart the runtime from Offline Models.";
+        setLastStreamError({ message, actions: ["retry"] });
+        toast.error(message, { duration: 6000 });
+        setTimeout(
+          () => cancelledRequestIds.current.delete(requestId),
+          CANCELLED_REQUEST_CLEANUP_DELAY_MS,
+        );
+      }, OFFLINE_STREAM_IDLE_TIMEOUT_MS);
+    },
+    [clearOfflineWatchdog, setStreamState, resetStreaming, setLastStreamError],
+  );
 
   // ── IPC listeners ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -257,6 +318,7 @@ export function useChat(conversationId: string | null) {
         const { requestId, token } = payload as TokenPayload;
         if (cancelledRequestIds.current.has(requestId)) return;
         if (requestId === activeRequestId.current) {
+          kickOfflineWatchdog(requestId);
           appendStreamingToken(token);
         }
       },
@@ -271,6 +333,7 @@ export function useChat(conversationId: string | null) {
         // reset state.  Don't re-process the END event.
         if (cancelledRequestIds.current.has(requestId)) return;
         if (requestId !== activeRequestId.current) return;
+        clearOfflineWatchdog();
 
         const fullText = streamingTextRef.current;
         activeRequestId.current = null;
@@ -319,6 +382,7 @@ export function useChat(conversationId: string | null) {
       (_e: IpcRendererEvent, payload: unknown) => {
         const p = payload as { requestId: string; error: string };
         if (p.requestId !== activeRequestId.current) return;
+        clearOfflineWatchdog();
         activeRequestId.current = null;
         setStreamState("failed");
         resetStreaming();
@@ -350,6 +414,7 @@ export function useChat(conversationId: string | null) {
         };
         if (cancelledRequestIds.current.has(p.requestId)) return;
         if (p.requestId !== activeRequestId.current) return;
+        kickOfflineWatchdog(p.requestId);
         setStreamState(p.phase);
       },
     );
@@ -363,8 +428,9 @@ export function useChat(conversationId: string | null) {
       offOfflineEnd();
       offOfflineError();
       offOfflinePhase();
+      clearOfflineWatchdog();
     };
-  }, [appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState]);
+  }, [appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState, kickOfflineWatchdog, clearOfflineWatchdog]);
 
   // ── Internal helper: dispatch a chat stream request ────────────────────────
   const dispatchStream = useCallback(
@@ -428,8 +494,15 @@ export function useChat(conversationId: string | null) {
 
       if (resolved.kind === "offline") {
         // ── Offline path: local llama.cpp runtime ──────────────────────
-        // No API key required; the runtime manager handles the rest.
-        setStreamState("streaming");
+        // Seed an offline-specific lifecycle phase up front so the
+        // streaming indicator never flashes the generic "Streaming
+        // response…" label while we wait for the first OFFLINE_CHAT_PHASE
+        // event from the main process.  The phase will be refined to
+        // "loading-model" / "processing-prompt" / "generating" as those
+        // events arrive.  Also start the watchdog so a hung runtime
+        // can never pin the UI in this state forever.
+        setStreamState("runtime-starting");
+        kickOfflineWatchdog(requestId);
         ipc.sendOfflineChatStream({
           requestId,
           modelId: resolved.modelId,
@@ -459,7 +532,7 @@ export function useChat(conversationId: string | null) {
       setStreamState("streaming");
     },
     [currentMode, offlineState, activeOfflineModelId, getConversationFromCache, setStreaming,
-     setStreamState, setLastStreamError, setRoutingInfo, advancedParams, setMode, setOfflineManagementOpen],
+     setStreamState, setLastStreamError, setRoutingInfo, advancedParams, setMode, setOfflineManagementOpen, kickOfflineWatchdog],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
@@ -573,6 +646,9 @@ export function useChat(conversationId: string | null) {
     setStreamState("stopping");
     const usingOffline = shouldUseOfflineBackend(currentMode, offlineState);
     if (usingOffline) {
+      // Clear the watchdog right away — the user-initiated stop is the
+      // terminal signal here, not a runtime-hang timeout.
+      clearOfflineWatchdog();
       // Mark the request as cancelled so any in-flight token events that
       // race with the stop are dropped on the renderer side too.
       cancelledRequestIds.current.add(id);
@@ -587,6 +663,10 @@ export function useChat(conversationId: string | null) {
       const finalize = () => {
         setStreamState("completed");
         resetStreaming();
+        // Brief terminal feedback so the user knows the stop actually
+        // landed — without this there's no visible difference between
+        // "stopped early" and "finished naturally".
+        toast("Stopped", { duration: 1500 });
         // Drop the entry after a few seconds — long enough that any
         // late tokens from the runtime are still suppressed.
         setTimeout(() => cancelledRequestIds.current.delete(id), CANCELLED_REQUEST_CLEANUP_DELAY_MS);
@@ -626,7 +706,7 @@ export function useChat(conversationId: string | null) {
       // The main process sends OR_CHAT_END after aborting — wait for it
       // to drive the UI transition (online cancellation is fast).
     }
-  }, [currentMode, offlineState, setStreamState, qc, resetStreaming]);
+  }, [currentMode, offlineState, setStreamState, qc, resetStreaming, clearOfflineWatchdog]);
 
   // ── Edit the last user message and re-stream ───────────────────────────────
   // Removes the last user message + any assistant reply that follows it,

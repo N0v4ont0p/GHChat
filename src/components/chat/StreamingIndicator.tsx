@@ -4,10 +4,19 @@ import { useModeStore } from "@/stores/mode-store";
 export function StreamingIndicator() {
   const { routingInfo, streamState } = useChatStore();
   const activeOfflineModelLabel = useModeStore((s) => s.activeOfflineModelLabel);
+  const currentMode = useModeStore((s) => s.currentMode);
   // Map every lifecycle state to a friendly label.  Offline-specific phases
   // (runtime-starting / loading-model / processing-prompt / generating) make
   // slow on-device boot legible — without them, "streaming" lingers for many
   // seconds while llama.cpp spawns and loads the model file from disk.
+  // The default fallback differs by mode so offline streams are never
+  // pinned to a misleading "Streaming response…" label.  In practice the
+  // offline path always seeds a specific phase in dispatchStream, so this
+  // branch is only reached if a phase event is dropped or arrives out of
+  // order on slow hardware — keeping a calm, honest label avoids the
+  // "stuck on Streaming response…" complaint that motivated this fix.
+  const isOffline = currentMode === "offline";
+  const fallbackLabel = isOffline ? "Working on your reply…" : "Streaming response…";
   const label =
     streamState === "validating"
       ? "Validating connection…"
@@ -25,7 +34,7 @@ export function StreamingIndicator() {
                   ? "Processing your prompt…"
                   : streamState === "generating"
                     ? "Generating response…"
-                    : "Streaming response…";
+                    : fallbackLabel;
 
   return (
     <div className="flex items-center gap-2 px-6 py-4">
