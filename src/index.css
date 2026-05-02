@@ -4,7 +4,9 @@
 
 @layer base {
   :root {
-    --background: 240 10% 3.9%;
+    /* Deeper, calmer base — pulls the chrome away from the message column
+       so cards/panels actually feel layered rather than flat. */
+    --background: 240 12% 3.2%;
     --foreground: 0 0% 98%;
     --card: 240 10% 6%;
     --card-foreground: 0 0% 98%;
@@ -15,18 +17,28 @@
     --secondary: 240 5% 13%;
     --secondary-foreground: 0 0% 98%;
     --muted: 240 5% 15%;
-    --muted-foreground: 240 5% 65%;
+    --muted-foreground: 240 5% 68%;
     --accent: 263 70% 65%;
     --accent-foreground: 0 0% 100%;
-    --border: 240 5% 16%;
+    --border: 240 6% 17%;
     --input: 240 5% 13%;
     --ring: 263 70% 65%;
-    --radius: 0.65rem;
+    --radius: 0.75rem;
     /* Extended palette */
     --primary-glow: 263 70% 65%;
-    --surface-1: 240 10% 5%;
-    --surface-2: 240 8% 8%;
-    --surface-3: 240 6% 11%;
+    --surface-1: 240 11% 4.5%;
+    --surface-2: 240 9% 7%;
+    --surface-3: 240 7% 10%;
+
+    /* Elevation shadow tokens — calibrated for dark-first surfaces.
+       Each step layers a soft ambient shadow with a subtle key shadow
+       so cards read as gently floating without glow halos. */
+    --shadow-elev-1: 0 1px 0 0 hsl(0 0% 100% / 0.03) inset,
+      0 1px 2px 0 hsl(0 0% 0% / 0.35),
+      0 4px 12px -4px hsl(0 0% 0% / 0.30);
+    --shadow-elev-2: 0 1px 0 0 hsl(0 0% 100% / 0.04) inset,
+      0 2px 6px 0 hsl(0 0% 0% / 0.45),
+      0 12px 32px -8px hsl(0 0% 0% / 0.45);
   }
 
   * {
@@ -122,6 +134,43 @@
   /* Glow ring on focus */
   .focus-glow:focus-within {
     box-shadow: 0 0 0 1px hsl(var(--primary) / 0.4), 0 0 12px 0 hsl(var(--primary) / 0.15);
+  }
+
+  /* Elevation shadows — use sparingly on cards/composer/popovers */
+  .elev-1 {
+    box-shadow: var(--shadow-elev-1);
+  }
+  .elev-2 {
+    box-shadow: var(--shadow-elev-2);
+  }
+
+  /* Ambient app backdrop — extremely soft radial accents to break up
+     the flat dark surface without competing with content. Apply to the
+     root chrome layer so it sits behind every panel. */
+  .app-ambient {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(
+        70% 55% at 18% 0%,
+        hsl(263 70% 65% / 0.06) 0%,
+        transparent 60%
+      ),
+      radial-gradient(
+        50% 40% at 100% 100%,
+        hsl(220 80% 60% / 0.04) 0%,
+        transparent 65%
+      );
+  }
+
+  /* Hairline divider — subtle gradient that fades at the edges.
+     Use on chrome borders that sit between two semantic surfaces. */
+  .hairline-x {
+    background-image: linear-gradient(
+      to right,
+      transparent,
+      hsl(var(--border) / 0.7),
+      transparent
+    );
   }
 
   /* Glow pulse for streaming indicator dot */

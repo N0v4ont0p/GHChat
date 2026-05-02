@@ -396,11 +396,11 @@ export function Sidebar() {
 
   return (
     <TooltipProvider delayDuration={400}>
-      <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/40 bg-card/10">
+      <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/50 bg-[hsl(var(--surface-1))]/85 backdrop-blur-md">
         {/* Brand header */}
-        <div className="flex items-center gap-2 px-3 pt-3 pb-2 select-none">
+        <div className="flex items-center gap-2 px-3.5 pt-3.5 pb-2.5 select-none">
           <img src={logoUrl} alt="GHchat" className="h-5 w-5 object-contain" />
-          <span className="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-widest">
+          <span className="text-[11px] font-semibold text-muted-foreground/65 uppercase tracking-[0.18em]">
             Chats
           </span>
         </div>
@@ -606,7 +606,7 @@ export class SidebarErrorBoundary extends Component<
   override render() {
     if (this.state.error) {
       return (
-        <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/40 bg-card/10 items-center justify-center gap-3 px-4 py-8 text-center">
+        <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/50 bg-[hsl(var(--surface-1))]/85 backdrop-blur-md items-center justify-center gap-3 px-4 py-8 text-center">
           <AlertTriangle className="h-7 w-7 text-amber-400/60" />
           <p className="text-xs text-amber-400/80 font-medium">Sidebar error</p>
           <p className="text-[11px] text-muted-foreground/60 leading-relaxed break-all">

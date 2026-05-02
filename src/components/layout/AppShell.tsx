@@ -65,7 +65,7 @@ export function AppShell() {
     (offlineState !== "installed" || !activeOfflineModelId);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
+    <div className="app-ambient flex h-screen flex-col overflow-hidden">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <SidebarErrorBoundary>

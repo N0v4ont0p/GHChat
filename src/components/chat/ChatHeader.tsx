@@ -277,10 +277,10 @@ export function ChatHeader() {
     <TooltipProvider delayDuration={400}>
       <div
         className={cn(
-          "flex h-12 shrink-0 items-center justify-between border-b px-4 backdrop-blur-sm transition-colors gap-3",
+          "flex h-12 shrink-0 items-center justify-between border-b px-5 backdrop-blur-md transition-colors gap-3",
           incognitoMode
             ? "border-amber-500/30 bg-amber-950/20"
-            : "border-border/40 bg-card/20",
+            : "border-border/50 bg-[hsl(var(--surface-2))]/60",
         )}
       >
         {/* Conversation title (always visible) — single line, truncated so

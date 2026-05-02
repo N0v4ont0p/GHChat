@@ -109,7 +109,10 @@ export function EmptyState() {
         transition={{ duration: 0.3, delay: 0.06, ease: "easeOut" }}
         className="space-y-2"
       >
-        <h2 className="text-2xl font-bold tracking-tight">
+        <h2 className={cn(
+          "text-3xl font-semibold tracking-tight",
+          incognitoMode ? "text-foreground" : "text-gradient",
+        )}>
           {incognitoMode ? "Incognito session" : "Start a conversation"}
         </h2>
         {incognitoMode ? (

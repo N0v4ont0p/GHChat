@@ -248,7 +248,7 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
     : (isStreaming ? "Draft next message…" : baseModePlaceholder);
 
   return (
-    <div className="shrink-0 border-t border-border/30 bg-card/10 px-4 py-3">
+    <div className="shrink-0 border-t border-border/50 bg-[hsl(var(--surface-2))]/60 px-4 py-3 backdrop-blur-md">
       {/* Capability params bar — always shown, controls gated by model capabilities */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
           {/* Web Search toggle — only when model supports it */}
@@ -322,11 +322,11 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
 
       <div
         className={cn(
-          "focus-glow flex items-end gap-2 rounded-xl border bg-secondary/50 px-3 py-2.5 transition-all duration-200",
+          "focus-glow flex items-end gap-2 rounded-2xl border bg-[hsl(var(--surface-3))]/85 px-3 py-2.5 transition-all duration-200 elev-1",
           isStreaming
-            ? "border-primary/25 bg-secondary/40"
+            ? "border-primary/30 bg-[hsl(var(--surface-3))]/70"
             : incognitoMode
-              ? "border-amber-500/30 bg-amber-500/5"
+              ? "border-amber-500/35 bg-amber-500/5"
               : "border-border/60 hover:border-border/90",
         )}
       >

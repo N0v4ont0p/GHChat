@@ -177,8 +177,8 @@ export function MessageBubble({ message, isLastAssistant, isLastUser, isStreamin
             className={cn(
               "message-content relative text-[14.5px] leading-relaxed",
               isUser
-                ? "rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-primary-foreground shadow-sm"
-                : "rounded-2xl rounded-bl-md bg-card/55 px-4 py-3 text-foreground ring-1 ring-border/25",
+                ? "rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-primary-foreground shadow-md shadow-primary/20"
+                : "rounded-2xl rounded-bl-md bg-[hsl(var(--surface-2))]/85 px-4 py-3 text-foreground ring-1 ring-border/40 elev-1",
             )}
           >
             {isUser ? (

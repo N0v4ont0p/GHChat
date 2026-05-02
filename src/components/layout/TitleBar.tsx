@@ -26,7 +26,7 @@ export function TitleBar() {
       </div>
 
       {/* Hairline bottom border */}
-      <div className="absolute bottom-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-border/60 to-transparent" />
+      <div className="hairline-x absolute bottom-0 inset-x-0 h-px" />
     </div>
   );
 }
