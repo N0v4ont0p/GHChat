@@ -5,6 +5,7 @@ import logoUrl from "@/assets/logo.svg";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -452,9 +453,12 @@ export function Sidebar() {
         {/* Conversation list */}
         <ScrollArea className="flex-1 px-2">
           {isLoading ? (
-            <div className="space-y-1 p-1">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-8 animate-pulse rounded-md bg-secondary/30" />
+            <div className="space-y-1.5 p-1">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="space-y-1 px-1.5 py-1.5">
+                  <Skeleton className="h-3 w-[80%]" />
+                  <Skeleton className="h-2 w-[40%] opacity-70" />
+                </div>
               ))}
             </div>
           ) : isError || !dbAvailable ? (

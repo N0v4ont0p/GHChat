@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -163,7 +164,7 @@ function InstalledRow({ model, busy, onActivate, onReveal, onRemove, onRepair }:
   return (
     <div
       className={cn(
-        "rounded-xl border bg-secondary/20 px-3.5 py-3 space-y-2",
+        "rounded-xl border bg-secondary/20 px-3.5 py-3 space-y-2 transition-[background-color,border-color,box-shadow] duration-200 ease-out",
         model.isActive
           ? MODE_ACCENT.offline.selectedCard
           : "border-border/40",
@@ -645,8 +646,17 @@ export function OfflineManagementModal() {
         <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
           {/* Loading state */}
           {loading && !installed && (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/50" />
+            <div className="space-y-2">
+              {[1, 2].map((i) => (
+                <div key={i} className="rounded-xl border border-border/40 bg-secondary/20 px-3.5 py-3 space-y-2">
+                  <Skeleton className="h-3 w-[55%]" />
+                  <Skeleton className="h-2 w-[80%] opacity-70" />
+                  <div className="flex gap-2 pt-1">
+                    <Skeleton className="h-6 w-20" />
+                    <Skeleton className="h-6 w-16" />
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
@@ -681,7 +691,7 @@ export function OfflineManagementModal() {
               <p className="text-[11px] text-emerald-400/80">{installProgress.step}</p>
               <div className="h-1.5 rounded-full bg-emerald-500/10 overflow-hidden">
                 <div
-                  className="h-full bg-emerald-500/60 transition-all"
+                  className="h-full bg-emerald-500/60 transition-[width] duration-500 ease-out"
                   style={{ width: `${Math.max(0, Math.min(100, installProgress.pct))}%` }}
                 />
               </div>

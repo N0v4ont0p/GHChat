@@ -1,5 +1,7 @@
 import { useChatStore } from "@/stores/chat-store";
 import { useModeStore } from "@/stores/mode-store";
+import { MODE_ACCENT } from "@/lib/mode-accent";
+import { cn } from "@/lib/utils";
 
 export function StreamingIndicator() {
   const { routingInfo, streamState } = useChatStore();
@@ -36,19 +38,31 @@ export function StreamingIndicator() {
                     ? "Generating response…"
                     : fallbackLabel;
 
+  // Per-mode accent for the leading pulse dot — keeps the indicator
+  // visually anchored to the active mode (online=blue, offline=emerald,
+  // auto=amber) without dominating the row.
+  const accentDot = MODE_ACCENT[currentMode]?.dot ?? MODE_ACCENT.online.dot;
+
   return (
     <div className="flex items-center gap-2 px-6 py-4">
+      <span
+        className={cn(
+          "h-1.5 w-1.5 shrink-0 rounded-full motion-safe:animate-glow-pulse",
+          accentDot,
+        )}
+        aria-hidden="true"
+      />
       <div className="flex items-end gap-[3px] h-4">
         {[0, 1, 2, 3, 4].map((i) => (
           <span
             key={i}
-            className="inline-block w-[3px] rounded-full bg-primary/70 animate-wave origin-bottom"
+            className="inline-block w-[3px] rounded-full bg-primary/70 motion-safe:animate-wave origin-bottom"
             style={{ animationDelay: `${i * 0.11}s` }}
           />
         ))}
       </div>
       <div className="flex flex-col gap-0.5">
-        <span className="text-xs text-muted-foreground/60 animate-pulse-subtle">
+        <span className="text-xs text-muted-foreground/60 motion-safe:animate-pulse-subtle">
           {label}
         </span>
         {routingInfo && (

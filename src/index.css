@@ -253,3 +253,17 @@
 .hljs-selector-id    { color: #bd93f9; }
 .hljs-meta    { color: #6272a4; }
 
+/* Respect users who prefer reduced motion: disable our looping/decorative
+   animations and shorten everything else.  Functional state transitions
+   on color/opacity are kept (they don't induce motion) but transforms
+   collapse so nothing jumps or pulses. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+

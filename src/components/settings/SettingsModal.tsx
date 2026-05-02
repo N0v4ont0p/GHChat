@@ -613,7 +613,7 @@ export function SettingsModal() {
                       key={m.id}
                       onClick={() => setSelectedModel(m.id)}
                       className={cn(
-                        "w-full rounded-xl border p-3 text-left transition-all",
+                        "w-full rounded-xl border p-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out motion-safe:hover:-translate-y-px motion-safe:active:scale-[0.997] motion-safe:active:translate-y-0",
                         isSelected
                           ? isAuto
                             ? "border-cyan-500/40 bg-cyan-500/5 ring-1 ring-cyan-500/20"
