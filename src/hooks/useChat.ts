@@ -114,6 +114,7 @@ export function useChat(conversationId: string | null) {
     incognitoMessages,
     addIncognitoMessage,
     setIncognitoMessages,
+    setOfflineStopPendingAt,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
   const { currentMode, offlineState, activeOfflineModelId, setOfflineManagementOpen, setMode } = useModeStore();
@@ -654,6 +655,13 @@ export function useChat(conversationId: string | null) {
       cancelledRequestIds.current.add(id);
       ipc.stopOfflineStream(id);
 
+      // Record the stop timestamp so the Composer can decide whether to
+      // surface a "Force stop runtime" affordance — the runtime may keep
+      // unwinding for another beat after we optimistically reset the UI
+      // below, and the user shouldn't be left wondering whether the next
+      // chat will be slow to start.
+      setOfflineStopPendingAt(Date.now());
+
       // Persist whatever was already streamed and reset UI state right
       // now.  Without this, a slow runtime could keep the user staring
       // at "Stopping…" for several seconds while llama.cpp unwinds.
@@ -706,7 +714,7 @@ export function useChat(conversationId: string | null) {
       // The main process sends OR_CHAT_END after aborting — wait for it
       // to drive the UI transition (online cancellation is fast).
     }
-  }, [currentMode, offlineState, setStreamState, qc, resetStreaming, clearOfflineWatchdog]);
+  }, [currentMode, offlineState, setStreamState, qc, resetStreaming, clearOfflineWatchdog, setOfflineStopPendingAt]);
 
   // ── Edit the last user message and re-stream ───────────────────────────────
   // Removes the last user message + any assistant reply that follows it,

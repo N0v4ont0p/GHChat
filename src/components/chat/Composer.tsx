@@ -31,7 +31,7 @@ const CHAR_MAX = 4000;
 const DEFAULT_MAX_TOKENS = 2048;
 
 export function Composer({ onSend, onStop, isStreaming, disabled = false, disabledPlaceholder }: Props) {
-  const { draft, setDraft, incognitoMode, streamState } = useChatStore();
+  const { draft, setDraft, incognitoMode, streamState, offlineStopPendingAt, setOfflineStopPendingAt } = useChatStore();
   const { selectedModel, advancedParams, setAdvancedParams } = useSettingsStore();
   const { currentMode, activeOfflineModelLabel, offlineState } = useModeStore();
   const { data: models = [] } = useModels();
@@ -46,7 +46,19 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
   // the runtime.  Hardcoded rather than read from settings because the
   // composer doesn't have a reactive subscription to offline_settings.
   const FORCE_STOP_REVEAL_MS = 1200;
+  // Hard cap on how long we keep watching for a stuck runtime after a
+  // Stop click.  Past this, the cancel watchdog has already force-killed
+  // anything stuck, so showing Force Stop further would be misleading.
+  const OFFLINE_STOP_PENDING_MAX_MS = 8_000;
+  // Polling interval used while a stop is pending to confirm the runtime
+  // process actually went idle (and therefore the Force Stop affordance
+  // should be hidden).  Cheap query — only runs while pending.
+  const RUNTIME_PROBE_INTERVAL_MS = 500;
   const [forceStopAvailable, setForceStopAvailable] = useState(false);
+  // Whether the offline runtime subprocess is currently alive.  Polled
+  // only while an offline stop is pending so we can hide Force Stop the
+  // moment the runtime drains on its own.
+  const [runtimeRunning, setRuntimeRunning] = useState<boolean | null>(null);
 
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
@@ -63,24 +75,97 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
 
   // Reveal the force-stop button only after a graceful stop has lingered
   // long enough that the user might reasonably wonder if the app is stuck.
+  //
+  // We can't gate this on `streamState === "stopping"` alone: the offline
+  // stop flow optimistically transitions streamState to "completed" almost
+  // immediately so the streaming bubble can finalize, even though the
+  // underlying llama.cpp runtime may still be unwinding.  Instead, we use
+  // the `offlineStopPendingAt` timestamp set by useChat.stopStream() and
+  // poll the real runtime state — Force Stop appears once the reveal
+  // delay elapses AND the runtime is still confirmed running, and hides
+  // again the moment the runtime drains on its own.
   useEffect(() => {
-    if (streamState !== "stopping" || !willUseOffline) {
+    if (!willUseOffline) {
       setForceStopAvailable(false);
+      setRuntimeRunning(null);
       return;
     }
-    const t = setTimeout(() => setForceStopAvailable(true), FORCE_STOP_REVEAL_MS);
-    return () => clearTimeout(t);
-  }, [streamState, willUseOffline]);
+    const stopPending =
+      offlineStopPendingAt !== null &&
+      Date.now() - offlineStopPendingAt < OFFLINE_STOP_PENDING_MAX_MS;
+    const stoppingNow = streamState === "stopping";
+    if (!stopPending && !stoppingNow) {
+      setForceStopAvailable(false);
+      setRuntimeRunning(null);
+      return;
+    }
+
+    let cancelled = false;
+    const since = offlineStopPendingAt ?? Date.now();
+    const elapsed = Date.now() - since;
+
+    const reveal = () => {
+      if (!cancelled) setForceStopAvailable(true);
+    };
+    const revealTimer =
+      elapsed >= FORCE_STOP_REVEAL_MS
+        ? (reveal(), null)
+        : setTimeout(reveal, FORCE_STOP_REVEAL_MS - elapsed);
+
+    // Probe the runtime liveness so the Force Stop button vanishes the
+    // instant the runtime confirms it has actually exited.  Cheap call —
+    // only runs while a stop is pending.
+    const probe = async () => {
+      try {
+        const info = await ipc.getOfflineInfo();
+        if (cancelled) return;
+        setRuntimeRunning(info.isRuntimeRunning);
+        if (!info.isRuntimeRunning) {
+          // Runtime drained — clear the pending flag so Force Stop hides
+          // immediately and we don't keep polling.
+          setOfflineStopPendingAt(null);
+        }
+      } catch {
+        // Ignore — best-effort liveness probe.
+      }
+    };
+    void probe();
+    const probeInterval = setInterval(() => void probe(), RUNTIME_PROBE_INTERVAL_MS);
+
+    // Auto-clear the pending flag once the maximum window elapses so the
+    // affordance can't get stuck on screen if the runtime never reports.
+    const expireTimer = setTimeout(
+      () => {
+        if (cancelled) return;
+        setOfflineStopPendingAt(null);
+      },
+      Math.max(0, OFFLINE_STOP_PENDING_MAX_MS - elapsed),
+    );
+
+    return () => {
+      cancelled = true;
+      if (revealTimer) clearTimeout(revealTimer);
+      clearInterval(probeInterval);
+      clearTimeout(expireTimer);
+    };
+  }, [streamState, willUseOffline, offlineStopPendingAt, setOfflineStopPendingAt]);
+
+  // Hide Force Stop once we've confirmed the runtime is actually idle —
+  // even if the reveal timer already fired.
+  const showForceStop = forceStopAvailable && runtimeRunning !== false;
 
   const handleForceStop = useCallback(async () => {
     try {
       await ipc.forceStopOfflineRuntime();
+      setOfflineStopPendingAt(null);
+      setForceStopAvailable(false);
+      setRuntimeRunning(false);
       toast.success("Offline runtime force-stopped.");
     } catch (err) {
       console.error("[Composer] force-stop runtime failed:", err);
       toast.error("Failed to force-stop the offline runtime.");
     }
-  }, []);
+  }, [setOfflineStopPendingAt]);
 
   // Auto-resize textarea
   const resize = useCallback(() => {
@@ -262,7 +347,7 @@ export function Composer({ onSend, onStop, isStreaming, disabled = false, disabl
             {/* Force-stop runtime: revealed only after a graceful stop has
                 been pending too long.  Hard-kills llama-server so the user
                 isn't left staring at "Stopping…" on a slow on-device model. */}
-            {forceStopAvailable && (
+            {showForceStop && (
               <Button
                 size="sm"
                 variant="ghost"
