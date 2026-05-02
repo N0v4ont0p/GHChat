@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2, Search, SlidersHorizontal, HardDrive } from "lucide-react";
+import { ExternalLink, CheckCircle2, XCircle, Loader2, Check, Key, Cpu, ShieldAlert, Clock, AlertTriangle, RefreshCw, LogOut, Trash2, Search, SlidersHorizontal, HardDrive, Settings as SettingsIcon, Cloud, Palette, Database } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -134,6 +134,7 @@ export function SettingsModal() {
     useSettingsStore();
   const setSelectedConversationId = useChatStore((s) => s.setSelectedConversationId);
   const offlineState = useModeStore((s) => s.offlineState);
+  const currentMode = useModeStore((s) => s.currentMode);
   const offlineAvailable = offlineState === "installed";
   const qc = useQueryClient();
 
@@ -146,7 +147,10 @@ export function SettingsModal() {
   const [saving, setSaving] = useState(false);
   const [removingKey, setRemovingKey] = useState(false);
   const [clearingData, setClearingData] = useState(false);
-  const [activeTab, setActiveTab] = useState<"apikey" | "model" | "offline">("model");
+  const [activeTab, setActiveTab] = useState<
+    "general" | "online" | "offline" | "appearance" | "storage"
+  >("general");
+  const [onlineSection, setOnlineSection] = useState<"apikey" | "models">("apikey");
   const [selectedCategory, setSelectedCategory] = useState<ModelCategory>("best");
   const [modelSearch, setModelSearch] = useState("");
   const [sortBy, setSortBy] = useState<"default" | "context" | "name">("default");
@@ -266,39 +270,106 @@ export function SettingsModal() {
         <DialogHeader className="px-6 pt-5 pb-4 border-b border-border/50">
           <DialogTitle className="text-base font-semibold">Settings</DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
-            Configure your OpenRouter API key and preferred model.
+            Cloud (OpenRouter) and local-runtime (offline) configuration are kept in separate sections.
           </DialogDescription>
         </DialogHeader>
 
         {/* Tab navigation */}
-        <div className="flex gap-0 border-b border-border/50 px-6">
+        <div className="flex gap-0 border-b border-border/50 px-6 overflow-x-auto">
           {(
-            ["apikey", "model", ...(offlineAvailable ? (["offline"] as const) : [])] as const
-          ).map((tab) => (
+            [
+              { id: "general", label: "General", icon: SettingsIcon },
+              { id: "online", label: "Online", icon: Cloud },
+              ...(offlineAvailable
+                ? ([{ id: "offline", label: "Offline", icon: HardDrive }] as const)
+                : []),
+              { id: "appearance", label: "Appearance", icon: Palette },
+              { id: "storage", label: "Storage / Diagnostics", icon: Database },
+            ] as const
+          ).map(({ id, label, icon: Icon }) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
+              key={id}
+              onClick={() => setActiveTab(id)}
               className={cn(
-                "flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs font-medium transition-colors -mb-px",
-                activeTab === tab
+                "flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs font-medium transition-colors -mb-px",
+                activeTab === id
                   ? "border-primary text-foreground"
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {tab === "apikey" ? (
-                <Key className="h-3 w-3" />
-              ) : tab === "model" ? (
-                <Cpu className="h-3 w-3" />
-              ) : (
-                <HardDrive className="h-3 w-3" />
-              )}
-              {tab === "apikey" ? "API Key" : tab === "model" ? "Models" : "Offline"}
+              <Icon className="h-3 w-3" />
+              {label}
             </button>
           ))}
         </div>
 
         <div className="px-6 py-5 max-h-[520px] overflow-y-auto">
-          {activeTab === "apikey" && (
+          {activeTab === "general" && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border/50 bg-card/50 p-4 space-y-2">
+                <p className="text-sm font-medium">About GHChat</p>
+                <p className="text-xs text-muted-foreground">
+                  GHChat is a desktop chat client that works with both cloud models (via OpenRouter)
+                  and fully local models that run on your machine. Use the tabs above to configure each
+                  area independently.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-card/50 p-4 space-y-2">
+                <p className="text-sm font-medium">Current mode</p>
+                <p className="text-xs text-muted-foreground">
+                  Active operating mode:{" "}
+                  <span className="text-foreground font-medium capitalize">{currentMode}</span>.
+                  Switch modes from the chat header. Each mode has its own settings section.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-card/50 p-4 space-y-1.5 text-xs text-muted-foreground">
+                <p className="text-sm font-medium text-foreground">How settings are organized</p>
+                <p>
+                  <span className="text-foreground">Online</span> — OpenRouter API key and cloud model
+                  selection.
+                </p>
+                <p>
+                  <span className="text-foreground">Offline</span> — Local llama.cpp runtime, installed
+                  models, generation parameters.
+                </p>
+                <p>
+                  <span className="text-foreground">Appearance</span> — Theme and visual preferences.
+                </p>
+                <p>
+                  <span className="text-foreground">Storage / Diagnostics</span> — Connection
+                  diagnostics and data management (clear data, sign out).
+                </p>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "online" && (
+            <div className="space-y-4">
+              {/* Online sub-nav */}
+              <div className="flex gap-1 rounded-lg border border-border/50 bg-card/30 p-1">
+                {(
+                  [
+                    { id: "apikey", label: "API key", icon: Key },
+                    { id: "models", label: "Models", icon: Cpu },
+                  ] as const
+                ).map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => setOnlineSection(id)}
+                    className={cn(
+                      "flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                      onlineSection === id
+                        ? "bg-primary/15 text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="h-3 w-3" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {onlineSection === "apikey" && (
             <div className="space-y-4">
               {/* Connected status banner */}
               {storedKeyExists && !changingKey && (
@@ -403,96 +474,15 @@ export function SettingsModal() {
                   <span className="text-foreground font-medium">Electron safeStorage</span>.
                   Never written in plain text or uploaded anywhere.
                 </p>
-                {diagnostics && (
-                  <div className="space-y-1 pt-1">
-                    <LayerStatus label="API Key" layer={diagnostics.keyValidation} />
-                    <LayerStatus label="Catalog" layer={diagnostics.catalogValidation} />
-                    <LayerStatus label="Models" layer={diagnostics.modelValidation} />
-                    <LayerStatus label="Streaming" layer={diagnostics.streamingValidation} />
-                    {diagnostics.freeModelCount > 0 && (
-                      <p className="text-muted-foreground">
-                        Free models: <span className="text-green-400/90">{diagnostics.freeModelCount}</span>
-                      </p>
-                    )}
-                    {diagnostics.bestWorkingModels.length > 0 && (
-                      <p>
-                        Best working:{" "}
-                        <span className="text-green-400/90">
-                          {diagnostics.bestWorkingModels
-                            .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
-                            .join(", ")}
-                        </span>
-                      </p>
-                    )}
-                    {diagnostics.lastProviderError && (
-                      <p className="text-red-400/90">Last error: {diagnostics.lastProviderError}</p>
-                    )}
-                    {diagnostics.recommendedFallback && (
-                      <p className="text-amber-400/90">
-                        Recommended fallback:{" "}
-                        {availableModels.find((m) => m.id === diagnostics.recommendedFallback)?.name ??
-                          diagnostics.recommendedFallback}
-                      </p>
-                    )}
-                    {diagnostics.usedFallbackRouter && (
-                      <p className="text-amber-400/70">openrouter/free was used as fallback router.</p>
-                    )}
-                    <div className="flex items-center gap-2 pt-1">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-6 text-[10px]"
-                        onClick={async () => {
-                          const refreshed = await ipc.refreshDiagnostics(apiKey.trim() || undefined);
-                          setDiagnostics(refreshed);
-                        }}
-                      >
-                        <RefreshCw className="mr-1 h-2.5 w-2.5" />
-                        Refresh model availability
-                      </Button>
-                      <span className="text-[10px] text-muted-foreground/70">
-                        Last checked {new Date(diagnostics.checkedAt).toLocaleTimeString()}
-                      </span>
-                    </div>
-                  </div>
-                )}
+                <p className="pt-1">
+                  Connection diagnostics and the option to remove your key or clear all data live in{" "}
+                  <span className="text-foreground">Storage / Diagnostics</span>.
+                </p>
               </div>
-
-              {/* Danger zone */}
-              {storedKeyExists && (
-                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 space-y-2">
-                  <p className="text-xs font-medium text-red-400/80">Danger zone</p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
-                      onClick={handleRemoveKey}
-                      disabled={removingKey || clearingData}
-                    >
-                      {removingKey ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <LogOut className="mr-1.5 h-3 w-3" />}
-                      Remove API key / Sign out
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
-                      onClick={handleClearAllData}
-                      disabled={removingKey || clearingData}
-                    >
-                      {clearingData ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1.5 h-3 w-3" />}
-                      Clear all data
-                    </Button>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground/60">
-                    "Remove key" clears your API key and returns to setup. "Clear all data" removes conversations, messages, and your key.
-                  </p>
-                </div>
-              )}
             </div>
-          )}
+              )}
 
-          {activeTab === "model" && (() => {
+              {onlineSection === "models" && (() => {
               const q = modelSearch.trim().toLowerCase();
 
               // Category filter
@@ -750,18 +740,161 @@ export function SettingsModal() {
             </div>
               );
             })()}
+            </div>
+          )}
           {activeTab === "offline" && offlineAvailable && <OfflineSettingsTab />}
+
+          {activeTab === "appearance" && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border/50 bg-card/50 p-4 space-y-2">
+                <p className="text-sm font-medium">Theme</p>
+                <p className="text-xs text-muted-foreground">
+                  GHChat currently ships with a single dark theme tuned for long reading and coding
+                  sessions. Light and high-contrast themes are planned.
+                </p>
+                <div className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-card/40 px-2.5 py-1.5 text-xs">
+                  <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+                  <span className="text-foreground font-medium">Dark</span>
+                  <span className="text-muted-foreground">· active</span>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-card/50 p-4 space-y-1.5 text-xs text-muted-foreground">
+                <p className="text-sm font-medium text-foreground">Density &amp; layout</p>
+                <p>
+                  The chat composer, sidebar, and message bubbles use a fixed comfortable density.
+                  Configurable density and font-size controls will land in a later update.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "storage" && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border/50 bg-card/50 p-3 space-y-2 text-xs text-muted-foreground">
+                <p className="text-sm font-medium text-foreground">OpenRouter diagnostics</p>
+                {diagnostics ? (
+                  <div className="space-y-1">
+                    <LayerStatus label="API Key" layer={diagnostics.keyValidation} />
+                    <LayerStatus label="Catalog" layer={diagnostics.catalogValidation} />
+                    <LayerStatus label="Models" layer={diagnostics.modelValidation} />
+                    <LayerStatus label="Streaming" layer={diagnostics.streamingValidation} />
+                    {diagnostics.freeModelCount > 0 && (
+                      <p>
+                        Free models:{" "}
+                        <span className="text-green-400/90">{diagnostics.freeModelCount}</span>
+                      </p>
+                    )}
+                    {diagnostics.bestWorkingModels.length > 0 && (
+                      <p>
+                        Best working:{" "}
+                        <span className="text-green-400/90">
+                          {diagnostics.bestWorkingModels
+                            .map((id) => availableModels.find((m) => m.id === id)?.name ?? id.split("/").pop() ?? id)
+                            .join(", ")}
+                        </span>
+                      </p>
+                    )}
+                    {diagnostics.lastProviderError && (
+                      <p className="text-red-400/90">Last error: {diagnostics.lastProviderError}</p>
+                    )}
+                    {diagnostics.recommendedFallback && (
+                      <p className="text-amber-400/90">
+                        Recommended fallback:{" "}
+                        {availableModels.find((m) => m.id === diagnostics.recommendedFallback)?.name ??
+                          diagnostics.recommendedFallback}
+                      </p>
+                    )}
+                    {diagnostics.usedFallbackRouter && (
+                      <p className="text-amber-400/70">openrouter/free was used as fallback router.</p>
+                    )}
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 text-[10px]"
+                        onClick={async () => {
+                          const refreshed = await ipc.refreshDiagnostics(apiKey.trim() || undefined);
+                          setDiagnostics(refreshed);
+                        }}
+                      >
+                        <RefreshCw className="mr-1 h-2.5 w-2.5" />
+                        Refresh model availability
+                      </Button>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        Last checked {new Date(diagnostics.checkedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p>
+                      No diagnostics yet. Run a fresh probe of the OpenRouter connection (key, catalog,
+                      models, streaming).
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={async () => {
+                        const refreshed = await ipc.refreshDiagnostics(apiKey.trim() || undefined);
+                        setDiagnostics(refreshed);
+                      }}
+                    >
+                      <RefreshCw className="mr-1.5 h-3 w-3" />
+                      Run diagnostics
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Danger zone */}
+              {storedKeyExists && (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 space-y-2">
+                  <p className="text-xs font-medium text-red-400/80">Danger zone</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
+                      onClick={handleRemoveKey}
+                      disabled={removingKey || clearingData}
+                    >
+                      {removingKey ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <LogOut className="mr-1.5 h-3 w-3" />}
+                      Remove API key / Sign out
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
+                      onClick={handleClearAllData}
+                      disabled={removingKey || clearingData}
+                    >
+                      {clearingData ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1.5 h-3 w-3" />}
+                      Clear all data
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/60">
+                    "Remove key" clears your API key and returns to setup. "Clear all data" removes
+                    conversations, messages, and your key.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <DialogFooter className="px-6 py-4 border-t border-border/50">
           <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(false)}>
-            {activeTab === "offline" ? "Close" : "Cancel"}
+            {activeTab === "online" ? "Cancel" : "Close"}
           </Button>
-          {activeTab !== "offline" && (
+          {activeTab === "online" && (
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={saving || (activeTab === "apikey" && storedKeyExists && !changingKey)}
+              disabled={
+                saving ||
+                (onlineSection === "apikey" && storedKeyExists && !changingKey)
+              }
             >
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save changes"}
             </Button>
