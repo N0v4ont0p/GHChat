@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { MODE_ACCENT } from "@/lib/mode-accent";
 import type {
   OfflineCatalogEntrySummary,
   OfflineInstallProgress,
@@ -164,7 +165,7 @@ function InstalledRow({ model, busy, onActivate, onReveal, onRemove, onRepair }:
       className={cn(
         "rounded-xl border bg-secondary/20 px-3.5 py-3 space-y-2",
         model.isActive
-          ? "border-emerald-500/40 ring-1 ring-emerald-500/20"
+          ? MODE_ACCENT.offline.selectedCard
           : "border-border/40",
       )}
     >

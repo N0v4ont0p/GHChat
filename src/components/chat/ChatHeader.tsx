@@ -9,6 +9,7 @@ import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
 import { useConversations } from "@/hooks/useConversations";
 import { useOfflineState } from "@/hooks/useOfflineState";
+import { MODE_ACCENT } from "@/lib/mode-accent";
 import type { AppMode, ModelVerificationStatus, ModelPreset } from "@/types";
 const CATEGORY_COLORS: Record<string, string> = {
   auto: "bg-cyan-500/15 text-cyan-400",
@@ -28,7 +29,7 @@ function HealthIndicator({ status, modelId }: { status: ModelVerificationStatus;
   if (isAuto) {
     // Auto mode is always "healthy" from the user's perspective
     return (
-      <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-cyan-400/80" />
+      <span className={cn("h-1.5 w-1.5 rounded-full flex-shrink-0", MODE_ACCENT.auto.dot)} />
     );
   }
 
@@ -93,19 +94,19 @@ function CapabilityBadges({ preset }: { preset: ModelPreset | undefined }) {
 
 const MODE_BADGE_CONFIG: Record<AppMode, { label: string; icon: React.ElementType; className: string }> = {
   online: {
-    label: "Online",
+    label: MODE_ACCENT.online.label,
     icon: Globe,
-    className: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+    className: MODE_ACCENT.online.badge,
   },
   auto: {
-    label: "Auto",
+    label: MODE_ACCENT.auto.label,
     icon: Zap,
-    className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
+    className: MODE_ACCENT.auto.badge,
   },
   offline: {
-    label: "Offline",
+    label: MODE_ACCENT.offline.label,
     icon: Cpu,
-    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+    className: MODE_ACCENT.offline.badge,
   },
 };
 
@@ -223,7 +224,7 @@ export function ChatHeader() {
         label: "Auto routing",
         tooltip: "Auto mode: routes to the best free model via OpenRouter.",
         Icon: CircleDot,
-        className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-300",
+        className: cn("border", MODE_ACCENT.auto.badge),
       };
     }
     // Online mode — reflect verification status.

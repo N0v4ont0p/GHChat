@@ -18,6 +18,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useModeStore } from "@/stores/mode-store";
 import { useOfflineState } from "@/hooks/useOfflineState";
 import { ipc } from "@/lib/ipc";
+import { MODE_ACCENT } from "@/lib/mode-accent";
 import type { AppMode, Conversation } from "@/types";
 
 /** Error keywords that indicate a native module ABI mismatch requiring a rebuild. */
@@ -60,19 +61,19 @@ const MODE_CONFIG: Record<AppMode, { label: string; icon: React.ElementType; act
   online: {
     label: "Online",
     icon: Globe,
-    activeClass: "bg-blue-500/20 text-blue-400",
+    activeClass: MODE_ACCENT.online.badgeSolid,
     tooltip: "Online — uses OpenRouter free models",
   },
   auto: {
     label: "Auto",
     icon: Zap,
-    activeClass: "bg-cyan-500/20 text-cyan-400",
+    activeClass: MODE_ACCENT.auto.badgeSolid,
     tooltip: "Auto — uses your installed offline model when available, otherwise online",
   },
   offline: {
     label: "Offline",
     icon: Cpu,
-    activeClass: "bg-emerald-500/20 text-emerald-400",
+    activeClass: MODE_ACCENT.offline.badgeSolid,
     tooltip: "Offline — runs locally on your device, no internet required",
   },
 };
@@ -160,18 +161,18 @@ function formatRelativeTime(ts: number): string {
 const CONV_MODE_BADGE: Record<AppMode, { icon: React.ElementType; className: string; label: string }> = {
   online: {
     icon: Globe,
-    className: "border-blue-500/25 bg-blue-500/10 text-blue-300/80",
-    label: "Online",
+    className: MODE_ACCENT.online.badge,
+    label: MODE_ACCENT.online.label,
   },
   auto: {
     icon: Zap,
-    className: "border-cyan-500/25 bg-cyan-500/10 text-cyan-300/80",
-    label: "Auto",
+    className: MODE_ACCENT.auto.badge,
+    label: MODE_ACCENT.auto.label,
   },
   offline: {
     icon: Cpu,
-    className: "border-emerald-500/25 bg-emerald-500/10 text-emerald-300/80",
-    label: "Offline",
+    className: MODE_ACCENT.offline.badge,
+    label: MODE_ACCENT.offline.label,
   },
 };
 
