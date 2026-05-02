@@ -842,4 +842,10 @@ export const IPC = {
    * than the local hardware can comfortably handle.
    */
   OFFLINE_GET_HARDWARE_PROFILE: "offline:get-hardware-profile",
+  /**
+   * Wipe `tmp/` and `downloads/` under the offline root.  Installed models,
+   * runtime binary, manifests, and DB state are preserved.  Returns
+   * `{ ok: boolean; freedBytes: number; error?: string }`.
+   */
+  OFFLINE_CLEAR_CACHE: "offline:clear-cache",
 } as const;

@@ -193,6 +193,15 @@ export const ipc = {
     api().invoke<OfflineHardwareProfileSnapshot | null>(IPC.OFFLINE_GET_HARDWARE_PROFILE),
 
   /**
+   * Wipe the offline `tmp/` and `downloads/` subdirectories. Returns the
+   * number of bytes freed.  Installed models and runtime binary stay put.
+   */
+  clearOfflineCache: () =>
+    api().invoke<{ ok: boolean; freedBytes: number; error?: string }>(
+      IPC.OFFLINE_CLEAR_CACHE,
+    ),
+
+  /**
    * Reset the consecutive Gemma 4 install failure counter.  Used when
    * the user explicitly chooses to keep trying Gemma 4 after the
    * fallback-offered screen instead of installing a Gemma 3 fallback.

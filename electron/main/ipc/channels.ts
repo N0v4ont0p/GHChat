@@ -130,6 +130,13 @@ export const IPC = {
    */
   OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
   /**
+   * Wipe the offline `tmp/` and `downloads/` subdirectories, freeing space
+   * consumed by failed downloads, partial extracts, and runtime archives.
+   * Installed models, runtime binary, and DB state are NOT touched.
+   * Returns `{ ok, freedBytes }`.
+   */
+  OFFLINE_CLEAR_CACHE: "offline:clear-cache",
+  /**
    * Get the cached HardwareProfile snapshot used by the recommendation
    * engine.  Used by the management UI to render hardware tier and to
    * warn when the active model exceeds the local capacity.

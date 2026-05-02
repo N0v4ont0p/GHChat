@@ -1,6 +1,6 @@
 import type { IpcMain, IpcMainEvent } from "electron";
-import { dirname } from "path";
-import { existsSync, statSync } from "fs";
+import { dirname, join } from "path";
+import { existsSync, statSync, rmSync, mkdirSync, readdirSync, lstatSync } from "fs";
 import { shell, BrowserWindow } from "electron";
 import { IPC } from "../../../src/types";
 import type {
@@ -1146,6 +1146,58 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     const dir = storageService.getOfflineRoot();
     await shell.openPath(dir);
   });
+
+  /**
+   * Wipe the offline `tmp/` and `downloads/` subdirectories.  These hold
+   * partial downloads, runtime archives, and extract scratch space — none
+   * of which are needed once an install completes.  Installed models,
+   * runtime binary, manifests, and DB state are preserved.
+   */
+  ipcMain.handle(
+    IPC.OFFLINE_CLEAR_CACHE,
+    async (): Promise<{ ok: boolean; freedBytes: number; error?: string }> => {
+      const subdirs = ["tmp", "downloads"] as const;
+      let freedBytes = 0;
+      try {
+        for (const sub of subdirs) {
+          const dir = storageService.getSubdir(sub);
+          if (!existsSync(dir)) continue;
+          // Sum sizes before deletion so the UI can report freed bytes.
+          const walk = (d: string): number => {
+            let total = 0;
+            try {
+              for (const entry of readdirSync(d, { withFileTypes: true })) {
+                const p = join(d, entry.name);
+                if (entry.isDirectory()) {
+                  total += walk(p);
+                } else {
+                  try {
+                    total += lstatSync(p).size;
+                  } catch {
+                    /* file vanished mid-walk */
+                  }
+                }
+              }
+            } catch {
+              /* dir vanished or unreadable */
+            }
+            return total;
+          };
+          freedBytes += walk(dir);
+          rmSync(dir, { recursive: true, force: true });
+          mkdirSync(dir, { recursive: true });
+        }
+        return { ok: true, freedBytes };
+      } catch (err) {
+        console.error("[offline] clear-cache failed:", err);
+        return {
+          ok: false,
+          freedBytes,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
 
   ipcMain.handle(
     IPC.OFFLINE_REVEAL_MODEL_FOLDER,
