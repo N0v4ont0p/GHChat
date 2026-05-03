@@ -4,9 +4,26 @@ import { MODE_ACCENT } from "@/lib/mode-accent";
 import { cn } from "@/lib/utils";
 
 export function StreamingIndicator() {
-  const { routingInfo, streamState } = useChatStore();
+  const { routingInfo, streamState, activeStreamKind } = useChatStore();
   const activeOfflineModelLabel = useModeStore((s) => s.activeOfflineModelLabel);
   const currentMode = useModeStore((s) => s.currentMode);
+  // Offline-specific lifecycle phases must only render their labels when
+  // the *in-flight stream* is actually using the offline backend — never
+  // when the user has switched to Online mid-stream, and never as a
+  // leftover after a failed stream.  `activeStreamKind` is the source of
+  // truth for "what backend is the active request using right now?";
+  // gating the offline labels on it makes mode contamination impossible.
+  const isOfflineStream = activeStreamKind === "offline";
+  // For the accent dot we prefer the in-flight backend (so an Auto-mode
+  // user who chose offline sees the emerald dot, and switching modes
+  // mid-stream doesn't change colour for the running request).  Falls
+  // back to the user's current mode when no stream is active yet.
+  const accentMode =
+    activeStreamKind === "offline"
+      ? "offline"
+      : activeStreamKind === "online"
+        ? "online"
+        : currentMode;
   // Map every lifecycle state to a friendly label.  Offline-specific phases
   // (runtime-starting / loading-model / processing-prompt / generating) make
   // slow on-device boot legible — without them, "streaming" lingers for many
@@ -17,8 +34,17 @@ export function StreamingIndicator() {
   // branch is only reached if a phase event is dropped or arrives out of
   // order on slow hardware — keeping a calm, honest label avoids the
   // "stuck on Streaming response…" complaint that motivated this fix.
-  const isOffline = currentMode === "offline";
-  const fallbackLabel = isOffline ? "Working on your reply…" : "Streaming response…";
+  const fallbackLabel = isOfflineStream ? "Working on your reply…" : "Streaming response…";
+  const offlinePhaseLabel =
+    streamState === "runtime-starting"
+      ? "Starting offline runtime…"
+      : streamState === "loading-model"
+        ? `Loading ${activeOfflineModelLabel ?? "model"}…`
+        : streamState === "processing-prompt"
+          ? "Processing your prompt…"
+          : streamState === "generating"
+            ? "Generating response…"
+            : null;
   const label =
     streamState === "validating"
       ? "Validating connection…"
@@ -28,20 +54,15 @@ export function StreamingIndicator() {
           ? "Switching to fallback model…"
           : streamState === "stopping"
             ? "Stopping…"
-            : streamState === "runtime-starting"
-              ? "Starting offline runtime…"
-              : streamState === "loading-model"
-                ? `Loading ${activeOfflineModelLabel ?? "model"}…`
-                : streamState === "processing-prompt"
-                  ? "Processing your prompt…"
-                  : streamState === "generating"
-                    ? "Generating response…"
-                    : fallbackLabel;
+            : isOfflineStream && offlinePhaseLabel
+              ? offlinePhaseLabel
+              : fallbackLabel;
 
   // Per-mode accent for the leading pulse dot — keeps the indicator
-  // visually anchored to the active mode (online=blue, offline=emerald,
-  // auto=amber) without dominating the row.
-  const accentDot = MODE_ACCENT[currentMode]?.dot ?? MODE_ACCENT.online.dot;
+  // visually anchored to the active request's backend (online=blue,
+  // offline=emerald, auto=amber when no backend has been chosen yet)
+  // without dominating the row.
+  const accentDot = MODE_ACCENT[accentMode]?.dot ?? MODE_ACCENT.online.dot;
 
   return (
     <div className="flex items-center gap-2 px-6 py-4">

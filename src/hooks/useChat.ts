@@ -105,6 +105,7 @@ export function useChat(conversationId: string | null) {
     streamingText,
     setStreaming,
     setStreamState,
+    setActiveStreamKind,
     appendStreamingToken,
     resetStreaming,
     setLastStreamError,
@@ -117,7 +118,7 @@ export function useChat(conversationId: string | null) {
     setOfflineStopPendingAt,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineState, activeOfflineModelId, setOfflineManagementOpen, setMode } = useModeStore();
+  const { currentMode, offlineState, activeOfflineModelId, activeOfflineModelLabel, setOfflineManagementOpen, setMode } = useModeStore();
 
   /**
    * The current conversation row pulled from the React-Query cache.
@@ -441,6 +442,12 @@ export function useChat(conversationId: string | null) {
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       activeRequestId.current = requestId;
       setStreaming(true);
+      // Each dispatch starts with no committed backend.  The offline /
+      // online branches below set this to the right value before any
+      // mode-specific UI (e.g. the offline phase labels) can read it,
+      // and every terminal path clears it via `resetStreaming` so a
+      // failed stream cannot leak its provider into the next one.
+      setActiveStreamKind(null);
       setStreamState("routing");
       setLastStreamError(null);
       setRoutingInfo(null);
@@ -495,6 +502,27 @@ export function useChat(conversationId: string | null) {
 
       if (resolved.kind === "offline") {
         // ── Offline path: local llama.cpp runtime ──────────────────────
+        // Record the in-flight backend BEFORE we touch lifecycle state so
+        // a synchronous failure below cannot leave a "runtime-starting"
+        // streamState attributed to no backend (which would let
+        // StreamingIndicator render "Starting offline runtime…" while
+        // the user is in Online mode).
+        setActiveStreamKind("offline");
+        // Pre-populate routingInfo for offline so the streaming indicator
+        // can show the model the runtime will actually load AND, in Auto
+        // mode, why offline was chosen.  The online path receives this
+        // via OR_CHAT_ROUTING; offline has no equivalent main-process
+        // event so we synthesize it here from the resolver result.
+        setRoutingInfo({
+          model: resolved.modelId,
+          modelName: activeOfflineModelLabel ?? resolved.modelId,
+          reason:
+            currentMode === "auto"
+              ? "Auto chose offline (model installed locally)"
+              : "Selected by you",
+          isAuto: currentMode === "auto",
+          isFallback: false,
+        });
         // Seed an offline-specific lifecycle phase up front so the
         // streaming indicator never flashes the generic "Streaming
         // response…" label while we wait for the first OFFLINE_CHAT_PHASE
@@ -504,11 +532,36 @@ export function useChat(conversationId: string | null) {
         // can never pin the UI in this state forever.
         setStreamState("runtime-starting");
         kickOfflineWatchdog(requestId);
-        ipc.sendOfflineChatStream({
-          requestId,
-          modelId: resolved.modelId,
-          messages: messages as Array<{ role: "user" | "assistant" | "system"; content: string }>,
-        });
+        try {
+          ipc.sendOfflineChatStream({
+            requestId,
+            modelId: resolved.modelId,
+            messages: messages as Array<{ role: "user" | "assistant" | "system"; content: string }>,
+          });
+        } catch (err) {
+          // Synchronous failure (e.g. preload bridge missing, IPC arg
+          // validation rejected the payload, channel constant missing).
+          // Without this guard the throw would leave `streamState` stuck
+          // on "runtime-starting", the watchdog ticking, and the request
+          // id pinned — which is exactly the "Online mode shows Starting
+          // offline runtime" + "Offline becomes unusable" symptom this
+          // change exists to fix.
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[useChat] dispatchStream offline send threw synchronously ` +
+              `(requestId=${requestId}, modelId=${resolved.modelId}): ${message}`,
+          );
+          clearOfflineWatchdog();
+          activeRequestId.current = null;
+          setStreamState("failed");
+          resetStreaming();
+          setRoutingInfo(null);
+          setLastStreamError({
+            message: `Couldn't start the offline runtime: ${message}`,
+            actions: ["retry"],
+          });
+          toast.error(`Offline runtime failed to start: ${message}`, { duration: 6000 });
+        }
         return;
       }
 
@@ -519,21 +572,43 @@ export function useChat(conversationId: string | null) {
           duration: 5000,
         });
         setStreamState("failed");
+        resetStreaming();
         return;
       }
-      window.ghchat.send(IPC.OR_CHAT_STREAM, {
-        requestId,
-        model: resolved.modelId,
-        messages,
-        apiKey,
-        webSearch: advancedParams.webSearch,
-        reasoningOn: advancedParams.reasoningOn,
-        maxTokens: advancedParams.maxTokens,
-      });
-      setStreamState("streaming");
+      // Lock the in-flight backend so any cross-mode UI (notably the
+      // streaming indicator) reads the right provider while the request
+      // is alive — independent of any subsequent global mode flip.
+      setActiveStreamKind("online");
+      try {
+        window.ghchat.send(IPC.OR_CHAT_STREAM, {
+          requestId,
+          model: resolved.modelId,
+          messages,
+          apiKey,
+          webSearch: advancedParams.webSearch,
+          reasoningOn: advancedParams.reasoningOn,
+          maxTokens: advancedParams.maxTokens,
+        });
+        setStreamState("streaming");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[useChat] dispatchStream online send threw synchronously ` +
+            `(requestId=${requestId}, model=${resolved.modelId}): ${message}`,
+        );
+        activeRequestId.current = null;
+        setStreamState("failed");
+        resetStreaming();
+        setLastStreamError({
+          message: `Couldn't start the online stream: ${message}`,
+          actions: ["retry", "settings"],
+        });
+        toast.error(`Online stream failed to start: ${message}`, { duration: 6000 });
+      }
     },
-    [currentMode, offlineState, activeOfflineModelId, getConversationFromCache, setStreaming,
-     setStreamState, setLastStreamError, setRoutingInfo, advancedParams, setMode, setOfflineManagementOpen, kickOfflineWatchdog],
+    [currentMode, offlineState, activeOfflineModelId, activeOfflineModelLabel, getConversationFromCache, setStreaming,
+     setStreamState, setActiveStreamKind, setLastStreamError, setRoutingInfo, advancedParams, setMode, setOfflineManagementOpen,
+     kickOfflineWatchdog, clearOfflineWatchdog, resetStreaming],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
