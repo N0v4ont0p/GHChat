@@ -743,6 +743,35 @@ export interface OfflineInstallProgress {
 }
 
 
+/**
+ * Aggregated startup-duration history for a single offline model.
+ *
+ * The runtime-manager records `lastStartupDurationMs` after every
+ * successful `phase === "ready"` transition and persists a rolling
+ * window (most recent 5 samples per model) to `runtime-startup-stats.json`
+ * inside the offline root.  The renderer uses this both to
+ *   (a) show a "typical" range alongside the live elapsed timer during
+ *       startup, so a slow boot looks normal vs. abnormal, and
+ *   (b) surface measured performance in the Offline Manager so users
+ *       have concrete numbers to compare against if a model "feels" slow.
+ *
+ * `null` means no successful start has been observed yet for this model.
+ */
+export interface OfflineRuntimeStartupStats {
+  /** Catalog model id these samples were measured for. */
+  modelId: string;
+  /** Total number of successful starts observed (may exceed samples.length). */
+  count: number;
+  /** Up to 5 most-recent successful startup durations in ms (oldest → newest). */
+  samples: number[];
+  /** The most recent successful startup duration in ms (== samples[last]). */
+  lastDurationMs: number;
+  /** Median of `samples` in ms — the "typical" anchor. */
+  medianMs: number;
+  /** Max of `samples` in ms — used as the "unusually slow" threshold base. */
+  maxMs: number;
+}
+
 /** Information about a fully installed offline setup, returned by OFFLINE_GET_INFO. */
 export interface OfflineInfo {
   /** Catalog model ID of the installed model (e.g. "gemma4-e4b-q4km"). */
@@ -771,6 +800,14 @@ export interface OfflineInfo {
    * fallback and continue to read `isRuntimeRunning`.
    */
   runtimeState?: OfflineRuntimeState;
+  /**
+   * Rolling window of measured startup durations for the active model,
+   * or `null` when no successful start has been observed yet.  Lets the
+   * Offline Manager render "Last startup: 7s · typical 5–9s (4 runs)"
+   * without an extra IPC round-trip.  Older main-process builds may
+   * omit this field; renderers MUST treat `undefined` as "no data".
+   */
+  startupStats?: OfflineRuntimeStartupStats | null;
 }
 
 /**
@@ -845,6 +882,13 @@ export interface OfflineRuntimeDiagnostics {
   runtimeLogPath: string;
   /** Whether `runtimeLogPath` exists on disk at snapshot time. */
   runtimeLogExists: boolean;
+  /**
+   * Rolling startup-duration history for the active model id (or `null`
+   * when no successful start has been observed yet).  Mirrors the same
+   * structure surfaced by `OfflineInfo.startupStats` so the diagnostics
+   * panel can render "typical 5–9s (4 runs)" without an extra fetch.
+   */
+  startupStats: OfflineRuntimeStartupStats | null;
 }
 
 /** Per-model health/availability status. */

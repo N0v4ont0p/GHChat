@@ -7,6 +7,7 @@ import {
   mkdirSync,
   statSync,
   accessSync,
+  readFileSync,
   constants as fsConstants,
 } from "fs";
 import { extname, join } from "path";
@@ -451,6 +452,149 @@ function writeRuntimeFailureLog(failure: RuntimeStartupFailureDetails): void {
     "",
   ];
   writeFileSync(path, lines.join("\n"), "utf8");
+}
+
+// ── Startup performance history ──────────────────────────────────────────────
+//
+// Per-model rolling window of measured startup durations (most recent
+// MAX_STARTUP_SAMPLES successful starts).  Persisted to a small JSON
+// file in the offline root so the renderer can render "typical 5–9s
+// (4 runs)" alongside the live elapsed timer on the very first paint
+// after launch — without it, every cold start would look "unusually
+// slow" until the user has restarted the runtime once in this session.
+
+const MAX_STARTUP_SAMPLES = 5;
+
+interface StartupHistoryEntry {
+  /** Up to MAX_STARTUP_SAMPLES most-recent successful durations (ms), oldest→newest. */
+  samples: number[];
+  /** Total successful starts ever observed (may exceed samples.length). */
+  count: number;
+  /** Wall-clock ms when this entry was last touched. */
+  updatedAt: number;
+}
+
+interface StartupHistoryFile {
+  version: 1;
+  byModelId: Record<string, StartupHistoryEntry>;
+}
+
+let _startupHistory: Record<string, StartupHistoryEntry> | null = null;
+
+function getStartupStatsPath(): string {
+  return join(storageService.getOfflineRoot(), "runtime-startup-stats.json");
+}
+
+/** Load the on-disk history into the module cache.  Idempotent and best-effort. */
+function loadStartupHistory(): Record<string, StartupHistoryEntry> {
+  if (_startupHistory !== null) return _startupHistory;
+  _startupHistory = {};
+  try {
+    const path = getStartupStatsPath();
+    if (!existsSync(path)) return _startupHistory;
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as Partial<StartupHistoryFile>;
+    if (!parsed || parsed.version !== 1 || typeof parsed.byModelId !== "object") {
+      return _startupHistory;
+    }
+    for (const [id, entry] of Object.entries(parsed.byModelId ?? {})) {
+      if (
+        entry &&
+        Array.isArray(entry.samples) &&
+        entry.samples.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)
+      ) {
+        _startupHistory[id] = {
+          samples: entry.samples.slice(-MAX_STARTUP_SAMPLES),
+          count: typeof entry.count === "number" && entry.count >= 0
+            ? entry.count
+            : entry.samples.length,
+          updatedAt: typeof entry.updatedAt === "number" ? entry.updatedAt : Date.now(),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[runtimeManager] failed to load runtime-startup-stats.json:", err);
+  }
+  return _startupHistory;
+}
+
+/** Persist the in-memory history.  Best-effort; failures are logged but not thrown. */
+function saveStartupHistory(): void {
+  if (_startupHistory === null) return;
+  try {
+    mkdirSync(storageService.getOfflineRoot(), { recursive: true });
+    const payload: StartupHistoryFile = {
+      version: 1,
+      byModelId: _startupHistory,
+    };
+    writeFileSync(getStartupStatsPath(), JSON.stringify(payload, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[runtimeManager] failed to persist runtime-startup-stats.json:", err);
+  }
+}
+
+/**
+ * Record a successful startup duration for `modelId`.  Caps the
+ * per-model history at MAX_STARTUP_SAMPLES samples (oldest evicted)
+ * and persists the updated history to disk.  Negative or zero durations
+ * are dropped — they would skew the "typical" anchor downward.
+ */
+function recordStartupSample(modelId: string, durationMs: number): void {
+  if (typeof modelId !== "string" || modelId.length === 0) return;
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return;
+  }
+  const history = loadStartupHistory();
+  const prev = history[modelId];
+  const samples = prev ? [...prev.samples, durationMs] : [durationMs];
+  if (samples.length > MAX_STARTUP_SAMPLES) {
+    samples.splice(0, samples.length - MAX_STARTUP_SAMPLES);
+  }
+  history[modelId] = {
+    samples,
+    count: (prev?.count ?? 0) + 1,
+    updatedAt: Date.now(),
+  };
+  saveStartupHistory();
+}
+
+/**
+ * Compute median of a non-empty number array.  Caller guarantees the
+ * input is non-empty; the helper is internal and trusted.
+ */
+function medianOf(samples: number[]): number {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+    : sorted[mid];
+}
+
+/**
+ * Public summary of the rolling startup history for `modelId`, or null
+ * when no successful start has been observed yet.  Shape matches
+ * `OfflineRuntimeStartupStats` in src/types/index.ts.
+ */
+export function getStartupStats(modelId: string | null | undefined): {
+  modelId: string;
+  count: number;
+  samples: number[];
+  lastDurationMs: number;
+  medianMs: number;
+  maxMs: number;
+} | null {
+  if (typeof modelId !== "string" || modelId.length === 0) return null;
+  const history = loadStartupHistory();
+  const entry = history[modelId];
+  if (!entry || entry.samples.length === 0) return null;
+  return {
+    modelId,
+    count: entry.count,
+    samples: [...entry.samples],
+    lastDurationMs: entry.samples[entry.samples.length - 1],
+    medianMs: medianOf(entry.samples),
+    maxMs: Math.max(...entry.samples),
+  };
 }
 
 // ── Chat message type ─────────────────────────────────────────────────────────
@@ -1042,12 +1186,19 @@ export const runtimeManager = {
       } else if (phase === "ready") {
         const readyAt = Date.now();
         const startedAt = _diagnostics.lastStartedAt;
+        const durationMs = startedAt !== null ? readyAt - startedAt : null;
         updateDiagnostics({
           lastReadyAt: readyAt,
-          lastStartupDurationMs:
-            startedAt !== null ? readyAt - startedAt : null,
+          lastStartupDurationMs: durationMs,
           lastErrorMessage: null,
         });
+        // Append to the persistent rolling history so the renderer can
+        // render a "typical" range alongside future startups.  Anchored
+        // on the modelId resolved earlier in this attempt — never on
+        // the live `_modelId`, which may be cleared by a concurrent stop.
+        if (durationMs !== null && typeof modelId === "string" && modelId.length > 0) {
+          recordStartupSample(modelId, durationMs);
+        }
       }
       // Mirror this phase into the state machine so a single snapshot
       // (`runtimeManager.getState()`) reflects the current condition.
@@ -1566,6 +1717,15 @@ export const runtimeManager = {
       port: _port,
       currentModelId: _modelId,
     };
+  },
+
+  /**
+   * Return the rolling startup-duration history for `modelId`, or null
+   * when no successful start has been recorded yet.  Pure read — never
+   * mutates state or starts the runtime.
+   */
+  getStartupStats(modelId: string | null | undefined) {
+    return getStartupStats(modelId);
   },
 
   /**

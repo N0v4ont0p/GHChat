@@ -1150,6 +1150,10 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       installedAt: installation?.installedAt ?? null,
       isRuntimeRunning,
       runtimeState: computeOfflineRuntimeState(),
+      // Per-model rolling startup-duration history for the active model
+      // — null when no successful start has been observed yet.  Lets
+      // the Offline Manager render measured perf data on first paint.
+      startupStats: model ? runtimeManager.getStartupStats(model.id) : null,
     };
   });
 
@@ -1431,6 +1435,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         offlineRootPath: offlineRoot,
         runtimeLogPath,
         runtimeLogExists,
+        startupStats: runtimeManager.getStartupStats(diag.currentModelId ?? diag.modelId),
       };
     },
   );
