@@ -39,6 +39,8 @@ import type {
   OfflineModelSummary,
   OfflineInfo,
   OfflinePerformancePreset,
+  OfflineRuntimeStartupPhase,
+  OfflineRuntimePhaseEvent,
 } from "@/types";
 
 /** Display "12.3 GB" or "456 MB" for byte counts. */
@@ -108,6 +110,24 @@ export function OfflineSettingsTab() {
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
   const [removingOffline, setRemovingOffline] = useState(false);
+  /**
+   * Latest runtime startup progress event broadcast by the main
+   * process.  Drives the inline step-by-step status under the
+   * Runtime row so a slow `llama-server` boot is never hidden behind
+   * a single spinner.  Reset to null on a fresh Restart click.
+   */
+  const [runtimePhase, setRuntimePhase] = useState<OfflineRuntimePhaseEvent | null>(
+    null,
+  );
+  /**
+   * Last non-terminal phase observed (i.e. not `ready`/`failed`).  Used
+   * to attribute a `failed` event to the step that was actually in
+   * progress when llama.cpp blew up — without it, the trail would only
+   * know "something failed" but not which step.
+   */
+  const [lastInProgressPhase, setLastInProgressPhase] = useState<
+    OfflineRuntimeStartupPhase | null
+  >(null);
 
   const setOfflineManagementOpen = useModeStore((s) => s.setOfflineManagementOpen);
   const setOfflineState = useModeStore((s) => s.setOfflineState);
@@ -162,6 +182,28 @@ export function OfflineSettingsTab() {
   useEffect(() => {
     const id = setInterval(refreshInfo, RUNTIME_STATUS_POLL_INTERVAL_MS);
     return () => clearInterval(id);
+  }, [refreshInfo]);
+
+  // Subscribe to runtime startup phase broadcasts so the Restart action
+  // shows step-by-step progress (checking model → launching process →
+  // warming up → ready / failed) instead of just a generic spinner.
+  // The same broadcast fires for chat-driven starts; we accept those too
+  // so opening Settings during a slow first message also reflects what
+  // the runtime is doing.
+  useEffect(() => {
+    const off = ipc.onOfflineRuntimePhase((event) => {
+      setRuntimePhase(event);
+      if (event.phase !== "ready" && event.phase !== "failed") {
+        setLastInProgressPhase(event.phase);
+      }
+      // A terminal `ready` phase implies the runtime is now serving;
+      // refresh the Running/Stopped pill immediately so the user
+      // doesn't have to wait for the next 2 s poll tick.
+      if (event.phase === "ready" || event.phase === "failed") {
+        refreshInfo();
+      }
+    });
+    return () => off();
   }, [refreshInfo]);
 
   const update = useCallback(async (partial: Partial<OfflineSettings>) => {
@@ -337,6 +379,13 @@ export function OfflineSettingsTab() {
             ? "The local runtime is loaded and ready to stream."
             : "The runtime starts automatically the next time you send an offline message."}
         </p>
+        {(runtimeBusy || (runtimePhase && runtimePhase.phase !== "ready")) && (
+          <RuntimePhaseTrail
+            phase={runtimePhase}
+            busy={runtimeBusy}
+            lastInProgressPhase={lastInProgressPhase}
+          />
+        )}
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
@@ -369,6 +418,8 @@ export function OfflineSettingsTab() {
                 return;
               }
               setRuntimeBusy(true);
+              setRuntimePhase(null);
+              setLastInProgressPhase(null);
               try {
                 console.log(
                   `[OfflineSettingsTab] Restart runtime clicked ` +
@@ -849,6 +900,132 @@ export function OfflineSettingsTab() {
           Reset offline settings to defaults
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ── Runtime startup phase trail ───────────────────────────────────────────────
+
+/**
+ * Ordered list of fine-grained startup phases shown in the inline
+ * trail under the Runtime row.  Mirrors the steps emitted by
+ * `runtimeManager.start()` in the main process.  Kept ordered so we
+ * can render previous steps as ✓ and the current step as a spinner.
+ */
+const RUNTIME_PHASE_ORDER: OfflineRuntimeStartupPhase[] = [
+  "checking-model",
+  "checking-binary",
+  "preparing-config",
+  "launching-process",
+  "waiting-for-server",
+  "warming-up",
+  "ready",
+];
+
+const RUNTIME_PHASE_LABELS: Record<OfflineRuntimeStartupPhase, string> = {
+  "checking-model": "Checking installed model",
+  "checking-binary": "Checking runtime binary",
+  "preparing-config": "Preparing runtime config",
+  "launching-process": "Launching runtime process",
+  "waiting-for-server": "Waiting for server readiness",
+  "warming-up": "Warming up model",
+  ready: "Ready",
+  failed: "Failed",
+};
+
+/**
+ * Step-by-step status trail for the offline runtime startup sequence.
+ * Renders each phase from `RUNTIME_PHASE_ORDER` with an icon: completed
+ * steps as a check, the current step with a spinner, future steps
+ * dimmed.  When the latest broadcast carries `failed`, the failing step
+ * is rendered in red along with the underlying error detail so the
+ * user can see *which* step broke instead of a generic "startup
+ * failed" message.
+ */
+function RuntimePhaseTrail({
+  phase,
+  busy,
+  lastInProgressPhase,
+}: {
+  phase: OfflineRuntimePhaseEvent | null;
+  busy: boolean;
+  lastInProgressPhase: OfflineRuntimeStartupPhase | null;
+}) {
+  const current = phase?.phase ?? null;
+  const failed = current === "failed";
+  // Index of the most-recent non-terminal phase we've seen.  When the
+  // event is `failed` we treat the previously-in-progress phase as the
+  // failing step so the trail attributes the error to a specific row.
+  const activeIndex = (() => {
+    if (current === "ready") return RUNTIME_PHASE_ORDER.indexOf("ready");
+    if (failed) {
+      // Prefer the last non-terminal phase we observed; fall back to
+      // the very first step so the trail isn't blank when no progress
+      // arrived before the failure (e.g. argument validation).
+      const idx = lastInProgressPhase
+        ? RUNTIME_PHASE_ORDER.indexOf(lastInProgressPhase)
+        : 0;
+      return idx >= 0 ? idx : 0;
+    }
+    if (current) return RUNTIME_PHASE_ORDER.indexOf(current);
+    return -1;
+  })();
+
+  return (
+    <div className="rounded-md border border-border/40 bg-background/40 p-2.5 text-[11px]">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="font-medium text-foreground">
+          {failed
+            ? "Runtime startup failed"
+            : current === "ready"
+              ? "Runtime ready"
+              : busy
+                ? "Starting offline runtime…"
+                : "Runtime startup status"}
+        </span>
+        {phase?.modelId && (
+          <span className="text-muted-foreground">{phase.modelId}</span>
+        )}
+      </div>
+      <ol className="space-y-0.5">
+        {RUNTIME_PHASE_ORDER.map((step, i) => {
+          const isCurrent = !failed && i === activeIndex && current !== "ready";
+          const isDone =
+            (current === "ready" && step !== "ready") || i < activeIndex;
+          const isFailedHere = failed && i === activeIndex;
+          const stepStateClass = isFailedHere
+            ? "text-red-400"
+            : isCurrent
+              ? "text-foreground"
+              : isDone
+                ? "text-emerald-300"
+                : "text-muted-foreground/60";
+          return (
+            <li
+              key={step}
+              className={cn("flex items-center gap-2", stepStateClass)}
+            >
+              <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center">
+                {isCurrent ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : isDone ? (
+                  <CheckCircle2 className="h-3 w-3" />
+                ) : isFailedHere ? (
+                  <XCircle className="h-3 w-3" />
+                ) : (
+                  <span className="h-1 w-1 rounded-full bg-current" />
+                )}
+              </span>
+              <span>{RUNTIME_PHASE_LABELS[step]}</span>
+            </li>
+          );
+        })}
+      </ol>
+      {failed && phase?.detail && (
+        <p className="mt-2 rounded border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-red-300">
+          {phase.detail}
+        </p>
+      )}
     </div>
   );
 }

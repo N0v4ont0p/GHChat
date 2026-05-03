@@ -536,10 +536,42 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           | "runtime-starting"
           | "loading-model"
           | "processing-prompt"
-          | "generating",
+          | "generating"
+          | "checking-model"
+          | "checking-binary"
+          | "preparing-config"
+          | "launching-process"
+          | "waiting-for-server"
+          | "warming-up",
       ) => {
         if (cancelledRequests.has(requestId)) return;
         send(IPC.OFFLINE_CHAT_PHASE, { requestId, phase });
+      };
+
+      // Forward fine-grained runtime startup phases coming out of
+      // runtimeManager.start() to BOTH the per-request OFFLINE_CHAT_PHASE
+      // channel (so the streaming indicator updates) AND the broadcast
+      // OFFLINE_RUNTIME_PHASE channel (so the Settings → Runtime status
+      // panel updates in lockstep, even though it didn't initiate the
+      // start).  `ready` / `failed` are terminal — we forward them on
+      // OFFLINE_RUNTIME_PHASE only; the chat indicator advances on its
+      // own milestones (processing-prompt / generating / END / ERROR).
+      const handleRuntimePhase = (
+        phase: import("../services/offline/runtime-manager").RuntimeStartupPhase,
+        detail?: string,
+      ) => {
+        broadcastRuntimePhase({ phase, modelId, detail, requestId });
+        if (cancelledRequests.has(requestId)) return;
+        if (
+          phase === "checking-model" ||
+          phase === "checking-binary" ||
+          phase === "preparing-config" ||
+          phase === "launching-process" ||
+          phase === "waiting-for-server" ||
+          phase === "warming-up"
+        ) {
+          emitPhase(phase);
+        }
       };
 
       // Resolve the user's runtime knobs once per request.
@@ -593,6 +625,12 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             onPromptSent: () => {
               if (!firstTokenSeen) emitPhase("processing-prompt");
             },
+            // Forward fine-grained startup phases (checking-model →
+            // launching-process → warming-up → ready) so the chat
+            // indicator and Settings panel both reflect what
+            // llama-server is actually doing instead of the previous
+            // single "starting runtime…" placeholder.
+            onRuntimePhase: handleRuntimePhase,
           },
         );
         // Only send END when the stop handler hasn't already done so.
@@ -858,22 +896,53 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           const error =
             "No active offline model to restart. Install or activate a model first.";
           console.warn(`[offline] OFFLINE_RUNTIME_RESTART aborted: ${error}`);
+          // Surface the failure as a runtime-phase event so the
+          // Settings panel's progress trail shows *which* step failed
+          // instead of just toast-erroring.
+          broadcastRuntimePhase({
+            phase: "failed",
+            modelId: null,
+            detail: error,
+            requestId: null,
+          });
           return { ok: false, error };
         }
         // Stop first so start() spawns a fresh process even when the
         // current spawn options match — restart must always recycle.
         await runtimeManager.stop();
         const settings = resolveOfflineSettings();
-        await runtimeManager.start(activeId, {
-          contextSize: settings.contextSize,
-          threads: settings.threads,
-        });
+        await runtimeManager.start(
+          activeId,
+          {
+            contextSize: settings.contextSize,
+            threads: settings.threads,
+          },
+          (phase, detail) => {
+            broadcastRuntimePhase({
+              phase,
+              modelId: activeId,
+              detail,
+              requestId: null,
+            });
+          },
+        );
         return { ok: true };
       } catch (err) {
         console.warn("[offline] runtime restart failed:", err);
+        const error = err instanceof Error ? err.message : String(err);
+        // start() already broadcast its own "failed" phase with the
+        // step-specific detail; re-broadcast here only as a safety
+        // net for the rare path where the throw originated outside
+        // start() (e.g. resolveOfflineSettings).
+        broadcastRuntimePhase({
+          phase: "failed",
+          modelId: resolveActiveModelId(),
+          detail: error,
+          requestId: null,
+        });
         return {
           ok: false,
-          error: err instanceof Error ? err.message : String(err),
+          error,
         };
       }
     },
@@ -903,6 +972,30 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       }
     } catch (err) {
       console.warn("[offline] failed to broadcast active-model-changed:", err);
+    }
+  }
+
+  /**
+   * Broadcast a fine-grained runtime startup phase to every open
+   * window so non-chat callers (Settings → Restart runtime, headless
+   * starts, future status panels) can render the same step-by-step
+   * status as a chat-driven start.  Best-effort — send failures on a
+   * destroyed window are swallowed.
+   */
+  function broadcastRuntimePhase(payload: {
+    phase: import("../services/offline/runtime-manager").RuntimeStartupPhase;
+    modelId: string | null;
+    detail?: string;
+    requestId?: string | null;
+  }): void {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.OFFLINE_RUNTIME_PHASE, payload);
+        }
+      }
+    } catch (err) {
+      console.warn("[offline] failed to broadcast runtime-phase:", err);
     }
   }
 

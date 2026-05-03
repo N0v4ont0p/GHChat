@@ -15,6 +15,7 @@ import type {
   OfflineSettings,
   OfflineHardwareProfileSnapshot,
   OfflineActiveModelInfo,
+  OfflineRuntimePhaseEvent,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -279,5 +280,19 @@ export const ipc = {
     safeInvoke<{ ok: boolean; error?: string }>(
       IPC.OFFLINE_RUNTIME_RESTART,
       "ipc.restartOfflineRuntime",
+    ),
+
+  /**
+   * Subscribe to fine-grained offline runtime startup phases
+   * (`checking-model` → `launching-process` → `warming-up` → `ready` /
+   * `failed`).  Broadcast by the main process for both chat-driven
+   * starts and explicit Restart calls so any UI surface can render
+   * step-by-step status without correlating with a chat request id.
+   * Returns an unsubscribe function — call on unmount.
+   */
+  onOfflineRuntimePhase: (cb: (event: OfflineRuntimePhaseEvent) => void) =>
+    api().on(
+      IPC.OFFLINE_RUNTIME_PHASE,
+      (_e: IpcRendererEvent, payload: OfflineRuntimePhaseEvent) => cb(payload),
     ),
 };

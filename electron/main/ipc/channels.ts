@@ -78,6 +78,14 @@ export const IPC = {
    */
   OFFLINE_CHAT_PHASE: "offline:chat:phase",
   /**
+   * Push (main → renderer): fine-grained progress during a runtime
+   * start sequence (cold spawn or model swap).  Payload:
+   * `OfflineRuntimePhaseEvent` from src/types/index.ts.  Broadcast to
+   * every open window so non-chat callers (e.g. Settings → Restart
+   * runtime) render the same step-by-step status as the active chat.
+   */
+  OFFLINE_RUNTIME_PHASE: "offline:runtime:phase",
+  /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
    */

@@ -38,13 +38,25 @@ export function StreamingIndicator() {
   const offlinePhaseLabel =
     streamState === "runtime-starting"
       ? "Starting offline runtime…"
-      : streamState === "loading-model"
-        ? `Loading ${activeOfflineModelLabel ?? "model"}…`
-        : streamState === "processing-prompt"
-          ? "Processing your prompt…"
-          : streamState === "generating"
-            ? "Generating response…"
-            : null;
+      : streamState === "checking-model"
+        ? "Checking installed model…"
+        : streamState === "checking-binary"
+          ? "Checking runtime binary…"
+          : streamState === "preparing-config"
+            ? "Preparing runtime config…"
+            : streamState === "launching-process"
+              ? "Launching runtime process…"
+              : streamState === "waiting-for-server"
+                ? "Waiting for server readiness…"
+                : streamState === "warming-up"
+                  ? `Warming up ${activeOfflineModelLabel ?? "model"}…`
+                  : streamState === "loading-model"
+                    ? `Loading ${activeOfflineModelLabel ?? "model"}…`
+                    : streamState === "processing-prompt"
+                      ? "Processing your prompt…"
+                      : streamState === "generating"
+                        ? "Generating response…"
+                        : null;
   const label =
     streamState === "validating"
       ? "Validating connection…"

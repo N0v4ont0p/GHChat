@@ -467,7 +467,65 @@ export type StreamLifecycleState =
   | "runtime-starting"
   | "loading-model"
   | "processing-prompt"
-  | "generating";
+  | "generating"
+  // Fine-grained offline runtime startup sub-phases — emitted by
+  // runtimeManager.start so a slow boot of `llama-server` shows what
+  // it is actually doing (rather than sitting on "Starting offline
+  // runtime…" for many seconds).  Each value maps 1:1 to a step the
+  // main process actually performs.
+  | "checking-model"
+  | "checking-binary"
+  | "preparing-config"
+  | "launching-process"
+  | "waiting-for-server"
+  | "warming-up";
+
+/**
+ * Fine-grained phases of the offline runtime startup sequence.
+ *
+ * Emitted by `runtimeManager.start()` (via `OFFLINE_RUNTIME_PHASE` and,
+ * for chat-driven starts, also forwarded over `OFFLINE_CHAT_PHASE`) so
+ * the renderer can show step-by-step status while `llama-server`
+ * boots — instead of a single "loading" spinner that hides multi-second
+ * on-disk model loads.
+ *
+ * Order in a healthy cold start:
+ *   checking-model      → resolving the installed offline_models row
+ *   checking-binary     → resolving llama-server binary path
+ *   preparing-config    → choosing free port, ctx size, threads
+ *   launching-process   → spawning llama-server
+ *   waiting-for-server  → waiting for the HTTP server to accept connections
+ *   warming-up          → waiting for the model file to finish loading into RAM
+ *   ready               → terminal success
+ *   failed              → terminal failure (carries an `error` string)
+ */
+export type OfflineRuntimeStartupPhase =
+  | "checking-model"
+  | "checking-binary"
+  | "preparing-config"
+  | "launching-process"
+  | "waiting-for-server"
+  | "warming-up"
+  | "ready"
+  | "failed";
+
+/**
+ * Payload broadcast on `OFFLINE_RUNTIME_PHASE`.
+ *
+ * `requestId` is set when the start was triggered by an offline chat
+ * stream (so the renderer can correlate with the in-flight message);
+ * it is null for explicit Restart/Start-from-Settings calls which have
+ * no chat request to correlate with.
+ */
+export interface OfflineRuntimePhaseEvent {
+  phase: OfflineRuntimeStartupPhase;
+  /** Model id the runtime is starting for (or null when not yet resolved). */
+  modelId: string | null;
+  /** Optional user-facing detail (e.g. error message on `failed`). */
+  detail?: string;
+  /** When triggered by a chat stream, the request id; otherwise null. */
+  requestId?: string | null;
+}
 
 export interface ProviderHealthResult {
   ok: boolean;
@@ -764,9 +822,26 @@ export const IPC = {
    * model", "processing prompt", "generating response" instead of a generic
    * "streaming" spinner that hides slow on-device boot.
    * Payload: { requestId, phase: "runtime-starting" | "loading-model" |
-   *   "processing-prompt" | "generating" }
+   *   "processing-prompt" | "generating" | <OfflineRuntimeStartupPhase> }
+   *
+   * The fine-grained `OfflineRuntimeStartupPhase` values
+   * (`checking-model`, `checking-binary`, `preparing-config`,
+   * `launching-process`, `waiting-for-server`, `warming-up`) are
+   * forwarded here as well so the chat indicator shows the same
+   * step-by-step status as the Settings → Restart button.
    */
   OFFLINE_CHAT_PHASE: "offline:chat:phase",
+  /**
+   * Push (main → renderer): fine-grained progress during a runtime
+   * start sequence (cold spawn or model swap).  Payload:
+   * `OfflineRuntimePhaseEvent`.
+   *
+   * Broadcast to every open window so non-chat callers (e.g. the
+   * Settings → Restart runtime button) can render the same
+   * step-by-step status as the active chat — and so a slow
+   * `llama-server` boot is never hidden behind a single spinner.
+   */
+  OFFLINE_RUNTIME_PHASE: "offline:runtime:phase",
   /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.

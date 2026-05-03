@@ -412,7 +412,13 @@ export function useChat(conversationId: string | null) {
             | "runtime-starting"
             | "loading-model"
             | "processing-prompt"
-            | "generating";
+            | "generating"
+            | "checking-model"
+            | "checking-binary"
+            | "preparing-config"
+            | "launching-process"
+            | "waiting-for-server"
+            | "warming-up";
         };
         if (cancelledRequestIds.current.has(p.requestId)) return;
         if (p.requestId !== activeRequestId.current) return;

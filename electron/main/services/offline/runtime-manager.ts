@@ -27,10 +27,20 @@ function getFreePort(): Promise<number> {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-/** Poll GET http://127.0.0.1:{port}/{path} until it returns 200 or timeout. */
-async function pollUntilReady(
+/**
+ * Poll GET http://127.0.0.1:{port}/{path} until `predicate` returns true
+ * for the response, or the timeout elapses.  Used to distinguish the
+ * "TCP server accepting connections" milestone (any HTTP response, even
+ * 503) from the "model loaded" milestone (200 OK).  llama.cpp's
+ * `/health` endpoint returns 503 with `{"status": "loading model"}`
+ * while the GGUF is being mmap'd into RAM, then flips to 200 once the
+ * model is ready — exactly the signal we need to render an honest
+ * "warming up model" step instead of one big spinner.
+ */
+async function pollUntil(
   port: number,
   path: string,
+  predicate: (res: Response) => boolean,
   timeoutMs = 30_000,
   intervalMs = 500,
 ): Promise<void> {
@@ -38,15 +48,25 @@ async function pollUntilReady(
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}${path}`);
-      if (res.ok) return;
+      if (predicate(res)) return;
     } catch {
       // Server not up yet — keep polling.
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(
-    `llama-server at port ${port} did not become healthy within ${timeoutMs / 1000}s`,
+    `llama-server at port ${port}${path} did not satisfy readiness within ${timeoutMs / 1000}s`,
   );
+}
+
+/** Poll GET http://127.0.0.1:{port}/{path} until it returns 200 or timeout. */
+async function pollUntilReady(
+  port: number,
+  path: string,
+  timeoutMs = 30_000,
+  intervalMs = 500,
+): Promise<void> {
+  return pollUntil(port, path, (res) => res.ok, timeoutMs, intervalMs);
 }
 
 // ── Chat message type ─────────────────────────────────────────────────────────
@@ -67,6 +87,36 @@ export interface RuntimeSpawnOptions {
   /** Worker thread count; default = floor(cpus/2). */
   threads?: number;
 }
+
+/**
+ * Fine-grained startup phase reported by `runtimeManager.start()`.
+ * Mirrored by the renderer-facing `OfflineRuntimeStartupPhase` in
+ * src/types/index.ts; kept duplicated here so the main-process module
+ * has no compile-time dependency on the renderer types barrel.
+ */
+export type RuntimeStartupPhase =
+  | "checking-model"
+  | "checking-binary"
+  | "preparing-config"
+  | "launching-process"
+  | "waiting-for-server"
+  | "warming-up"
+  | "ready"
+  | "failed";
+
+/**
+ * Callback invoked at every stage of a runtime start so callers can
+ * surface step-by-step progress in the UI and the Electron log.
+ *
+ * `detail` carries an actionable message — for `failed` it is the
+ * underlying error text; for other phases it may include the resolved
+ * path / port / etc. for diagnostic logging.  Implementations must
+ * never throw — the runtime treats this as a fire-and-forget signal.
+ */
+export type RuntimeStartupPhaseCallback = (
+  phase: RuntimeStartupPhase,
+  detail?: string,
+) => void;
 
 /**
  * Per-request generation options forwarded to the chat completion call.
@@ -111,8 +161,36 @@ export const runtimeManager = {
    * If a server is already running for the same model AND the same spawn
    * options, returns immediately.  If the model id or spawn options have
    * changed, the existing process is stopped and a new one is started.
+   *
+   * `onPhase` (when provided) is invoked at each step of the startup
+   * sequence so the caller can surface step-by-step progress.  Phases
+   * are also written to the Electron log (`[runtimeManager.start] phase: …`)
+   * regardless of whether a callback is supplied so a user reporting
+   * "offline got stuck" can include their log file and we can see
+   * exactly which step hung.
    */
-  async start(modelId: string, options: RuntimeSpawnOptions = {}): Promise<void> {
+  async start(
+    modelId: string,
+    options: RuntimeSpawnOptions = {},
+    onPhase?: RuntimeStartupPhaseCallback,
+  ): Promise<void> {
+    // Wrap the user callback + structured log in one helper so every
+    // startup phase is both visible in the UI and recoverable from a
+    // post-mortem log.  Failures inside the callback must never crash
+    // the start sequence.
+    const reportPhase = (phase: RuntimeStartupPhase, detail?: string) => {
+      console.log(
+        `[runtimeManager.start] phase=${phase}` +
+          (detail ? ` detail=${detail}` : "") +
+          ` modelId=${modelId}`,
+      );
+      try {
+        onPhase?.(phase, detail);
+      } catch (err) {
+        console.warn("[runtimeManager.start] onPhase callback threw:", err);
+      }
+    };
+
     // ── Argument validation ─────────────────────────────────────────────
     // Surface clear, actionable errors *before* anything reaches
     // `child_process.spawn`.  Without this, an undefined/empty modelId
@@ -127,6 +205,7 @@ export const runtimeManager = {
         `(received ${modelId === undefined ? "undefined" : JSON.stringify(modelId)}). ` +
         `Caller must resolve the active offline model id before calling start().`;
       console.error(msg);
+      reportPhase("failed", msg);
       throw new Error(msg);
     }
 
@@ -135,109 +214,208 @@ export const runtimeManager = {
       _spawnOptions.threads === options.threads;
     if (_proc && !_proc.killed && _modelId === modelId && sameOptions) {
       // Already running the right model with the right options — verify
-      // health and return.
-      if (_port !== null) {
-        await pollUntilReady(_port, "/health", 5_000);
+      // health and return.  Surface a single "ready" phase so the
+      // renderer's progress UI doesn't sit blank for a warm restart.
+      try {
+        if (_port !== null) {
+          await pollUntilReady(_port, "/health", 5_000);
+        }
+        reportPhase("ready", "warm: runtime already serving this model");
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        reportPhase("failed", `warm-health check failed: ${msg}`);
+        throw err;
       }
-      return;
     }
 
     // Different model, different options, or dead process — stop whatever
     // is running.
     await runtimeManager.stop();
 
-    const record = modelRegistry.listInstalled().find((r) => r.id === modelId);
-    if (!record) {
-      throw new Error(
-        `Model "${modelId}" is not installed. Run the offline install flow first.`,
-      );
-    }
-
-    if (typeof record.modelPath !== "string" || record.modelPath.length === 0) {
-      const msg =
-        `[runtimeManager.start] model record for "${modelId}" has no modelPath ` +
-        `(received ${record.modelPath === undefined ? "undefined" : JSON.stringify(record.modelPath)}). ` +
-        `The offline_models row appears corrupt — try repairing or reinstalling the model.`;
-      console.error(msg);
-      throw new Error(msg);
-    }
-
-    let binaryPath: string;
     try {
-      binaryPath = resolveRuntimeBinaryPath();
-    } catch (err) {
-      throw new Error(
-        `Cannot start offline runtime: ${err instanceof Error ? err.message : String(err)}`,
+      reportPhase("checking-model", `looking up installed model "${modelId}"`);
+      const record = modelRegistry.listInstalled().find((r) => r.id === modelId);
+      if (!record) {
+        const msg = `Model "${modelId}" is not installed. Run the offline install flow first.`;
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
+
+      if (typeof record.modelPath !== "string" || record.modelPath.length === 0) {
+        const msg =
+          `[runtimeManager.start] model record for "${modelId}" has no modelPath ` +
+          `(received ${record.modelPath === undefined ? "undefined" : JSON.stringify(record.modelPath)}). ` +
+          `The offline_models row appears corrupt — try repairing or reinstalling the model.`;
+        console.error(msg);
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
+
+      reportPhase(
+        "checking-binary",
+        "resolving llama-server binary path",
       );
-    }
+      let binaryPath: string;
+      try {
+        binaryPath = resolveRuntimeBinaryPath();
+      } catch (err) {
+        const msg = `Cannot start offline runtime: ${err instanceof Error ? err.message : String(err)}`;
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
 
-    if (typeof binaryPath !== "string" || binaryPath.length === 0) {
-      const msg =
-        `[runtimeManager.start] resolveRuntimeBinaryPath() returned an empty value ` +
-        `(received ${binaryPath === undefined ? "undefined" : JSON.stringify(binaryPath)}). ` +
-        `Run the offline install flow to download the llama-server binary.`;
-      console.error(msg);
-      throw new Error(msg);
-    }
+      if (typeof binaryPath !== "string" || binaryPath.length === 0) {
+        const msg =
+          `[runtimeManager.start] resolveRuntimeBinaryPath() returned an empty value ` +
+          `(received ${binaryPath === undefined ? "undefined" : JSON.stringify(binaryPath)}). ` +
+          `Run the offline install flow to download the llama-server binary.`;
+        console.error(msg);
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
 
-    const port = await getFreePort();
+      reportPhase("preparing-config", "selecting free port and runtime knobs");
+      const port = await getFreePort();
 
-    const ctxSize = options.contextSize ?? 4096;
-    const threads = options.threads ?? Math.max(1, Math.floor(os.cpus().length / 2));
+      const ctxSize = options.contextSize ?? 4096;
+      const threads = options.threads ?? Math.max(1, Math.floor(os.cpus().length / 2));
 
-    console.log(
-      `[runtimeManager] starting llama-server on port ${port} ` +
-        `(modelId=${modelId}, modelPath=${record.modelPath}, ` +
-        `binaryPath=${binaryPath}, ctx=${ctxSize}, threads=${threads})`,
-    );
-
-    const args = [
-      "--model", record.modelPath,
-      "--port", String(port),
-      "--host", "127.0.0.1",
-      "--ctx-size", String(ctxSize),
-      "--n-predict", "-1",
-      "--threads", String(threads),
-      "--no-display-prompt",
-      "--log-disable",
-    ];
-
-    _proc = spawn(binaryPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-
-    _port = port;
-    _modelId = modelId;
-    _spawnOptions = { contextSize: ctxSize, threads };
-
-    _proc.on("error", (err) => {
-      console.error("[runtimeManager] process error:", err);
-      _proc = null;
-      _port = null;
-      _modelId = null;
-      _spawnOptions = {};
-    });
-
-    _proc.on("exit", (code, signal) => {
       console.log(
-        `[runtimeManager] process exited (code=${code ?? "null"} signal=${signal ?? "null"})`,
+        `[runtimeManager] starting llama-server on port ${port} ` +
+          `(modelId=${modelId}, modelPath=${record.modelPath}, ` +
+          `binaryPath=${binaryPath}, ctx=${ctxSize}, threads=${threads})`,
       );
-      _proc = null;
-      _port = null;
-      _modelId = null;
-      _spawnOptions = {};
-    });
 
-    // Log stderr so failures are visible in the Electron log.
-    _proc.stderr?.on("data", (data: Buffer) => {
-      console.log(`[llama-server] ${data.toString().trimEnd()}`);
-    });
+      const args = [
+        "--model", record.modelPath,
+        "--port", String(port),
+        "--host", "127.0.0.1",
+        "--ctx-size", String(ctxSize),
+        "--n-predict", "-1",
+        "--threads", String(threads),
+        "--no-display-prompt",
+        "--log-disable",
+      ];
 
-    // Wait for the server to accept connections.
-    await pollUntilReady(port, "/health", 60_000);
+      reportPhase(
+        "launching-process",
+        `spawning llama-server on port ${port} (ctx=${ctxSize}, threads=${threads})`,
+      );
 
-    console.log(`[runtimeManager] server ready on port ${port}`);
+      let proc: ChildProcess;
+      try {
+        proc = spawn(binaryPath, args, {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env },
+        });
+      } catch (err) {
+        const msg = `Failed to spawn llama-server: ${err instanceof Error ? err.message : String(err)}`;
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
+
+      _proc = proc;
+      _port = port;
+      _modelId = modelId;
+      _spawnOptions = { contextSize: ctxSize, threads };
+
+      // Capture the most recent stderr line so a startup failure can
+      // surface it (e.g. "failed to load model" / "out of memory") rather
+      // than only the generic readiness-timeout.  Bounded so a chatty
+      // model log can't grow this buffer without limit.
+      const MAX_STDERR_TAIL_BYTES = 500;
+      let lastStderr = "";
+      _proc.on("error", (err) => {
+        console.error("[runtimeManager] process error:", err);
+        _proc = null;
+        _port = null;
+        _modelId = null;
+        _spawnOptions = {};
+      });
+
+      _proc.on("exit", (code, signal) => {
+        console.log(
+          `[runtimeManager] process exited (code=${code ?? "null"} signal=${signal ?? "null"})`,
+        );
+        _proc = null;
+        _port = null;
+        _modelId = null;
+        _spawnOptions = {};
+      });
+
+      // Log stderr so failures are visible in the Electron log.  Keep
+      // the trailing window so we can attach it to a "failed" phase
+      // detail if the readiness wait times out.
+      _proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString().trimEnd();
+        if (text.length > 0) {
+          lastStderr =
+            text.length > MAX_STDERR_TAIL_BYTES
+              ? text.slice(-MAX_STDERR_TAIL_BYTES)
+              : text;
+          console.log(`[llama-server] ${text}`);
+        }
+      });
+
+      // Wait for the HTTP server to start accepting connections.  Any
+      // HTTP response (including 503 "loading model") proves the
+      // process is alive — we then transition to "warming-up" while
+      // llama.cpp finishes mmap-loading the GGUF into memory.
+      reportPhase(
+        "waiting-for-server",
+        `polling http://127.0.0.1:${port}/health for TCP readiness`,
+      );
+      try {
+        await pollUntil(port, "/health", () => true, 60_000);
+      } catch (err) {
+        const detail =
+          (err instanceof Error ? err.message : String(err)) +
+          (lastStderr ? ` — last stderr: ${lastStderr}` : "");
+        reportPhase("failed", detail);
+        // Best-effort: kill the process we spawned so we don't leave a
+        // half-alive llama-server holding the port.
+        try {
+          if (proc && !proc.killed) proc.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
+
+      reportPhase(
+        "warming-up",
+        "waiting for model to finish loading into memory",
+      );
+      try {
+        // /health returns 200 once the GGUF is fully loaded; before
+        // that it returns 503 with `{"status": "loading model"}`.  This
+        // is the real "warming up" signal — the previous one-shot
+        // spinner masked it entirely on slow disks.
+        await pollUntilReady(port, "/health", 120_000);
+      } catch (err) {
+        const detail =
+          (err instanceof Error ? err.message : String(err)) +
+          (lastStderr ? ` — last stderr: ${lastStderr}` : "");
+        reportPhase("failed", detail);
+        try {
+          if (proc && !proc.killed) proc.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
+
+      reportPhase("ready", `serving on port ${port}`);
+      console.log(`[runtimeManager] server ready on port ${port}`);
+    } catch (err) {
+      // Any unhandled error from the start sequence — make sure we
+      // flag it as a "failed" phase exactly once for the renderer.
+      // The individual catch blocks above already report their own
+      // detail so re-emitting here would be noisy; rely on the inner
+      // reports and just rethrow.
+      throw err;
+    }
   },
 
   /**
@@ -328,12 +506,20 @@ export const runtimeManager = {
        * progress on slow on-device generation.
        */
       onPromptSent?: () => void;
+      /**
+       * Optional progress callback forwarded to `start()` so chat
+       * dispatch surfaces step-by-step runtime startup status the same
+       * way an explicit Restart from Settings does.  Only invoked when
+       * the runtime actually has to spawn / load — warm requests skip
+       * straight to the existing prompt-sent / first-token signals.
+       */
+      onRuntimePhase?: RuntimeStartupPhaseCallback;
     } = {},
   ): Promise<void> {
     // Ensure the server is running with the requested spawn options
     // (this may stop and restart the runtime when the user changed
     // context size or thread count between requests).
-    await runtimeManager.start(modelId, options.spawn ?? {});
+    await runtimeManager.start(modelId, options.spawn ?? {}, options.onRuntimePhase);
 
     // Mark this model as used now so the management UI can render
     // a meaningful "last used" timestamp for each installed model.
