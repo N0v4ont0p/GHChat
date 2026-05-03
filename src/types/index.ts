@@ -552,7 +552,35 @@ export interface OfflineRuntimeFailureDetails {
   exited: boolean;
   stderrTail: string;
   stdoutTail: string;
+  /**
+   * Recovery actions the renderer should expose for this failure.
+   * Computed by pre-launch validation in the main process so the UI
+   * can render only the buttons that make sense — e.g. an unsupported
+   * model format gets `["remove", "choose-other", "reveal-folder"]`
+   * but no "repair" affordance, and a missing runtime binary gets
+   * `["reinstall-runtime"]` only.
+   *
+   * Defaults to `[]` for failures raised after a successful spawn
+   * (where the right next step is "view logs" / "retry" rather than
+   * mutating the install).  Older main processes may omit the field
+   * entirely; renderers MUST treat `undefined` as `[]`.
+   */
+  recoveryActions?: OfflineRuntimeRecoveryAction[];
 }
+
+/**
+ * Mirrors `RuntimeRecoveryAction` in
+ * `electron/main/services/offline/runtime-manager.ts`.  Kept as a
+ * string-literal union so it crosses the IPC bridge as plain JSON
+ * and renderer can exhaustively map each value to a button.
+ */
+export type OfflineRuntimeRecoveryAction =
+  | "repair"
+  | "reinstall"
+  | "remove"
+  | "choose-other"
+  | "reveal-folder"
+  | "reinstall-runtime";
 
 /**
  * Payload broadcast on `OFFLINE_RUNTIME_PHASE`.

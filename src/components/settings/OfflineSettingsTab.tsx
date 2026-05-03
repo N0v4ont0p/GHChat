@@ -1227,6 +1227,27 @@ function RuntimeFailureBanner({
               <Settings2 className="mr-1 h-3.5 w-3.5" />
               Manage Model
             </Button>
+            {failure?.recoveryActions?.includes("reveal-folder") &&
+              failure.modelId && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      await ipc.revealOfflineModelFolder(failure.modelId!);
+                    } catch (err) {
+                      toast.error(
+                        err instanceof Error
+                          ? err.message
+                          : "Could not reveal the model folder",
+                      );
+                    }
+                  }}
+                >
+                  <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                  Reveal Model Folder
+                </Button>
+              )}
           </div>
           {technical && (
             <TechnicalDetails tone="danger">{technical}</TechnicalDetails>

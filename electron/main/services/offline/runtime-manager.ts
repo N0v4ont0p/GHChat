@@ -91,6 +91,272 @@ function safeExists(path: string): boolean {
 }
 
 /**
+ * Return the file size in bytes, or `null` if `path` does not exist /
+ * cannot be stat'd.  Used by pre-launch validation to catch zero-byte
+ * "installed" GGUFs (e.g. interrupted downloads that were renamed into
+ * place by a buggy install path) before they reach `llama-server`,
+ * which otherwise mmaps the empty file and exits with a cryptic
+ * "tensor not found" error 30 s later.
+ */
+function safeFileSize(path: string): number | null {
+  try {
+    const st = statSync(path);
+    return st.isFile() ? st.size : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return `true` if the current process can `execve` `path`.  On POSIX
+ * this requires the owner/group/other execute bit to be set; on
+ * Windows the concept doesn't exist (every regular file is executable
+ * if its extension says so), so we treat existence as sufficient.
+ *
+ * `child_process.spawn` will surface EACCES eventually, but only after
+ * a setup round-trip — pre-checking here lets us emit a clear
+ * "binary is not executable" recovery banner instead of a generic
+ * spawn-error.
+ */
+function isExecutable(path: string): boolean {
+  if (process.platform === "win32") {
+    return safeExists(path);
+  }
+  try {
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lower-cased file extensions accepted by the bundled llama.cpp
+ * runtime.  `.gguf` is the only on-disk format the install pipeline
+ * produces today, but the check is centralised so adding e.g. `.bin`
+ * support later only touches one constant.
+ */
+const SUPPORTED_MODEL_EXTENSIONS: ReadonlySet<string> = new Set([".gguf"]);
+
+/**
+ * Result of {@link validateLaunchPreconditions}.  When `ok` is true
+ * the caller may proceed to `spawn`; the resolved paths are returned
+ * so the caller never has to re-derive them.  When `ok` is false the
+ * caller MUST abort the launch and surface the failure exactly as
+ * given — `kind`, `phase`, `message`, and `recoveryActions` are all
+ * picked to drive the renderer's failure banner verbatim.
+ */
+type LaunchPreconditionResult =
+  | {
+      ok: true;
+      modelPath: string;
+      modelSizeBytes: number;
+      binaryPath: string;
+    }
+  | {
+      ok: false;
+      phase: RuntimeStartupPhase;
+      kind: RuntimeStartupFailureDetails["kind"];
+      message: string;
+      recoveryActions: RuntimeRecoveryAction[];
+      modelPath: string | null;
+      binaryPath: string | null;
+    };
+
+/**
+ * Run *every* pre-launch invariant required by the offline runtime in
+ * a single pass and return either the resolved `{modelPath, binaryPath}`
+ * tuple or a structured failure that maps 1:1 to recovery affordances.
+ *
+ * Why a single helper:
+ *   - Each check used to be inlined in `start()`, which made it easy
+ *     to add a new field without remembering to also surface a
+ *     recovery action for it.  Centralising the rules guarantees the
+ *     UI banner and the backend agree on what counts as "broken".
+ *   - The helper runs entirely synchronously and *before* `spawn()`,
+ *     so a corrupt-but-marked-installed model is caught with a clear
+ *     fix path instead of a 60-second readiness timeout followed by
+ *     an opaque "process exited" message.
+ *
+ * Validation order is chosen so the most useful diagnostic wins:
+ *   1. Model record present in registry          → recovery: choose-other
+ *   2. Model record carries a non-empty path     → recovery: repair / reinstall / remove
+ *   3. Model file exists on disk                 → recovery: repair / reinstall / remove / reveal-folder / choose-other
+ *   4. Model file is non-zero bytes              → recovery: repair / reinstall / remove / reveal-folder / choose-other
+ *   5. Model file extension is supported         → recovery: remove / choose-other / reveal-folder
+ *   6. Runtime binary path resolves              → recovery: reinstall-runtime
+ *   7. Runtime binary exists on disk             → recovery: reinstall-runtime
+ *   8. Runtime binary has the execute bit        → recovery: reinstall-runtime
+ *
+ * Compatibility check (#8.5 — currently a degenerate one-format world):
+ *   - `.gguf` ↔ llama.cpp.  When more runtimes/formats land, extend
+ *     SUPPORTED_MODEL_EXTENSIONS plus a per-runtime allow-list and
+ *     return a `config-error` with `choose-other` recovery on
+ *     mismatch.
+ */
+function validateLaunchPreconditions(modelId: string): LaunchPreconditionResult {
+  // 1. Registry lookup.
+  const record = modelRegistry.listInstalled().find((r) => r.id === modelId);
+  if (!record) {
+    return {
+      ok: false,
+      phase: "checking-model",
+      kind: "config-error",
+      message:
+        `Model "${modelId}" is not installed. Pick another installed model, ` +
+        `or reinstall this one from Manage models.`,
+      recoveryActions: ["choose-other", "reinstall"],
+      modelPath: null,
+      binaryPath: null,
+    };
+  }
+
+  // 2. Model path defined and non-empty.
+  if (typeof record.modelPath !== "string" || record.modelPath.length === 0) {
+    return {
+      ok: false,
+      phase: "checking-model",
+      kind: "config-error",
+      message:
+        `The offline_models entry for "${modelId}" has no file path. ` +
+        `The registry row appears corrupt — repair, reinstall, or remove ` +
+        `the model from Manage models.`,
+      recoveryActions: ["repair", "reinstall", "remove", "choose-other"],
+      modelPath: null,
+      binaryPath: null,
+    };
+  }
+  const modelPath = record.modelPath;
+
+  // 3. Model file exists on disk.
+  if (!safeExists(modelPath)) {
+    return {
+      ok: false,
+      phase: "checking-model",
+      kind: "missing-file",
+      message:
+        `Model file is missing on disk: ${modelPath}. ` +
+        `Repair or reinstall "${modelId}", or pick another installed model.`,
+      recoveryActions: ["repair", "reinstall", "remove", "choose-other", "reveal-folder"],
+      modelPath,
+      binaryPath: null,
+    };
+  }
+
+  // 4. Model file is non-zero bytes.
+  const modelSizeBytes = safeFileSize(modelPath);
+  if (modelSizeBytes === null) {
+    return {
+      ok: false,
+      phase: "checking-model",
+      kind: "missing-file",
+      message:
+        `Cannot read model file at ${modelPath}. The file may have been ` +
+        `removed, locked by another process, or its containing folder is ` +
+        `unreadable. Try repairing or reinstalling "${modelId}".`,
+      recoveryActions: ["repair", "reinstall", "remove", "choose-other", "reveal-folder"],
+      modelPath,
+      binaryPath: null,
+    };
+  }
+  if (modelSizeBytes === 0) {
+    return {
+      ok: false,
+      phase: "checking-model",
+      kind: "missing-file",
+      message:
+        `Model file at ${modelPath} is empty (0 bytes). The download was ` +
+        `likely interrupted. Repair or reinstall "${modelId}" to recover.`,
+      recoveryActions: ["repair", "reinstall", "remove", "choose-other", "reveal-folder"],
+      modelPath,
+      binaryPath: null,
+    };
+  }
+
+  // 5. Model file extension/format is supported (== compatible with
+  //    the only runtime we currently ship: llama.cpp).
+  const ext = extname(modelPath).toLowerCase();
+  if (!SUPPORTED_MODEL_EXTENSIONS.has(ext)) {
+    return {
+      ok: false,
+      phase: "checking-model",
+      kind: "config-error",
+      message:
+        `Model file ${modelPath} has unsupported format "${ext || "(none)"}". ` +
+        `The bundled offline runtime only loads ${[...SUPPORTED_MODEL_EXTENSIONS].join(", ")} ` +
+        `files. Remove this entry and install a compatible model.`,
+      recoveryActions: ["remove", "choose-other", "reveal-folder"],
+      modelPath,
+      binaryPath: null,
+    };
+  }
+
+  // 6. Runtime binary path resolves.
+  let binaryPath: string;
+  try {
+    binaryPath = resolveRuntimeBinaryPath();
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      phase: "checking-binary",
+      kind: "config-error",
+      message:
+        `Cannot resolve offline runtime binary: ${cause}. ` +
+        `Reinstall the offline runtime from Manage offline models to recover.`,
+      recoveryActions: ["reinstall-runtime"],
+      modelPath,
+      binaryPath: null,
+    };
+  }
+  if (typeof binaryPath !== "string" || binaryPath.length === 0) {
+    return {
+      ok: false,
+      phase: "checking-binary",
+      kind: "config-error",
+      message:
+        `Offline runtime binary path is empty. ` +
+        `Reinstall the offline runtime from Manage offline models to recover.`,
+      recoveryActions: ["reinstall-runtime"],
+      modelPath,
+      binaryPath: null,
+    };
+  }
+
+  // 7. Runtime binary exists on disk.
+  if (!safeExists(binaryPath)) {
+    return {
+      ok: false,
+      phase: "checking-binary",
+      kind: "missing-file",
+      message:
+        `Runtime binary is missing on disk: ${binaryPath}. ` +
+        `Reinstall the offline runtime to recover.`,
+      recoveryActions: ["reinstall-runtime"],
+      modelPath,
+      binaryPath,
+    };
+  }
+
+  // 8. Runtime binary is executable (POSIX only — see isExecutable()).
+  if (!isExecutable(binaryPath)) {
+    return {
+      ok: false,
+      phase: "checking-binary",
+      kind: "config-error",
+      message:
+        `Runtime binary at ${binaryPath} is not executable. ` +
+        `Reinstall the offline runtime to restore the execute bit.`,
+      recoveryActions: ["reinstall-runtime"],
+      modelPath,
+      binaryPath,
+    };
+  }
+
+  return { ok: true, modelPath, modelSizeBytes, binaryPath };
+}
+
+/**
  * Append `chunk` to a bounded tail buffer used to capture llama-server
  * stdout/stderr.  Newer bytes always win — when the combined size
  * exceeds `maxBytes`, the leading bytes are discarded.  Newlines in the
@@ -295,7 +561,33 @@ export interface RuntimeStartupFailureDetails {
   stderrTail: string;
   /** Bounded tail of llama-server stdout (may be empty). */
   stdoutTail: string;
+  /**
+   * Recovery actions the renderer should expose to the user for this
+   * specific failure.  Computed by pre-launch validation so the banner
+   * can render only the buttons that make sense — e.g. a missing model
+   * file gets {repair, reinstall, remove, choose-other, reveal-folder}
+   * but not "reinstall runtime", while a missing binary gets
+   * {reinstall-runtime} only.  Defaults to an empty array for failures
+   * raised after a successful spawn (where the model + binary are known
+   * to be on disk and the right fix is "view logs" / "retry").
+   */
+  recoveryActions: RuntimeRecoveryAction[];
 }
+
+/**
+ * The set of UI affordances the renderer may render in response to a
+ * runtime startup failure.  Kept as a small string-literal union so it
+ * crosses the IPC boundary as plain JSON and can be exhaustively
+ * rendered (each value maps to one button or link in
+ * `RuntimeFailureBanner`).
+ */
+export type RuntimeRecoveryAction =
+  | "repair"
+  | "reinstall"
+  | "remove"
+  | "choose-other"
+  | "reveal-folder"
+  | "reinstall-runtime";
 
 /**
  * Callback invoked at every stage of a runtime start so callers can
@@ -420,6 +712,7 @@ export const runtimeManager = {
       phase: RuntimeStartupPhase,
       message: string,
       kind: RuntimeStartupFailureDetails["kind"],
+      recoveryActions: RuntimeRecoveryAction[] = [],
     ): RuntimeStartupFailureDetails => ({
       phase,
       lastInProgressPhase: ctx.lastInProgressPhase,
@@ -436,6 +729,7 @@ export const runtimeManager = {
       exited: ctx.exited,
       stderrTail: ctx.stderr,
       stdoutTail: ctx.stdout,
+      recoveryActions,
     });
 
     // Wrap the user callback + structured log in one helper so every
@@ -450,6 +744,7 @@ export const runtimeManager = {
       phase: RuntimeStartupPhase,
       detail?: string,
       kind: RuntimeStartupFailureDetails["kind"] = "unknown",
+      recoveryActions: RuntimeRecoveryAction[] = [],
     ) => {
       const now = Date.now();
       if (phase !== "failed" && phase !== "ready") {
@@ -471,7 +766,12 @@ export const runtimeManager = {
       );
       let failure: RuntimeStartupFailureDetails | undefined;
       if (phase === "failed") {
-        failure = buildFailure(phase, detail ?? "Runtime startup failed.", kind);
+        failure = buildFailure(
+          phase,
+          detail ?? "Runtime startup failed.",
+          kind,
+          recoveryActions,
+        );
         try {
           writeRuntimeFailureLog(failure);
         } catch (err) {
@@ -502,7 +802,7 @@ export const runtimeManager = {
         `(received ${modelId === undefined ? "undefined" : JSON.stringify(modelId)}). ` +
         `Caller must resolve the active offline model id before calling start().`;
       console.error(msg);
-      reportPhase("failed", msg, "config-error");
+      reportPhase("failed", msg, "config-error", ["choose-other"]);
       throw new Error(msg);
     }
 
@@ -531,68 +831,38 @@ export const runtimeManager = {
     await runtimeManager.stop();
 
     try {
-      reportPhase("checking-model", `looking up installed model "${modelId}"`);
-      const record = modelRegistry.listInstalled().find((r) => r.id === modelId);
-      if (!record) {
-        const msg = `Model "${modelId}" is not installed. Run the offline install flow first.`;
-        reportPhase("failed", msg, "config-error");
-        throw new Error(msg);
+      reportPhase("checking-model", `validating installed model "${modelId}"`);
+      // Run every pre-launch invariant in one place — see
+      // validateLaunchPreconditions() for the full list.  Failures
+      // here surface a structured `recoveryActions` array so the
+      // banner can render only the buttons that make sense for the
+      // specific fault (repair / reinstall / remove / pick another /
+      // reveal model folder / reinstall runtime).
+      const pre = validateLaunchPreconditions(modelId);
+      if (!pre.ok) {
+        // Record whatever paths we already resolved so buildFailure
+        // surfaces them in the structured failure record (e.g. a
+        // missing-binary error still includes the resolved binary
+        // path so "Show technical details" is useful).
+        ctx.modelPath = pre.modelPath;
+        ctx.binaryPath = pre.binaryPath;
+        // `pre.phase` is the *step* that failed (checking-model or
+        // checking-binary).  Anchor `lastInProgressPhase` there so the
+        // banner shows "Last step: Checking model" instead of the
+        // initial validating-installed-model log entry.
+        ctx.lastInProgressPhase = pre.phase;
+        reportPhase("failed", pre.message, pre.kind, pre.recoveryActions);
+        throw new Error(pre.message);
       }
-
-      if (typeof record.modelPath !== "string" || record.modelPath.length === 0) {
-        const msg =
-          `[runtimeManager.start] model record for "${modelId}" has no modelPath ` +
-          `(received ${record.modelPath === undefined ? "undefined" : JSON.stringify(record.modelPath)}). ` +
-          `The offline_models row appears corrupt — try repairing or reinstalling the model.`;
-        console.error(msg);
-        reportPhase("failed", msg, "config-error");
-        throw new Error(msg);
-      }
-      ctx.modelPath = record.modelPath;
+      ctx.modelPath = pre.modelPath;
+      ctx.binaryPath = pre.binaryPath;
 
       reportPhase(
         "checking-binary",
-        "resolving llama-server binary path",
+        `runtime binary OK at ${pre.binaryPath} (model ${(pre.modelSizeBytes / 1024 / 1024).toFixed(1)} MB)`,
       );
-      let binaryPath: string;
-      try {
-        binaryPath = resolveRuntimeBinaryPath();
-      } catch (err) {
-        const msg = `Cannot start offline runtime: ${err instanceof Error ? err.message : String(err)}`;
-        reportPhase("failed", msg, "config-error");
-        throw new Error(msg);
-      }
-
-      if (typeof binaryPath !== "string" || binaryPath.length === 0) {
-        const msg =
-          `[runtimeManager.start] resolveRuntimeBinaryPath() returned an empty value ` +
-          `(received ${binaryPath === undefined ? "undefined" : JSON.stringify(binaryPath)}). ` +
-          `Run the offline install flow to download the llama-server binary.`;
-        console.error(msg);
-        reportPhase("failed", msg, "config-error");
-        throw new Error(msg);
-      }
-      ctx.binaryPath = binaryPath;
 
       reportPhase("preparing-config", "selecting free port and runtime knobs");
-      // Pre-flight existence checks — surface "file is gone" errors
-      // here, before spawn, so the user sees a clear "model file not
-      // found" message instead of a timeout three minutes later when
-      // llama-server silently exits because it can't open the GGUF.
-      if (!safeExists(ctx.modelPath)) {
-        const msg =
-          `Model file is missing on disk: ${ctx.modelPath}. ` +
-          `Try repairing or reinstalling "${modelId}" from Manage models.`;
-        reportPhase("failed", msg, "missing-file");
-        throw new Error(msg);
-      }
-      if (!safeExists(ctx.binaryPath)) {
-        const msg =
-          `Runtime binary is missing on disk: ${ctx.binaryPath}. ` +
-          `Reinstall the offline runtime to recover.`;
-        reportPhase("failed", msg, "missing-file");
-        throw new Error(msg);
-      }
 
       const port = await getFreePort();
 
@@ -606,7 +876,7 @@ export const runtimeManager = {
       );
 
       const args = [
-        "--model", ctx.modelPath,
+        "--model", pre.modelPath,
         "--port", String(port),
         "--host", "127.0.0.1",
         "--ctx-size", String(ctxSize),
@@ -616,6 +886,24 @@ export const runtimeManager = {
         "--log-disable",
       ];
 
+      // Defence in depth: every arg above is derived from validated
+      // inputs, but a future refactor that lets `undefined` slip into
+      // this array would crash deep inside Node's spawn validation
+      // with a confusing "the argv argument must be of type string"
+      // message.  Catch it here with the same recovery surface as a
+      // missing-model failure so the user gets actionable copy.
+      const badArgIdx = args.findIndex(
+        (a) => typeof a !== "string" || a.length === 0,
+      );
+      if (badArgIdx >= 0) {
+        const msg =
+          `Internal error: runtime arg #${badArgIdx} is empty or undefined ` +
+          `(args=${JSON.stringify(args)}). Refusing to spawn llama-server.`;
+        console.error(`[runtimeManager.start] ${msg}`);
+        reportPhase("failed", msg, "config-error", ["choose-other"]);
+        throw new Error(msg);
+      }
+
       reportPhase(
         "launching-process",
         `spawning llama-server on port ${port} (ctx=${ctxSize}, threads=${threads})`,
@@ -623,7 +911,7 @@ export const runtimeManager = {
 
       let proc: ChildProcess;
       try {
-        proc = spawn(ctx.binaryPath, args, {
+        proc = spawn(pre.binaryPath, args, {
           stdio: ["ignore", "pipe", "pipe"],
           env: { ...process.env },
         });
