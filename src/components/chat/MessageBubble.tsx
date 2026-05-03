@@ -1,9 +1,9 @@
-import { useState, useCallback } from "react";
-import { motion } from "framer-motion";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Copy, Check, RefreshCw, User, Bot } from "lucide-react";
+import { Copy, Check, RefreshCw, User, Bot, Pencil, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Message } from "@/types";
@@ -11,8 +11,11 @@ import type { Message } from "@/types";
 interface Props {
   message: Message;
   isLastAssistant?: boolean;
+  /** True for the most recent user turn (eligible for inline edit). */
+  isLastUser?: boolean;
   isStreaming?: boolean;
   onRegenerate?: () => void;
+  onEdit?: (newContent: string) => void;
   index?: number;
 }
 
@@ -47,9 +50,45 @@ function extractLanguage(className?: string): string {
   return m ? m[1] : "";
 }
 
-export function MessageBubble({ message, isLastAssistant, isStreaming, onRegenerate, index = 0 }: Props) {
-  const [showActions, setShowActions] = useState(false);
+export function MessageBubble({ message, isLastAssistant, isLastUser, isStreaming, onRegenerate, onEdit, index = 0 }: Props) {
   const isUser = message.role === "user";
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Reset draft if the underlying message content changes while we're not editing.
+  useEffect(() => {
+    if (!isEditing) setDraft(message.content);
+  }, [message.content, isEditing]);
+
+  // Auto-grow + focus textarea when entering edit mode.
+  useEffect(() => {
+    if (!isEditing) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
+  }, [isEditing]);
+
+  const beginEdit = useCallback(() => {
+    setDraft(message.content);
+    setIsEditing(true);
+  }, [message.content]);
+  const cancelEdit = useCallback(() => {
+    setIsEditing(false);
+    setDraft(message.content);
+  }, [message.content]);
+  const submitEdit = useCallback(() => {
+    const next = draft.trim();
+    if (!next || next === message.content.trim()) {
+      cancelEdit();
+      return;
+    }
+    setIsEditing(false);
+    onEdit?.(next);
+  }, [draft, message.content, cancelEdit, onEdit]);
 
   const time = new Date(message.createdAt).toLocaleTimeString([], {
     hour: "2-digit",
@@ -57,42 +96,93 @@ export function MessageBubble({ message, isLastAssistant, isStreaming, onRegener
   });
 
   const wordCount = message.content.trim().split(/\s+/).filter(Boolean).length;
+  const canEdit = isUser && isLastUser && !isStreaming && !!onEdit;
+  const trimmedDraft = isEditing ? draft.trim() : "";
+  const editDirty = trimmedDraft.length > 0 && trimmedDraft !== message.content.trim();
 
   return (
     <TooltipProvider delayDuration={400}>
       <motion.div
-        initial={{ opacity: 0, y: 8, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
         transition={{
           duration: 0.22,
           ease: [0.16, 1, 0.3, 1],
           delay: Math.min(index * 0.02, 0.1),
         }}
-        className={cn("group flex w-full px-4 py-2", isUser ? "justify-end" : "justify-start")}
-        onMouseEnter={() => setShowActions(true)}
-        onMouseLeave={() => setShowActions(false)}
+        className={cn(
+          "group/msg flex w-full px-4 py-2.5 sm:px-6",
+          isUser ? "justify-end" : "justify-start",
+        )}
       >
         {/* Avatar — only for assistant */}
         {!isUser && (
-          <div className="mr-2.5 mt-1 flex-shrink-0">
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/15 ring-1 ring-primary/20">
-              <Bot className="h-3 w-3 text-primary" />
+          <div className="mr-3 mt-1 flex-shrink-0">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/12 ring-1 ring-primary/15">
+              <Bot className="h-3.5 w-3.5 text-primary" />
             </div>
           </div>
         )}
 
-        <div className={cn("flex flex-col gap-1", isUser ? "items-end max-w-[78%]" : "flex-1 min-w-0 max-w-[85%]")}>
+        <div className={cn("flex flex-col gap-1.5", isUser ? "items-end max-w-[78%]" : "flex-1 min-w-0 max-w-[85%]")}>
+          {isEditing ? (
+            <div className="w-full max-w-[640px] rounded-2xl rounded-br-md bg-primary/95 p-2 ring-1 ring-primary/40">
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  const ta = e.currentTarget;
+                  ta.style.height = "auto";
+                  ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submitEdit();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelEdit();
+                  }
+                }}
+                className="w-full resize-none rounded-xl bg-transparent px-3 py-2 text-sm leading-relaxed text-primary-foreground outline-none placeholder:text-primary-foreground/50"
+                rows={1}
+                aria-label="Edit message"
+              />
+              <div className="flex items-center justify-between gap-2 px-1 pt-1">
+                <span className="text-[10px] text-primary-foreground/60">
+                  Enter to save · Shift+Enter for newline · Esc to cancel
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={cancelEdit}
+                    className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary-foreground/80 transition-colors hover:bg-primary-foreground/10"
+                  >
+                    <X className="h-3 w-3" />
+                    Cancel
+                  </button>
+                  <button
+                    onClick={submitEdit}
+                    disabled={!editDirty}
+                    className="flex items-center gap-1 rounded-md bg-primary-foreground/95 px-2.5 py-1 text-[11px] font-medium text-primary transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Check className="h-3 w-3" />
+                    Save &amp; resend
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
           <div
             className={cn(
-              "message-content relative text-sm leading-relaxed",
+              "message-content relative text-[14.5px] leading-relaxed",
               isUser
-                ? "rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-primary-foreground"
-                : "rounded-2xl rounded-bl-md bg-card/60 px-4 py-3 text-foreground ring-1 ring-border/30",
-              isStreaming && "animate-pulse-subtle",
+                ? "rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-primary-foreground shadow-md shadow-primary/20"
+                : "rounded-2xl rounded-bl-md bg-[hsl(var(--surface-2))]/85 px-4 py-3 text-foreground ring-1 ring-border/40 elev-1",
             )}
           >
             {isUser ? (
-              <p className="whitespace-pre-wrap">{message.content}</p>
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
             ) : (
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -214,58 +304,77 @@ export function MessageBubble({ message, isLastAssistant, isStreaming, onRegener
               <span className="inline-block h-3.5 w-0.5 translate-y-0.5 rounded-sm bg-primary animate-cursor-blink ml-0.5" />
             )}
           </div>
+          )}
 
-          {/* Per-message action bar */}
-          {showActions && !isStreaming && (
-            <motion.div
-              initial={{ opacity: 0, y: -2 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.1 }}
-              className={cn(
-                "flex items-center gap-1 transition-opacity",
-                isUser ? "flex-row-reverse" : "flex-row",
-              )}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div>
-                    <CopyButton text={message.content} className="opacity-60 hover:opacity-100" />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>Copy message</TooltipContent>
-              </Tooltip>
-
-              {isLastAssistant && onRegenerate && (
+          {/* Per-message action bar — appears on hover via CSS group-hover */}
+          <AnimatePresence>
+            {!isStreaming && !isEditing && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.12 }}
+                className={cn(
+                  "flex items-center gap-0.5 opacity-0 transition-opacity duration-150",
+                  "group-hover/msg:opacity-100 focus-within:opacity-100",
+                  isUser ? "flex-row-reverse" : "flex-row",
+                )}
+              >
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button
-                      onClick={onRegenerate}
-                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground opacity-60 transition-all hover:opacity-100 hover:text-foreground hover:bg-white/5 active:scale-95"
-                    >
-                      <RefreshCw className="h-3 w-3" />
-                      Regenerate
-                    </button>
+                    <div>
+                      <CopyButton text={message.content} className="opacity-70 hover:opacity-100" />
+                    </div>
                   </TooltipTrigger>
-                  <TooltipContent>Regenerate response</TooltipContent>
+                  <TooltipContent>Copy message</TooltipContent>
                 </Tooltip>
-              )}
 
-              <span className="px-1 py-0.5 text-[10px] text-muted-foreground/40">
-                {time}
-                {!isUser && wordCount > 0 && (
-                  <span className="ml-1.5 opacity-60">{wordCount}w</span>
+                {canEdit && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={beginEdit}
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground opacity-70 transition-all hover:opacity-100 hover:text-foreground hover:bg-white/5 active:scale-95"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        Edit
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Edit and resend</TooltipContent>
+                  </Tooltip>
                 )}
-              </span>
-            </motion.div>
-          )}
+
+                {isLastAssistant && onRegenerate && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={onRegenerate}
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground opacity-70 transition-all hover:opacity-100 hover:text-foreground hover:bg-white/5 active:scale-95"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Regenerate
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Regenerate response</TooltipContent>
+                  </Tooltip>
+                )}
+
+                <span className="px-1 py-0.5 text-[10px] text-muted-foreground/40 tabular-nums">
+                  {time}
+                  {!isUser && wordCount > 0 && (
+                    <span className="ml-1.5 opacity-60">{wordCount}w</span>
+                  )}
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Avatar — only for user */}
         {isUser && (
-          <div className="ml-2.5 mt-1 flex-shrink-0">
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 ring-1 ring-primary/30">
-              <User className="h-3 w-3 text-primary" />
+          <div className="ml-3 mt-1 flex-shrink-0">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/18 ring-1 ring-primary/25">
+              <User className="h-3.5 w-3.5 text-primary" />
             </div>
           </div>
         )}

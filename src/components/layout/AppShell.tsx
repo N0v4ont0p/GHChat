@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { TitleBar } from "./TitleBar";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, SidebarErrorBoundary } from "./Sidebar";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { SettingsModal } from "@/components/settings/SettingsModal";
 import { OfflineSetupFlow } from "@/components/offline/OfflineSetupFlow";
 import { OfflineManagementModal } from "@/components/offline/OfflineManagementModal";
 import { useConversations } from "@/hooks/useConversations";
+import { useOfflineState } from "@/hooks/useOfflineState";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModeStore } from "@/stores/mode-store";
@@ -20,26 +22,15 @@ export function AppShell() {
 
   const currentMode = useModeStore((s) => s.currentMode);
   const offlineState = useModeStore((s) => s.offlineState);
-  const setOfflineState = useModeStore((s) => s.setOfflineState);
-  const setActiveOfflineModel = useModeStore((s) => s.setActiveOfflineModel);
   const activeOfflineModelId = useModeStore((s) => s.activeOfflineModelId);
 
-  // Sync offline readiness + active model from the main process on mount.
-  // Re-runs whenever the offline setup state transitions so a fresh
-  // install (or model switch) is reflected without a full app reload.
-  useEffect(() => {
-    ipc.getOfflineStatus()
-      .then((r) => setOfflineState(r.state))
-      .catch(() => {
-        console.debug("[AppShell] offline status unavailable, using default");
-      });
-    // Sync the currently active offline model so chat requests use it.
-    ipc.getActiveOfflineModel()
-      .then((info) => setActiveOfflineModel(info))
-      .catch(() => {
-        console.debug("[AppShell] active offline model unavailable");
-      });
-  }, [setOfflineState, setActiveOfflineModel, offlineState]);
+  // Single source of truth for offline state — internally mirrors
+  // `offlineState` and `activeOfflineModel` into useModeStore so legacy
+  // subscribers (TitleBar, ChatHeader, EmptyState, Sidebar) keep working
+  // without each component fetching the data itself.  Also subscribes to
+  // OFFLINE_ACTIVE_MODEL_CHANGED so install / remove / set-active push
+  // events refresh the cache without polling.
+  useOfflineState();
 
   // Auto-select the most recent conversation when conversations load
   // and none is currently selected (e.g. on launch without a persisted lastConversationId)
@@ -75,12 +66,25 @@ export function AppShell() {
     (offlineState !== "installed" || !activeOfflineModelId);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
+    <div className="app-ambient flex h-screen flex-col overflow-hidden">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-        <main className="flex flex-1 overflow-hidden">
-          {needsOfflineSetup ? <OfflineSetupFlow /> : <ChatWindow />}
+        <SidebarErrorBoundary>
+          <Sidebar />
+        </SidebarErrorBoundary>
+        <main className="relative flex flex-1 overflow-hidden">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={needsOfflineSetup ? "offline-setup" : "chat"}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className="flex flex-1 overflow-hidden"
+            >
+              {needsOfflineSetup ? <OfflineSetupFlow /> : <ChatWindow />}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
       <SettingsModal />

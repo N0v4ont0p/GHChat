@@ -273,7 +273,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
             <div
               key={s}
               className={cn(
-                "h-1.5 rounded-full transition-all duration-300",
+                "h-1.5 rounded-full transition-[width,background-color] duration-300 ease-out",
                 step === s || (step === "done" && i === 2)
                   ? "w-6 bg-primary"
                   : ["welcome", "apikey", "model", "done"].indexOf(step) > i
@@ -507,7 +507,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 <button
                   onClick={() => setSelectedModel(AUTO_MODEL_ID)}
                   className={cn(
-                    "w-full rounded-xl border-2 p-3.5 text-left transition-all",
+                    "w-full rounded-xl border-2 p-3.5 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out motion-safe:hover:-translate-y-px motion-safe:active:scale-[0.997] motion-safe:active:translate-y-0",
                     selectedModel === AUTO_MODEL_ID
                       ? "border-cyan-500/60 bg-cyan-500/8 ring-1 ring-cyan-500/30"
                       : "border-cyan-500/20 bg-cyan-500/5 hover:border-cyan-500/40",
@@ -599,7 +599,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                           key={m.id}
                           onClick={() => setSelectedModel(m.id)}
                           className={cn(
-                            "w-full rounded-xl border p-3.5 text-left transition-all",
+                            "w-full rounded-xl border p-3.5 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out motion-safe:hover:-translate-y-px motion-safe:active:scale-[0.997] motion-safe:active:translate-y-0",
                             selectedModel === m.id
                               ? "border-primary/50 bg-primary/8 ring-1 ring-primary/30"
                               : isLimitedAccess

@@ -460,7 +460,14 @@ export type StreamLifecycleState =
   | "stopping"
   | "completed"
   | "fallback-switching"
-  | "failed";
+  | "failed"
+  // Offline-specific lifecycle phases — shown by StreamingIndicator so the
+  // user can see real progress through llama.cpp boot rather than a generic
+  // "streaming" spinner that masks slow on-device load times.
+  | "runtime-starting"
+  | "loading-model"
+  | "processing-prompt"
+  | "generating";
 
 export interface ProviderHealthResult {
   ok: boolean;
@@ -590,6 +597,14 @@ export interface OfflineModelSummary {
   installedAt: number;
   /** Epoch ms of last successful chat with this model, or null. */
   lastUsedAt: number | null;
+  /**
+   * Catalog quality/speed tier for this model — "fast" runs quickest on
+   * modest hardware, "quality" is the slowest but best-output variant.
+   * Optional because some installed records may not have a matching
+   * entry in the current catalog (e.g. removed/legacy variants); when
+   * absent the management UI omits the speed estimate.
+   */
+  tier?: "fast" | "balanced" | "quality";
 }
 
 /**
@@ -639,6 +654,21 @@ export interface Conversation {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * AppMode this conversation is bound to.  Stamped on the first user
+   * message; persists for the life of the conversation so global mode
+   * switches do not retroactively rewrite older chats.
+   */
+  mode: AppMode;
+  /**
+   * Model id this conversation is bound to.
+   *   - For `mode === "online"` this is an OpenRouter model id.
+   *   - For `mode === "offline"` this is an offline catalog id.
+   *   - NULL for an "unbound" conversation (no message has been sent
+   *     yet); the resolver falls back to the current globals in that
+   *     case so the empty state stays flexible until first send.
+   */
+  modelId: string | null;
 }
 
 export interface Message {
@@ -654,6 +684,10 @@ export const IPC = {
   CONVERSATIONS_CREATE: "conversations:create",
   CONVERSATIONS_RENAME: "conversations:rename",
   CONVERSATIONS_DELETE: "conversations:delete",
+  /** Update the mode/model binding of a conversation (recovery flow + first-send stamp). */
+  CONVERSATIONS_UPDATE_MODEL: "conversations:update-model",
+  /** Duplicate a conversation (copies all messages) with an optional new mode/model binding. */
+  CONVERSATIONS_DUPLICATE: "conversations:duplicate",
   MESSAGES_LIST: "messages:list",
   MESSAGES_APPEND: "messages:append",
   MESSAGES_DELETE: "messages:delete",
@@ -785,6 +819,17 @@ export const IPC = {
    * itself selected; otherwise opens the models/ directory.
    */
   OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
+  /**
+   * Push event (main → renderer) fired whenever the active offline
+   * model changes (install/remove/explicit set/auto-promotion in the
+   * resolver).  Lets every open window refresh without polling.
+   * Payload: OfflineActiveModelInfo | null
+   */
+  OFFLINE_ACTIVE_MODEL_CHANGED: "offline:active-model-changed",
+  /** Stop the offline runtime subprocess gracefully. */
+  OFFLINE_RUNTIME_STOP: "offline:runtime:stop",
+  /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
+  OFFLINE_RUNTIME_FORCE_STOP: "offline:runtime:force-stop",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */
@@ -797,4 +842,10 @@ export const IPC = {
    * than the local hardware can comfortably handle.
    */
   OFFLINE_GET_HARDWARE_PROFILE: "offline:get-hardware-profile",
+  /**
+   * Wipe `tmp/` and `downloads/` under the offline root.  Installed models,
+   * runtime binary, manifests, and DB state are preserved.  Returns
+   * `{ ok: boolean; freedBytes: number; error?: string }`.
+   */
+  OFFLINE_CLEAR_CACHE: "offline:clear-cache",
 } as const;

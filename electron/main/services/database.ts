@@ -17,6 +17,20 @@ export const conversationsTable = sqliteTable("conversations", {
   title: text("title").notNull(),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
+  /**
+   * AppMode this conversation is bound to.  Stamped on the first user
+   * message so the global mode switcher cannot retroactively rewrite an
+   * existing chat.  Default 'online' is only used as a backstop for
+   * legacy rows from before the v8 migration.
+   */
+  mode: text("mode").notNull().default("online"),
+  /**
+   * Model id this conversation is bound to.  For online conversations
+   * this is an OpenRouter model id (e.g. "google/gemma-2-9b-it:free");
+   * for offline conversations it is a catalog id (e.g. "gemma3-1b-q4km").
+   * NULL for "unbound" conversations (no message has been sent yet).
+   */
+  modelId: text("model_id"),
 });
 
 export const messagesTable = sqliteTable("messages", {
@@ -167,8 +181,10 @@ export const offlineManifestsTable = sqliteTable("offline_manifests", {
 //  v7 — added offline_settings table for offline-specific runtime knobs
 //        (performance preset, context size, max tokens, temperature,
 //        top-p, threads, cancel timeout, streaming flag, default model).
+//  v8 — added mode + model_id to conversations so each chat carries its
+//        own mode/model and is no longer rewritten by the global switcher.
 //
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -300,7 +316,9 @@ export async function initDatabase(): Promise<void> {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'online',
+        model_id TEXT
       );
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -612,6 +630,48 @@ export async function initDatabase(): Promise<void> {
       }
     }
 
+    // v8 — per-conversation mode + model_id so the global mode/model
+    //       switcher can no longer retroactively rewrite an existing
+    //       chat.  Existing rows are backfilled with mode='online' and
+    //       model_id = settings.default_model so they keep routing the
+    //       same way they did before this migration.
+    if (diskVersion < 8) {
+      console.log("[db] migration v8: adding conversation mode + model_id columns…");
+      try {
+        const cols = tableColumns("conversations");
+        sqliteDb.exec("BEGIN");
+        if (!cols.includes("mode")) {
+          sqliteDb.run(
+            "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'online'",
+          );
+          console.log("[db] migration v8: mode column added");
+        }
+        if (!cols.includes("model_id")) {
+          sqliteDb.run("ALTER TABLE conversations ADD COLUMN model_id TEXT");
+          console.log("[db] migration v8: model_id column added");
+        }
+        // Backfill: any conversation without an explicit model_id gets
+        // the user's currently-saved default online model.  This makes
+        // legacy rows behave identically to fresh-install rows once the
+        // resolver starts honouring the conversation-level value.
+        sqliteDb.run(
+          `UPDATE conversations
+           SET model_id = COALESCE(
+                 model_id,
+                 (SELECT default_model FROM settings WHERE id = 'app')
+               ),
+               mode = COALESCE(mode, 'online')
+           WHERE model_id IS NULL OR mode IS NULL`,
+        );
+        sqliteDb.run("PRAGMA user_version = 8");
+        sqliteDb.exec("COMMIT");
+        console.log("[db] migration v8: complete");
+      } catch (err) {
+        sqliteDb.exec("ROLLBACK");
+        throw new Error(`Schema migration to v8 failed — ${errMsg(err)}`, { cause: err });
+      }
+    }
+
     if (diskVersion >= SCHEMA_VERSION) {
       console.log(`[db] schema is up-to-date at v${SCHEMA_VERSION}, no migrations needed`);
     } else {
@@ -663,15 +723,131 @@ export function listConversations(): Conversation[] {
     title: r.title,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
+    mode: (r.mode ?? "online") as Conversation["mode"],
+    modelId: r.modelId ?? null,
   })).reverse();
 }
 
-export function createConversation(title = "New conversation"): Conversation {
+export function getConversation(id: string): Conversation | null {
+  const r = getDb()
+    .select()
+    .from(conversationsTable)
+    .where(eq(conversationsTable.id, id))
+    .get();
+  if (!r) return null;
+  return {
+    id: r.id,
+    title: r.title,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    mode: (r.mode ?? "online") as Conversation["mode"],
+    modelId: r.modelId ?? null,
+  };
+}
+
+export function createConversation(
+  title = "New conversation",
+  binding?: { mode?: Conversation["mode"]; modelId?: string | null },
+): Conversation {
   const now = Date.now();
   const id = randomUUID();
-  getDb().insert(conversationsTable).values({ id, title, createdAt: now, updatedAt: now }).run();
+  // New conversations are intentionally created "unbound" by default
+  // (mode defaults to 'online' for the schema's NOT NULL constraint, but
+  // model_id stays NULL until the first user message stamps the resolved
+  // model on it via updateConversationModel()).  This keeps the empty
+  // state flexible — the user can flip the global mode switcher before
+  // sending and the conversation will pick up whatever is current at
+  // send time.
+  const mode = binding?.mode ?? "online";
+  const modelId = binding?.modelId ?? null;
+  getDb()
+    .insert(conversationsTable)
+    .values({ id, title, createdAt: now, updatedAt: now, mode, modelId })
+    .run();
   flushDb();
-  return { id, title, createdAt: now, updatedAt: now };
+  return { id, title, createdAt: now, updatedAt: now, mode, modelId };
+}
+
+/**
+ * Update the mode/model binding for a conversation.  Either field can be
+ * omitted; passing `modelId: null` explicitly clears the binding.
+ *
+ * Used in two places:
+ *   1. After the first user message — to stamp the resolved mode/model
+ *      so subsequent sends keep talking to the same model regardless of
+ *      what the global switcher does.
+ *   2. From the missing-model recovery surface — to migrate a stuck
+ *      conversation onto a different model.
+ */
+export function updateConversationModel(
+  id: string,
+  partial: { mode?: Conversation["mode"]; modelId?: string | null },
+): void {
+  if (partial.mode === undefined && partial.modelId === undefined) return;
+  getDb()
+    .update(conversationsTable)
+    .set({
+      ...(partial.mode !== undefined && { mode: partial.mode }),
+      ...(partial.modelId !== undefined && { modelId: partial.modelId }),
+      updatedAt: Date.now(),
+    })
+    .where(eq(conversationsTable.id, id))
+    .run();
+  flushDb();
+}
+
+/**
+ * Duplicate a conversation — create a new conversation with the same title
+ * (appended with " (copy)") and copy all its messages into the new row.
+ * The new conversation can optionally receive a different mode/model binding;
+ * when omitted it inherits the source conversation's binding.
+ *
+ * Used by the missing-model recovery surface so the user can fork a stuck
+ * offline conversation into one bound to a currently-available model.
+ */
+export function duplicateConversation(
+  sourceId: string,
+  binding?: { mode?: Conversation["mode"]; modelId?: string | null },
+): Conversation {
+  const db = getDb();
+  const src = db
+    .select()
+    .from(conversationsTable)
+    .where(eq(conversationsTable.id, sourceId))
+    .get();
+  if (!src) throw new Error(`Conversation not found: ${sourceId}`);
+
+  const messages = db
+    .select()
+    .from(messagesTable)
+    .where(eq(messagesTable.conversationId, sourceId))
+    .orderBy(messagesTable.createdAt)
+    .all();
+
+  const now = Date.now();
+  const newId = randomUUID();
+  const newTitle = `${src.title} (copy)`;
+  const mode = binding?.mode ?? ((src.mode ?? "online") as Conversation["mode"]);
+  const modelId = binding?.modelId !== undefined ? binding.modelId : (src.modelId ?? null);
+
+  db.insert(conversationsTable)
+    .values({ id: newId, title: newTitle, createdAt: now, updatedAt: now, mode, modelId })
+    .run();
+
+  for (const m of messages) {
+    db.insert(messagesTable)
+      .values({
+        id: randomUUID(),
+        conversationId: newId,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+      })
+      .run();
+  }
+
+  flushDb();
+  return { id: newId, title: newTitle, createdAt: now, updatedAt: now, mode, modelId };
 }
 
 export function renameConversation(id: string, title: string): void {

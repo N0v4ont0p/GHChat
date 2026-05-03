@@ -4,9 +4,12 @@ import {
   createConversation,
   renameConversation,
   deleteConversation,
+  updateConversationModel,
+  duplicateConversation,
   isDatabaseReady,
   getDbInitError,
 } from "../services/database";
+import type { AppMode } from "../../../src/types";
 import { IPC } from "./channels";
 
 /**
@@ -32,15 +35,34 @@ export function registerConversationHandlers(ipcMain: IpcMain): void {
     }
   });
 
-  ipcMain.handle(IPC.CONVERSATIONS_CREATE, (_e, title?: string) => {
-    try {
-      requireDb();
-      return createConversation(title);
-    } catch (err) {
-      console.error("[ipc:conversations:create] failed:", err);
-      throw err;
-    }
-  });
+  ipcMain.handle(
+    IPC.CONVERSATIONS_CREATE,
+    (
+      _e,
+      payload?:
+        | string
+        | { title?: string; mode?: AppMode; modelId?: string | null },
+    ) => {
+      try {
+        requireDb();
+        // Backwards-compatible signature: an old caller may still pass a
+        // bare string title.  New callers pass a structured object so the
+        // conversation can be created already bound to a specific
+        // mode/model (used after the resolver decides what a fresh chat
+        // should run on).
+        if (typeof payload === "string" || payload === undefined) {
+          return createConversation(payload);
+        }
+        return createConversation(payload.title, {
+          mode: payload.mode,
+          modelId: payload.modelId,
+        });
+      } catch (err) {
+        console.error("[ipc:conversations:create] failed:", err);
+        throw err;
+      }
+    },
+  );
 
   ipcMain.handle(IPC.CONVERSATIONS_RENAME, (_e, id: string, title: string) => {
     try {
@@ -61,4 +83,38 @@ export function registerConversationHandlers(ipcMain: IpcMain): void {
       throw err;
     }
   });
+
+  ipcMain.handle(
+    IPC.CONVERSATIONS_UPDATE_MODEL,
+    (
+      _e,
+      id: string,
+      partial: { mode?: AppMode; modelId?: string | null },
+    ) => {
+      try {
+        requireDb();
+        updateConversationModel(id, partial);
+      } catch (err) {
+        console.error("[ipc:conversations:update-model] failed:", err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.CONVERSATIONS_DUPLICATE,
+    (
+      _e,
+      id: string,
+      binding?: { mode?: AppMode; modelId?: string | null },
+    ) => {
+      try {
+        requireDb();
+        return duplicateConversation(id, binding);
+      } catch (err) {
+        console.error("[ipc:conversations:duplicate] failed:", err);
+        throw err;
+      }
+    },
+  );
 }

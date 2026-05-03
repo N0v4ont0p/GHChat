@@ -3,6 +3,7 @@ export const IPC = {
   CONVERSATIONS_CREATE: "conversations:create",
   CONVERSATIONS_RENAME: "conversations:rename",
   CONVERSATIONS_DELETE: "conversations:delete",
+  CONVERSATIONS_UPDATE_MODEL: "conversations:update-model",
   MESSAGES_LIST: "messages:list",
   MESSAGES_APPEND: "messages:append",
   MESSAGES_DELETE: "messages:delete",
@@ -12,6 +13,8 @@ export const IPC = {
   KEYCHAIN_SET: "keychain:set",
   KEYCHAIN_DELETE: "keychain:delete",
   CLEAR_ALL_DATA: "data:clear-all",
+  /** Duplicate a conversation (copies all messages) into a new conversation with an optional new mode/model binding. */
+  CONVERSATIONS_DUPLICATE: "conversations:duplicate",
   /** Returns { ready: boolean; error: string | null } — whether the DB initialized successfully */
   DB_STATUS: "db:status",
   OR_MODELS_LIST: "or:models:list",
@@ -66,6 +69,15 @@ export const IPC = {
   /** Push (main → renderer): stream error. Payload: { requestId, error } */
   OFFLINE_CHAT_ERROR: "offline:chat:error",
   /**
+   * Push (main → renderer): coarse lifecycle phase for the offline stream.
+   * Lets the UI render honest progress through "starting runtime", "loading
+   * model", "processing prompt", "generating response" instead of a generic
+   * "streaming" spinner that hides slow on-device boot.
+   * Payload: { requestId, phase: "runtime-starting" | "loading-model" |
+   *   "processing-prompt" | "generating" }
+   */
+  OFFLINE_CHAT_PHASE: "offline:chat:phase",
+  /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
    */
@@ -98,12 +110,32 @@ export const IPC = {
   OFFLINE_REVEAL_MODEL_FOLDER: "offline:reveal-model-folder",
   /** Reset Gemma 4 install failure counter (renderer-facing copy of internal handler). */
   OFFLINE_RESET_FAILURES: "offline:reset-failures",
+  /** Push (main → renderer): active offline model changed. */
+  OFFLINE_ACTIVE_MODEL_CHANGED: "offline:active-model-changed",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */
   OFFLINE_SETTINGS_UPDATE: "offline:settings-update",
   /** Reset offline-specific settings to defaults. */
   OFFLINE_SETTINGS_RESET: "offline:settings-reset",
+  /** Stop the offline runtime subprocess gracefully. */
+  OFFLINE_RUNTIME_STOP: "offline:runtime:stop",
+  /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
+  OFFLINE_RUNTIME_FORCE_STOP: "offline:runtime:force-stop",
+  /**
+   * Restart the offline runtime subprocess: stop it (gracefully), then
+   * start it again for the currently active model.  Used by the offline
+   * manager's "Restart" action when the user wants to recover from a
+   * runtime hiccup without sending a chat message first.
+   */
+  OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
+  /**
+   * Wipe the offline `tmp/` and `downloads/` subdirectories, freeing space
+   * consumed by failed downloads, partial extracts, and runtime archives.
+   * Installed models, runtime binary, and DB state are NOT touched.
+   * Returns `{ ok, freedBytes }`.
+   */
+  OFFLINE_CLEAR_CACHE: "offline:clear-cache",
   /**
    * Get the cached HardwareProfile snapshot used by the recommendation
    * engine.  Used by the management UI to render hardware tier and to

@@ -19,6 +19,16 @@ interface ChatState {
   incognitoMode: boolean;
   /** In-memory messages for the current incognito session */
   incognitoMessages: Message[];
+  /**
+   * Timestamp (ms) at which the user clicked Stop on an offline stream.
+   * Tracked separately from `streamState` because the offline stop flow
+   * optimistically transitions streamState to "completed" almost
+   * immediately (so the streaming bubble can finalize), even though the
+   * llama.cpp runtime may still be unwinding for another second or two.
+   * Composer uses this to decide when to surface a "Force stop runtime"
+   * affordance after a graceful Stop. `null` when no stop is pending.
+   */
+  offlineStopPendingAt: number | null;
   setSelectedConversationId: (id: string | null) => void;
   setDraft: (v: string) => void;
   setStreaming: (v: boolean) => void;
@@ -30,7 +40,10 @@ interface ChatState {
   setForceScrollToBottom: (v: boolean) => void;
   setIncognitoMode: (v: boolean) => void;
   addIncognitoMessage: (msg: Message) => void;
+  setIncognitoMessages: (msgs: Message[]) => void;
   clearIncognitoMessages: () => void;
+  /** Set/clear the offline-stop-pending timestamp. */
+  setOfflineStopPendingAt: (ts: number | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -45,6 +58,7 @@ export const useChatStore = create<ChatState>((set) => ({
   forceScrollToBottom: false,
   incognitoMode: false,
   incognitoMessages: [],
+  offlineStopPendingAt: null,
   setSelectedConversationId: (selectedConversationId) =>
     set({ selectedConversationId }),
   setDraft: (draft) => set({ draft }),
@@ -64,5 +78,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ incognitoMode, incognitoMessages: [] }),
   addIncognitoMessage: (msg) =>
     set((s) => ({ incognitoMessages: [...s.incognitoMessages, msg] })),
+  setIncognitoMessages: (incognitoMessages) => set({ incognitoMessages }),
   clearIncognitoMessages: () => set({ incognitoMessages: [] }),
+  setOfflineStopPendingAt: (offlineStopPendingAt) => set({ offlineStopPendingAt }),
 }));

@@ -4,11 +4,12 @@ import { toast } from "sonner";
 import { ipc } from "@/lib/ipc";
 import { IPC } from "@/types";
 import { AUTO_MODEL_ID } from "@/lib/models";
+import { resolveActiveModel, resolveConversationModel } from "@/lib/active-model";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useModeStore } from "@/stores/mode-store";
 import type { IpcRendererEvent } from "electron";
-import type { ChatErrorRecoveryAction, StructuredChatError, ChatFailureKind, Message } from "@/types";
+import type { ChatErrorRecoveryAction, Conversation, StructuredChatError, ChatFailureKind, Message } from "@/types";
 
 interface TokenPayload {
   requestId: string;
@@ -47,6 +48,19 @@ interface RoutingPayload {
  * drain or force-restart before we forget about the request.
  */
 const CANCELLED_REQUEST_CLEANUP_DELAY_MS = 5_000;
+
+/**
+ * Maximum time the renderer will wait for *any* progress signal
+ * (token, lifecycle phase, end, or error) on an in-flight offline
+ * stream before assuming the local llama.cpp runtime has hung.
+ *
+ * Loading a 26B-class model from a slow disk can legitimately take
+ * a minute or more, so the budget is generous; the goal is only to
+ * prevent a permanently stuck "Generating…" indicator if the runtime
+ * silently dies.  When the watchdog fires, the renderer cancels the
+ * stream and surfaces a structured error so the user can retry.
+ */
+const OFFLINE_STREAM_IDLE_TIMEOUT_MS = 180_000;
 
 /**
  * Returns true when a chat request should be routed to the local llama.cpp
@@ -99,19 +113,33 @@ export function useChat(conversationId: string | null) {
     incognitoMode,
     incognitoMessages,
     addIncognitoMessage,
+    setIncognitoMessages,
+    setOfflineStopPendingAt,
   } = useChatStore();
   const { selectedModel, setSelectedModel, advancedParams } = useSettingsStore();
-  const { currentMode, offlineState, activeOfflineModelId } = useModeStore();
+  const { currentMode, offlineState, activeOfflineModelId, setOfflineManagementOpen, setMode } = useModeStore();
 
-  // Resolved offline model id for chat dispatch.  ONLY the active
-  // installed model id is honoured here — we deliberately do NOT fall
-  // back to the analyze-step recommendation, which is just a "what we
-  // recommend you install" hint and may point at a model the user has
-  // never installed (e.g. Gemma 4 E4B even though they only installed
-  // the lightweight test model).  When this is null, dispatchStream
-  // refuses to start an offline chat and prompts the user to install or
-  // pick a model first.
-  const offlineModelId = activeOfflineModelId;
+  /**
+   * The current conversation row pulled from the React-Query cache.
+   * Used by `dispatchStream` to honour the conversation's stamped
+   * mode/model binding (so flipping the global switcher cannot
+   * retroactively rewrite an existing chat).
+   *
+   * Returns null for the incognito session (no row exists) or before
+   * the conversations cache has loaded — in those cases the resolver
+   * falls back to the live globals.
+   */
+  const getConversationFromCache = useCallback((): Conversation | null => {
+    if (!conversationId) return null;
+    const list = qc.getQueryData<Conversation[]>(["conversations"]);
+    return list?.find((c) => c.id === conversationId) ?? null;
+  }, [conversationId, qc]);
+
+  // Resolved offline model id is now produced by resolveActiveModel /
+  // resolveConversationModel inside dispatchStream — see src/lib/active-model.ts.
+  // Keeping a thin alias so the existing stop-stream branch (which only
+  // needs to know whether the *next* send would be offline) still has a
+  // straight boolean to read.
 
   const activeRequestId = useRef<string | null>(null);
   /**
@@ -122,6 +150,14 @@ export function useChat(conversationId: string | null) {
    * cancel reaches the main process.
    */
   const cancelledRequestIds = useRef<Set<string>>(new Set());
+  /**
+   * Watchdog timer for the active offline stream.  Reset on every
+   * token / phase event from the local runtime, cleared on END /
+   * ERROR / user-stop.  When it fires the stream is considered hung
+   * and the renderer transitions to `failed` so the indicator never
+   * gets pinned forever on a generic label.
+   */
+  const offlineWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirror of streamingText in a ref so event callbacks see the latest value
   const streamingTextRef = useRef(streamingText);
   streamingTextRef.current = streamingText;
@@ -132,6 +168,46 @@ export function useChat(conversationId: string | null) {
   conversationIdRef.current = conversationId;
   const addIncognitoMessageRef = useRef(addIncognitoMessage);
   addIncognitoMessageRef.current = addIncognitoMessage;
+
+  // ── Offline stream watchdog helpers ────────────────────────────────────────
+  // Kept as refs / inline closures (not callbacks) so the IPC effect below
+  // can read them without re-subscribing every render.  `clearOfflineWatchdog`
+  // is also called on unmount via the effect cleanup.
+  const clearOfflineWatchdog = useCallback(() => {
+    if (offlineWatchdog.current) {
+      clearTimeout(offlineWatchdog.current);
+      offlineWatchdog.current = null;
+    }
+  }, []);
+  const kickOfflineWatchdog = useCallback(
+    (requestId: string) => {
+      clearOfflineWatchdog();
+      offlineWatchdog.current = setTimeout(() => {
+        // Abort only if this request is still the active one — late
+        // events (e.g. after a previous request) must never trip a
+        // newer in-flight stream.
+        if (activeRequestId.current !== requestId) return;
+        cancelledRequestIds.current.add(requestId);
+        try {
+          ipc.stopOfflineStream(requestId);
+        } catch (err) {
+          console.error("[useChat] stop after watchdog timeout failed:", err);
+        }
+        activeRequestId.current = null;
+        setStreamState("failed");
+        resetStreaming();
+        const message =
+          "The offline runtime stopped responding. It may still be loading the model — try again, or restart the runtime from Offline Models.";
+        setLastStreamError({ message, actions: ["retry"] });
+        toast.error(message, { duration: 6000 });
+        setTimeout(
+          () => cancelledRequestIds.current.delete(requestId),
+          CANCELLED_REQUEST_CLEANUP_DELAY_MS,
+        );
+      }, OFFLINE_STREAM_IDLE_TIMEOUT_MS);
+    },
+    [clearOfflineWatchdog, setStreamState, resetStreaming, setLastStreamError],
+  );
 
   // ── IPC listeners ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -243,6 +319,7 @@ export function useChat(conversationId: string | null) {
         const { requestId, token } = payload as TokenPayload;
         if (cancelledRequestIds.current.has(requestId)) return;
         if (requestId === activeRequestId.current) {
+          kickOfflineWatchdog(requestId);
           appendStreamingToken(token);
         }
       },
@@ -257,6 +334,7 @@ export function useChat(conversationId: string | null) {
         // reset state.  Don't re-process the END event.
         if (cancelledRequestIds.current.has(requestId)) return;
         if (requestId !== activeRequestId.current) return;
+        clearOfflineWatchdog();
 
         const fullText = streamingTextRef.current;
         activeRequestId.current = null;
@@ -305,6 +383,7 @@ export function useChat(conversationId: string | null) {
       (_e: IpcRendererEvent, payload: unknown) => {
         const p = payload as { requestId: string; error: string };
         if (p.requestId !== activeRequestId.current) return;
+        clearOfflineWatchdog();
         activeRequestId.current = null;
         setStreamState("failed");
         resetStreaming();
@@ -318,6 +397,29 @@ export function useChat(conversationId: string | null) {
       },
     );
 
+    // Coarse offline lifecycle phases — emitted by the main process so the
+    // UI can show "starting runtime" / "loading model" / "processing prompt"
+    // / "generating" instead of a generic "streaming" label that hides slow
+    // on-device boot.  Late events for cancelled or stale requests are
+    // dropped so the indicator doesn't flicker after the user stops.
+    const offOfflinePhase = window.ghchat.on(
+      IPC.OFFLINE_CHAT_PHASE,
+      (_e: IpcRendererEvent, payload: unknown) => {
+        const p = payload as {
+          requestId: string;
+          phase:
+            | "runtime-starting"
+            | "loading-model"
+            | "processing-prompt"
+            | "generating";
+        };
+        if (cancelledRequestIds.current.has(p.requestId)) return;
+        if (p.requestId !== activeRequestId.current) return;
+        kickOfflineWatchdog(p.requestId);
+        setStreamState(p.phase);
+      },
+    );
+
     return () => {
       offToken();
       offRouting();
@@ -326,8 +428,10 @@ export function useChat(conversationId: string | null) {
       offOfflineToken();
       offOfflineEnd();
       offOfflineError();
+      offOfflinePhase();
+      clearOfflineWatchdog();
     };
-  }, [appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState]);
+  }, [appendStreamingToken, resetStreaming, setLastStreamError, setRoutingInfo, qc, setStreamState, kickOfflineWatchdog, clearOfflineWatchdog]);
 
   // ── Internal helper: dispatch a chat stream request ────────────────────────
   const dispatchStream = useCallback(
@@ -341,29 +445,68 @@ export function useChat(conversationId: string | null) {
       setLastStreamError(null);
       setRoutingInfo(null);
 
-      if (shouldUseOfflineBackend(currentMode, offlineState)) {
-        // ── Offline / Auto-with-offline path: local llama.cpp runtime ──────
-        // No API key required; the runtime manager handles the rest.
-        if (!offlineModelId) {
-          // No installed/active offline model — refuse to dispatch
-          // rather than silently sending a wrong (e.g. recommended-but-
-          // not-installed) model id that the runtime would reject.
-          const msg =
-            "No offline model is installed yet. Open Offline Models to install one before chatting.";
-          toast.error(msg, { duration: 5000 });
-          setLastStreamError({
-            message: msg,
-            actions: ["retry"],
-          });
-          setStreamState("failed");
-          activeRequestId.current = null;
-          setStreaming(false);
-          return;
-        }
-        setStreamState("streaming");
+      // Resolve the target model through the central resolver.  When a
+      // conversation is bound (modelId stamped) the resolver honours the
+      // binding; otherwise it falls back to live globals.  The resolver
+      // is the only place that knows the per-mode rules — every UI
+      // surface and the dispatcher all read from the same function so
+      // they can never disagree.
+      const conversation = getConversationFromCache();
+      const globals = {
+        currentMode,
+        offlineState,
+        activeOfflineModelId,
+        selectedOnlineModel: modelId,
+      };
+      const resolved = conversation
+        ? resolveConversationModel(conversation, globals)
+        : resolveActiveModel(globals);
+
+      if (resolved.kind === "needs-setup") {
+        // Offline mode requested but nothing is installed yet — route
+        // the user to the setup flow rather than attempting to send.
+        // Switching mode also fires the AppShell `needsOfflineSetup`
+        // branch, which renders OfflineSetupFlow in place of the chat
+        // window without losing the user's selected conversation.
+        setMode("offline");
+        const msg =
+          "Offline mode is selected but no offline model is installed. Set one up to continue.";
+        setLastStreamError({ message: msg, actions: ["retry"] });
+        toast.error(msg, { duration: 5000 });
+        setStreamState("failed");
+        activeRequestId.current = null;
+        setStreaming(false);
+        return;
+      }
+
+      if (resolved.kind === "no-offline-model-installed") {
+        // Degenerate state: state==='installed' but no usable model id.
+        // Open the management modal so the user can install or pick one.
+        setOfflineManagementOpen(true);
+        const msg =
+          "No offline model is currently active. Pick or install one in Offline Models to continue.";
+        setLastStreamError({ message: msg, actions: ["retry"] });
+        toast.error(msg, { duration: 5000 });
+        setStreamState("failed");
+        activeRequestId.current = null;
+        setStreaming(false);
+        return;
+      }
+
+      if (resolved.kind === "offline") {
+        // ── Offline path: local llama.cpp runtime ──────────────────────
+        // Seed an offline-specific lifecycle phase up front so the
+        // streaming indicator never flashes the generic "Streaming
+        // response…" label while we wait for the first OFFLINE_CHAT_PHASE
+        // event from the main process.  The phase will be refined to
+        // "loading-model" / "processing-prompt" / "generating" as those
+        // events arrive.  Also start the watchdog so a hung runtime
+        // can never pin the UI in this state forever.
+        setStreamState("runtime-starting");
+        kickOfflineWatchdog(requestId);
         ipc.sendOfflineChatStream({
           requestId,
-          modelId: offlineModelId,
+          modelId: resolved.modelId,
           messages: messages as Array<{ role: "user" | "assistant" | "system"; content: string }>,
         });
         return;
@@ -380,7 +523,7 @@ export function useChat(conversationId: string | null) {
       }
       window.ghchat.send(IPC.OR_CHAT_STREAM, {
         requestId,
-        model: modelId,
+        model: resolved.modelId,
         messages,
         apiKey,
         webSearch: advancedParams.webSearch,
@@ -389,7 +532,8 @@ export function useChat(conversationId: string | null) {
       });
       setStreamState("streaming");
     },
-    [currentMode, offlineState, offlineModelId, setStreaming, setStreamState, setLastStreamError, setRoutingInfo, advancedParams],
+    [currentMode, offlineState, activeOfflineModelId, getConversationFromCache, setStreaming,
+     setStreamState, setLastStreamError, setRoutingInfo, advancedParams, setMode, setOfflineManagementOpen, kickOfflineWatchdog],
   );
 
   // ── Send a new message ─────────────────────────────────────────────────────
@@ -443,6 +587,39 @@ export function useChat(conversationId: string | null) {
               console.error("[useChat] auto-rename failed:", err);
             });
           }
+
+          // Stamp the resolved mode/model onto the conversation row so
+          // future sends keep talking to the same model regardless of
+          // what the global switcher does.  Conversations stay "unbound"
+          // (model_id IS NULL) until this point so the user can flip
+          // mode in the empty state without surprising results.
+          const conversation = getConversationFromCache();
+          if (conversation && !conversation.modelId) {
+            const resolvedForBinding = resolveActiveModel({
+              currentMode,
+              offlineState,
+              activeOfflineModelId,
+              selectedOnlineModel: selectedModel,
+            });
+            if (
+              resolvedForBinding.kind === "online" ||
+              resolvedForBinding.kind === "offline"
+            ) {
+              const modeForBinding =
+                resolvedForBinding.kind === "online" ? "online" : "offline";
+              ipc
+                .updateConversationModel(conversationId, {
+                  mode: modeForBinding,
+                  modelId: resolvedForBinding.modelId,
+                })
+                .then(() => {
+                  qc.invalidateQueries({ queryKey: ["conversations"] });
+                })
+                .catch((err: unknown) => {
+                  console.error("[useChat] conversation stamp failed:", err);
+                });
+            }
+          }
         }
 
         const messages = await ipc.listMessages(conversationId);
@@ -454,8 +631,8 @@ export function useChat(conversationId: string | null) {
         resetStreaming();
       }
     },
-    [conversationId, isStreaming, currentMode, offlineState, selectedModel, dispatchStream, qc, setStreamState,
-     setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage],
+    [conversationId, isStreaming, currentMode, offlineState, activeOfflineModelId, selectedModel, dispatchStream, qc, setStreamState,
+     setForceScrollToBottom, resetStreaming, incognitoMode, incognitoMessages, addIncognitoMessage, getConversationFromCache],
   );
 
   // ── Stop the active stream ─────────────────────────────────────────────────
@@ -470,10 +647,20 @@ export function useChat(conversationId: string | null) {
     setStreamState("stopping");
     const usingOffline = shouldUseOfflineBackend(currentMode, offlineState);
     if (usingOffline) {
+      // Clear the watchdog right away — the user-initiated stop is the
+      // terminal signal here, not a runtime-hang timeout.
+      clearOfflineWatchdog();
       // Mark the request as cancelled so any in-flight token events that
       // race with the stop are dropped on the renderer side too.
       cancelledRequestIds.current.add(id);
       ipc.stopOfflineStream(id);
+
+      // Record the stop timestamp so the Composer can decide whether to
+      // surface a "Force stop runtime" affordance — the runtime may keep
+      // unwinding for another beat after we optimistically reset the UI
+      // below, and the user shouldn't be left wondering whether the next
+      // chat will be slow to start.
+      setOfflineStopPendingAt(Date.now());
 
       // Persist whatever was already streamed and reset UI state right
       // now.  Without this, a slow runtime could keep the user staring
@@ -484,6 +671,10 @@ export function useChat(conversationId: string | null) {
       const finalize = () => {
         setStreamState("completed");
         resetStreaming();
+        // Brief terminal feedback so the user knows the stop actually
+        // landed — without this there's no visible difference between
+        // "stopped early" and "finished naturally".
+        toast("Stopped", { duration: 1500 });
         // Drop the entry after a few seconds — long enough that any
         // late tokens from the runtime are still suppressed.
         setTimeout(() => cancelledRequestIds.current.delete(id), CANCELLED_REQUEST_CLEANUP_DELAY_MS);
@@ -523,7 +714,61 @@ export function useChat(conversationId: string | null) {
       // The main process sends OR_CHAT_END after aborting — wait for it
       // to drive the UI transition (online cancellation is fast).
     }
-  }, [currentMode, offlineState, setStreamState, qc, resetStreaming]);
+  }, [currentMode, offlineState, setStreamState, qc, resetStreaming, clearOfflineWatchdog, setOfflineStopPendingAt]);
+
+  // ── Edit the last user message and re-stream ───────────────────────────────
+  // Removes the last user message + any assistant reply that follows it,
+  // appends the edited content as a fresh user turn, and re-streams.  Mirrors
+  // the regenerate flow so the conversation rolls cleanly back one round.
+  const editLastUserMessage = useCallback(
+    async (newContent: string) => {
+      const trimmed = newContent.trim();
+      if (!conversationId || isStreaming || !trimmed) return;
+
+      try {
+        if (incognitoMode) {
+          const msgs = incognitoMessages;
+          const lastUserIdx = msgs.map((m) => m.role).lastIndexOf("user");
+          if (lastUserIdx < 0) return;
+          const remaining = msgs.slice(0, lastUserIdx);
+          const edited = makeIncognitoMessage(conversationId, "user", trimmed);
+          setIncognitoMessages([...remaining, edited]);
+          setForceScrollToBottom(true);
+          await dispatchStream(
+            selectedModel,
+            [...remaining, edited].map((m) => ({ role: m.role, content: m.content })),
+          );
+          return;
+        }
+
+        const messages = await ipc.listMessages(conversationId);
+        const lastUserIdx = messages.map((m) => m.role).lastIndexOf("user");
+        if (lastUserIdx < 0) return;
+
+        // Drop the last user message and anything after it (usually one
+        // assistant reply, possibly nothing if the previous turn errored).
+        for (let i = messages.length - 1; i >= lastUserIdx; i -= 1) {
+          await ipc.deleteMessage(messages[i].id);
+        }
+        await ipc.appendMessage({ conversationId, role: "user", content: trimmed });
+        qc.invalidateQueries({ queryKey: ["messages", conversationId] });
+
+        setForceScrollToBottom(true);
+        const refreshed = await ipc.listMessages(conversationId);
+        await dispatchStream(
+          selectedModel,
+          refreshed.map((m) => ({ role: m.role, content: m.content })),
+        );
+      } catch (err) {
+        console.error("[useChat] editLastUserMessage failed:", err);
+        toast.error(err instanceof Error ? err.message : "Failed to edit message. Please try again.");
+        setStreamState("failed");
+        resetStreaming();
+      }
+    },
+    [conversationId, isStreaming, selectedModel, dispatchStream, qc, resetStreaming, setStreamState,
+     setForceScrollToBottom, setIncognitoMessages, incognitoMode, incognitoMessages],
+  );
 
   // ── Regenerate the last assistant reply ────────────────────────────────────
   const regenerate = useCallback(async () => {
@@ -609,6 +854,7 @@ export function useChat(conversationId: string | null) {
     sendMessage,
     stopStream,
     regenerate,
+    editLastUserMessage,
     retryStream,
     switchToAutoMode,
     refreshModelAvailability,

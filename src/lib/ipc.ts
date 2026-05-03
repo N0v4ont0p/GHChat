@@ -32,12 +32,29 @@ function api() {
 export const ipc = {
   // Conversations
   listConversations: () => api().invoke<Conversation[]>(IPC.CONVERSATIONS_LIST),
-  createConversation: (title?: string) =>
-    api().invoke<Conversation>(IPC.CONVERSATIONS_CREATE, title),
+  createConversation: (
+    payload?:
+      | string
+      | { title?: string; mode?: AppMode; modelId?: string | null },
+  ) => api().invoke<Conversation>(IPC.CONVERSATIONS_CREATE, payload),
   renameConversation: (id: string, title: string) =>
     api().invoke<void>(IPC.CONVERSATIONS_RENAME, id, title),
   deleteConversation: (id: string) =>
     api().invoke<void>(IPC.CONVERSATIONS_DELETE, id),
+  /**
+   * Update the mode/model binding for a conversation.  Used to stamp
+   * the resolved mode/model on first send and from the missing-model
+   * recovery surface to migrate a stuck conversation.
+   */
+  updateConversationModel: (
+    id: string,
+    partial: { mode?: AppMode; modelId?: string | null },
+  ) => api().invoke<void>(IPC.CONVERSATIONS_UPDATE_MODEL, id, partial),
+
+  duplicateConversation: (
+    id: string,
+    binding?: { mode?: AppMode; modelId?: string | null },
+  ) => api().invoke<Conversation>(IPC.CONVERSATIONS_DUPLICATE, id, binding),
 
   // Messages
   listMessages: (conversationId: string) =>
@@ -176,10 +193,34 @@ export const ipc = {
     api().invoke<OfflineHardwareProfileSnapshot | null>(IPC.OFFLINE_GET_HARDWARE_PROFILE),
 
   /**
+   * Wipe the offline `tmp/` and `downloads/` subdirectories. Returns the
+   * number of bytes freed.  Installed models and runtime binary stay put.
+   */
+  clearOfflineCache: () =>
+    api().invoke<{ ok: boolean; freedBytes: number; error?: string }>(
+      IPC.OFFLINE_CLEAR_CACHE,
+    ),
+
+  /**
    * Reset the consecutive Gemma 4 install failure counter.  Used when
    * the user explicitly chooses to keep trying Gemma 4 after the
    * fallback-offered screen instead of installing a Gemma 3 fallback.
    */
   resetOfflineFailures: () =>
     api().invoke<OfflineReadiness>(IPC.OFFLINE_RESET_FAILURES),
+
+  /** Stop the offline runtime subprocess gracefully. */
+  stopOfflineRuntime: () =>
+    api().invoke<{ ok: boolean }>(IPC.OFFLINE_RUNTIME_STOP),
+  /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
+  forceStopOfflineRuntime: () =>
+    api().invoke<{ ok: boolean }>(IPC.OFFLINE_RUNTIME_FORCE_STOP),
+  /**
+   * Restart the offline runtime: stop it, then start it again for the
+   * currently active model.  Resolves with `{ ok: false, error }` when
+   * there is no active model or start fails — callers should surface
+   * the error to the user.
+   */
+  restartOfflineRuntime: () =>
+    api().invoke<{ ok: boolean; error?: string }>(IPC.OFFLINE_RUNTIME_RESTART),
 };

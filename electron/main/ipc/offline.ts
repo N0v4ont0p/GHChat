@@ -1,7 +1,7 @@
 import type { IpcMain, IpcMainEvent } from "electron";
-import { dirname } from "path";
-import { existsSync, statSync } from "fs";
-import { shell } from "electron";
+import { dirname, join } from "path";
+import { existsSync, statSync, rmSync, mkdirSync, readdirSync, lstatSync } from "fs";
+import { shell, BrowserWindow } from "electron";
 import { IPC } from "../../../src/types";
 import type {
   AppMode,
@@ -339,6 +339,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
               lastFailureReasons: null,
               activeModelId: modelId,
             });
+            broadcastActiveModelChanged(modelId);
           } catch (err) {
             console.warn("[offline] failed to reset failure counter:", err);
           }
@@ -497,14 +498,51 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       };
 
+      // Coarse lifecycle hook — gated by `cancelledRequests` so a user-cancel
+      // mid-boot doesn't leak a stale "loading model" label after the END
+      // event has already fired.  Phase events are advisory; the renderer
+      // is responsible for ignoring late events for a request it cancelled.
+      let firstTokenSeen = false;
+      const emitPhase = (
+        phase:
+          | "runtime-starting"
+          | "loading-model"
+          | "processing-prompt"
+          | "generating",
+      ) => {
+        if (cancelledRequests.has(requestId)) return;
+        send(IPC.OFFLINE_CHAT_PHASE, { requestId, phase });
+      };
+
       // Resolve the user's runtime knobs once per request.
       const settings = resolveOfflineSettings();
+
+      // Decide whether the upcoming start() is a cold spawn (label
+      // "starting runtime") or a warm request against an already-running
+      // server.  When the runtime is up but on a different model, label
+      // "loading model" instead so the user knows the wait is real.
+      const sameModelRunning =
+        runtimeManager.isRunning() &&
+        runtimeManager.getCurrentModelId() === modelId;
+      if (!runtimeManager.isRunning()) {
+        emitPhase("runtime-starting");
+      } else if (!sameModelRunning) {
+        emitPhase("loading-model");
+      } else {
+        emitPhase("processing-prompt");
+      }
 
       try {
         await runtimeManager.streamChat(
           modelId,
           messages,
           (token) => {
+            // First token marks the transition to "generating".  Emit
+            // exactly once per request so the renderer doesn't churn.
+            if (!firstTokenSeen) {
+              firstTokenSeen = true;
+              emitPhase("generating");
+            }
             // Drop tokens for cancelled requests so the renderer never
             // sees post-stop content even if llama.cpp emits a few more
             // batches before the abort propagates.
@@ -521,6 +559,11 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
               temperature: settings.temperature,
               topP: settings.topP,
               maxTokens: settings.maxTokens,
+            },
+            // After the runtime is healthy and we've POSTed the request
+            // body, we're waiting on the model to ingest the prompt.
+            onPromptSent: () => {
+              if (!firstTokenSeen) emitPhase("processing-prompt");
             },
           },
         );
@@ -747,6 +790,62 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     },
   );
 
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_STOP,
+    async (): Promise<{ ok: boolean }> => {
+      try {
+        await runtimeManager.stop();
+        return { ok: true };
+      } catch (err) {
+        console.warn("[offline] runtime stop failed:", err);
+        return { ok: false };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_FORCE_STOP,
+    async (): Promise<{ ok: boolean }> => {
+      try {
+        await runtimeManager.stop({ force: true });
+        return { ok: true };
+      } catch (err) {
+        console.warn("[offline] runtime force-stop failed:", err);
+        return { ok: false };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_RESTART,
+    async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const activeId = resolveActiveModelId();
+        if (!activeId) {
+          return {
+            ok: false,
+            error: "No active offline model to restart. Install or activate a model first.",
+          };
+        }
+        // Stop first so start() spawns a fresh process even when the
+        // current spawn options match — restart must always recycle.
+        await runtimeManager.stop();
+        const settings = resolveOfflineSettings();
+        await runtimeManager.start(activeId, {
+          contextSize: settings.contextSize,
+          threads: settings.threads,
+        });
+        return { ok: true };
+      } catch (err) {
+        console.warn("[offline] runtime restart failed:", err);
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
   // ── Offline management ──────────────────────────────────────────────────────
 
   /**
@@ -756,6 +855,24 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
    *   2. The first installed model (legacy single-model installs)
    *   3. null (no models installed)
    */
+  /**
+   * Broadcast the new active offline model to every open renderer
+   * window so the header/empty-state/sidebar refresh without polling.
+   * Best-effort — any send failures are swallowed.
+   */
+  function broadcastActiveModelChanged(modelId: string | null): void {
+    try {
+      const info = buildActiveModelInfo(modelId);
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.OFFLINE_ACTIVE_MODEL_CHANGED, info);
+        }
+      }
+    } catch (err) {
+      console.warn("[offline] failed to broadcast active-model-changed:", err);
+    }
+  }
+
   function resolveActiveModelId(): string | null {
     if (!isDatabaseReady()) return null;
     try {
@@ -763,7 +880,24 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       const models = listOfflineModels();
       const persisted = installation?.activeModelId ?? null;
       if (persisted && models.some((m) => m.id === persisted)) return persisted;
-      return models[0]?.id ?? null;
+      // Auto-promote: when the persisted active model is missing/null but
+      // installed models exist, promote the first one and persist that
+      // choice so the DB stops drifting and every consumer (renderer +
+      // runtime) sees the same answer on the very next read.  Notify
+      // listeners so any open window updates its label in-place.
+      const promoted = models[0]?.id ?? null;
+      if (promoted && persisted !== promoted) {
+        try {
+          upsertOfflineInstallation({ activeModelId: promoted });
+          broadcastActiveModelChanged(promoted);
+        } catch (err) {
+          console.warn(
+            "[offline] auto-promote of active_model_id failed (read still returns the promoted id):",
+            err,
+          );
+        }
+      }
+      return promoted;
     } catch {
       return null;
     }
@@ -829,6 +963,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           isActive: m.id === activeId,
           installedAt: m.installedAt,
           lastUsedAt: m.lastUsedAt,
+          ...(catalog?.tier ? { tier: catalog.tier } : {}),
         };
       });
     },
@@ -914,6 +1049,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             gemma4FailureCount: 0,
             lastFailureReasons: null,
           });
+          broadcastActiveModelChanged(modelId);
         }
         return { ok: true };
       } catch (err) {
@@ -944,6 +1080,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             const remaining = listOfflineModels();
             const nextActive = remaining[0]?.id ?? null;
             upsertOfflineInstallation({ activeModelId: nextActive });
+            broadcastActiveModelChanged(nextActive);
           }
 
           // If no models remain, transition the global state back so the
@@ -995,6 +1132,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         }
       }
       upsertOfflineInstallation({ activeModelId: modelId });
+      broadcastActiveModelChanged(modelId);
       return buildActiveModelInfo(modelId);
     },
   );
@@ -1008,6 +1146,58 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     const dir = storageService.getOfflineRoot();
     await shell.openPath(dir);
   });
+
+  /**
+   * Wipe the offline `tmp/` and `downloads/` subdirectories.  These hold
+   * partial downloads, runtime archives, and extract scratch space — none
+   * of which are needed once an install completes.  Installed models,
+   * runtime binary, manifests, and DB state are preserved.
+   */
+  ipcMain.handle(
+    IPC.OFFLINE_CLEAR_CACHE,
+    async (): Promise<{ ok: boolean; freedBytes: number; error?: string }> => {
+      const subdirs = ["tmp", "downloads"] as const;
+      let freedBytes = 0;
+      try {
+        for (const sub of subdirs) {
+          const dir = storageService.getSubdir(sub);
+          if (!existsSync(dir)) continue;
+          // Sum sizes before deletion so the UI can report freed bytes.
+          const walk = (d: string): number => {
+            let total = 0;
+            try {
+              for (const entry of readdirSync(d, { withFileTypes: true })) {
+                const p = join(d, entry.name);
+                if (entry.isDirectory()) {
+                  total += walk(p);
+                } else {
+                  try {
+                    total += lstatSync(p).size;
+                  } catch {
+                    /* file vanished mid-walk */
+                  }
+                }
+              }
+            } catch {
+              /* dir vanished or unreadable */
+            }
+            return total;
+          };
+          freedBytes += walk(dir);
+          rmSync(dir, { recursive: true, force: true });
+          mkdirSync(dir, { recursive: true });
+        }
+        return { ok: true, freedBytes };
+      } catch (err) {
+        console.error("[offline] clear-cache failed:", err);
+        return {
+          ok: false,
+          freedBytes,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
 
   ipcMain.handle(
     IPC.OFFLINE_REVEAL_MODEL_FOLDER,

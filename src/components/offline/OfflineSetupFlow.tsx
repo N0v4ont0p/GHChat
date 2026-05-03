@@ -800,7 +800,30 @@ function InstallingScreen({ progress, modelLabel }: InstallingScreenProps) {
 
 // ── Success screen ────────────────────────────────────────────────────────────
 
-function SuccessScreen({ onEnterChat }: { onEnterChat: () => void }) {
+interface SuccessScreenProps {
+  onEnterChat: () => void;
+  /** Friendly name of the model the user just installed (e.g. "Gemma 4 E4B"). */
+  installedModelName?: string;
+  /** Family of the installed model — drives the "on-device" line copy. */
+  installedFamily?: "gemma-4" | "gemma-3" | "unknown";
+}
+
+function SuccessScreen({ onEnterChat, installedModelName, installedFamily }: SuccessScreenProps) {
+  // Resolve display strings from the actually-installed model so the success
+  // screen reflects the user's choice — not a hardcoded "Gemma 4" assumption.
+  const modelLabel = installedModelName ?? "Your offline model";
+  const familyLabel =
+    installedFamily === "gemma-3"
+      ? "Gemma 3"
+      : installedFamily === "gemma-4"
+        ? "Gemma 4"
+        : "Local model";
+  const onDeviceBody =
+    installedFamily === "gemma-3"
+      ? "Google's reliable local model, ready to go."
+      : installedFamily === "gemma-4"
+        ? "Google's fastest local model, ready to go."
+        : "Your chosen on-device model, ready to go.";
   return (
     <motion.div
       key="success"
@@ -820,7 +843,7 @@ function SuccessScreen({ onEnterChat }: { onEnterChat: () => void }) {
       </motion.div>
 
       <div className="space-y-3">
-        <h2 className="text-2xl font-bold tracking-tight">Gemma 4 is ready</h2>
+        <h2 className="text-2xl font-bold tracking-tight">{modelLabel} is ready</h2>
         <p className="text-sm text-muted-foreground leading-relaxed">
           Offline Mode is all set. Your conversations will stay completely
           private — processed entirely on your device.
@@ -839,8 +862,8 @@ function SuccessScreen({ onEnterChat }: { onEnterChat: () => void }) {
           {
             icon: Sparkles,
             color: "text-violet-400",
-            label: "Gemma 4 · on-device",
-            body: "Google's fastest local model, ready to go.",
+            label: `${familyLabel} · on-device`,
+            body: onDeviceBody,
           },
         ].map(({ icon: Icon, color, label, body }) => (
           <div
@@ -1257,6 +1280,13 @@ export function OfflineSetupFlow() {
   // can change it before clicking Install.
   const [chooserSelectedId, setChooserSelectedId] = useState<string>("");
 
+  // Catalog id of the model that the user successfully installed in this
+  // session.  Used by the SuccessScreen so its copy reflects the user's
+  // actual choice rather than a hardcoded "Gemma 4" assumption.  Cleared
+  // whenever a new install is started so a previously-installed-but-since-
+  // -removed entry does not bleed into a fresh success view.
+  const [justInstalledId, setJustInstalledId] = useState<string | null>(null);
+
   /**
    * Apply failure-tracking fields from an OfflineReadiness payload to the
    * mode store so the UI can render the attempt counter, recent failure
@@ -1418,6 +1448,9 @@ export function OfflineSetupFlow() {
    */
   const installModel = (modelId: string) => {
     setInstallError(null);
+    // Forget any previous install — a fresh attempt is starting and the
+    // success screen should only celebrate the model that actually completes.
+    setJustInstalledId(null);
     // Transition to "installing" immediately for instant feedback.
     setOfflineState("installing");
     ipc
@@ -1441,6 +1474,7 @@ export function OfflineSetupFlow() {
         // a chat sent right after "Enter chat" would still use whatever
         // (possibly never-installed) recommendation was loaded earlier.
         if (readiness.state === "installed") {
+          setJustInstalledId(modelId);
           ipc
             .getActiveOfflineModel()
             .then((info) => setActiveOfflineModel(info))
@@ -1558,9 +1592,25 @@ export function OfflineSetupFlow() {
             modelLabel={installingLabel}
           />
         )}
-        {offlineState === "installed" && (
-          <SuccessScreen key="success" onEnterChat={handleEnterChat} />
-        )}
+        {offlineState === "installed" && (() => {
+          // Resolve the just-installed entry so the success screen reflects
+          // the user's actual choice (name + family) rather than a hardcoded
+          // "Gemma 4" assumption.  Falls back gracefully when the catalog
+          // lookup misses (e.g. the user installed via additional-install
+          // and the orchestrator was remounted).
+          const installedEntry = justInstalledId
+            ? availableCatalog?.find((e) => e.id === justInstalledId) ??
+              selectedCatalogEntry
+            : selectedCatalogEntry;
+          return (
+            <SuccessScreen
+              key="success"
+              onEnterChat={handleEnterChat}
+              installedModelName={installedEntry?.name}
+              installedFamily={installedEntry?.family}
+            />
+          );
+        })()}
         {offlineState === "fallback-offered" && (
           <FallbackChoiceScreen
             key="fallback-offered"

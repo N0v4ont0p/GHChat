@@ -284,6 +284,14 @@ export const runtimeManager = {
     options: {
       spawn?: RuntimeSpawnOptions;
       generation?: RuntimeGenerationOptions;
+      /**
+       * Optional callback fired immediately after the HTTP request body
+       * has been written and the response stream is ready, but before
+       * the first token is received.  Used by the IPC layer to surface
+       * a "processing prompt" lifecycle phase so the user can see real
+       * progress on slow on-device generation.
+       */
+      onPromptSent?: () => void;
     } = {},
   ): Promise<void> {
     // Ensure the server is running with the requested spawn options
@@ -333,6 +341,16 @@ export const runtimeManager = {
 
     if (!response.body) {
       throw new Error("llama-server response has no body");
+    }
+
+    // Fire the prompt-sent hook now that the request body is in flight
+    // and the runtime has begun ingesting tokens.  This is the cue the
+    // IPC layer uses to advance the lifecycle from "loading model" /
+    // "starting runtime" to "processing prompt".
+    try {
+      options.onPromptSent?.();
+    } catch (err) {
+      console.warn("[runtimeManager] onPromptSent callback threw:", err);
     }
 
     // Parse the SSE (Server-Sent Events) stream.

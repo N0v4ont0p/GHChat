@@ -1,17 +1,28 @@
 import { useRef, useEffect, useCallback, useState } from "react";
-import { Send, Square, Globe, Brain, ChevronDown, ChevronUp } from "lucide-react";
+import { Send, Square, Globe, Brain, ChevronDown, ChevronUp, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useChatStore } from "@/stores/chat-store";
 import { getPreset } from "@/lib/models";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useModeStore } from "@/stores/mode-store";
 import { useModels } from "@/hooks/useModels";
+import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface Props {
   onSend: (content: string) => void;
   onStop: () => void;
   isStreaming: boolean;
+  /**
+   * When true, the composer is fully disabled and shows a hint placeholder.
+   * Used by the missing-model recovery surface in ChatWindow to prevent
+   * sends while the conversation's bound model is unavailable.
+   */
+  disabled?: boolean;
+  /** Optional placeholder override used when `disabled` is true. */
+  disabledPlaceholder?: string;
 }
 
 const MAX_HEIGHT = 180; // ~7 lines
@@ -19,19 +30,142 @@ const CHAR_WARN_THRESHOLD = 1800;
 const CHAR_MAX = 4000;
 const DEFAULT_MAX_TOKENS = 2048;
 
-export function Composer({ onSend, onStop, isStreaming }: Props) {
-  const { draft, setDraft, incognitoMode } = useChatStore();
+export function Composer({ onSend, onStop, isStreaming, disabled = false, disabledPlaceholder }: Props) {
+  const { draft, setDraft, incognitoMode, streamState, offlineStopPendingAt, setOfflineStopPendingAt } = useChatStore();
   const { selectedModel, advancedParams, setAdvancedParams } = useSettingsStore();
+  const { currentMode, activeOfflineModelLabel, offlineState } = useModeStore();
   const { data: models = [] } = useModels();
   const ref = useRef<HTMLTextAreaElement>(null);
   const hadFocusBeforeStreamRef = useRef(false);
   const [showMaxTokens, setShowMaxTokens] = useState(false);
+  // After the user clicks Stop, we wait this long for the graceful unwind
+  // before exposing a "Force stop runtime" affordance.  Set just below the
+  // IPC-side cancel watchdog (offline_settings.cancel_timeout_ms, default
+  // 1500 ms — see electron/main/ipc/offline.ts) so the button appears for
+  // the user a moment before the watchdog itself would have force-killed
+  // the runtime.  Hardcoded rather than read from settings because the
+  // composer doesn't have a reactive subscription to offline_settings.
+  const FORCE_STOP_REVEAL_MS = 1200;
+  // Hard cap on how long we keep watching for a stuck runtime after a
+  // Stop click.  Past this, the cancel watchdog has already force-killed
+  // anything stuck, so showing Force Stop further would be misleading.
+  const OFFLINE_STOP_PENDING_MAX_MS = 8_000;
+  // Polling interval used while a stop is pending to confirm the runtime
+  // process actually went idle (and therefore the Force Stop affordance
+  // should be hidden).  Cheap query — only runs while pending.
+  const RUNTIME_PROBE_INTERVAL_MS = 500;
+  const [forceStopAvailable, setForceStopAvailable] = useState(false);
+  // Whether the offline runtime subprocess is currently alive.  Polled
+  // only while an offline stop is pending so we can hide Force Stop the
+  // moment the runtime drains on its own.
+  const [runtimeRunning, setRuntimeRunning] = useState<boolean | null>(null);
 
   const preset = getPreset(models, selectedModel);
   const modelName = preset?.name ?? selectedModel.split("/").pop() ?? selectedModel;
+  const vendor = preset?.vendor;
   const cap = preset?.capabilities;
   const hasWebSearch = Boolean(cap?.webSearch);
   const hasReasoning = Boolean(cap?.reasoningMode ?? cap?.reasoning ?? cap?.specialReasoning);
+
+  // True when the next message will be routed to the offline runtime.
+  // Mirrors the routing rule in shouldUseOfflineBackend() in useChat.ts.
+  const willUseOffline =
+    currentMode === "offline" ||
+    (currentMode === "auto" && offlineState === "installed");
+
+  // Reveal the force-stop button only after a graceful stop has lingered
+  // long enough that the user might reasonably wonder if the app is stuck.
+  //
+  // We can't gate this on `streamState === "stopping"` alone: the offline
+  // stop flow optimistically transitions streamState to "completed" almost
+  // immediately so the streaming bubble can finalize, even though the
+  // underlying llama.cpp runtime may still be unwinding.  Instead, we use
+  // the `offlineStopPendingAt` timestamp set by useChat.stopStream() and
+  // poll the real runtime state — Force Stop appears once the reveal
+  // delay elapses AND the runtime is still confirmed running, and hides
+  // again the moment the runtime drains on its own.
+  useEffect(() => {
+    if (!willUseOffline) {
+      setForceStopAvailable(false);
+      setRuntimeRunning(null);
+      return;
+    }
+    const stopPending =
+      offlineStopPendingAt !== null &&
+      Date.now() - offlineStopPendingAt < OFFLINE_STOP_PENDING_MAX_MS;
+    const stoppingNow = streamState === "stopping";
+    if (!stopPending && !stoppingNow) {
+      setForceStopAvailable(false);
+      setRuntimeRunning(null);
+      return;
+    }
+
+    let cancelled = false;
+    const since = offlineStopPendingAt ?? Date.now();
+    const elapsed = Date.now() - since;
+
+    const reveal = () => {
+      if (!cancelled) setForceStopAvailable(true);
+    };
+    const revealTimer =
+      elapsed >= FORCE_STOP_REVEAL_MS
+        ? (reveal(), null)
+        : setTimeout(reveal, FORCE_STOP_REVEAL_MS - elapsed);
+
+    // Probe the runtime liveness so the Force Stop button vanishes the
+    // instant the runtime confirms it has actually exited.  Cheap call —
+    // only runs while a stop is pending.
+    const probe = async () => {
+      try {
+        const info = await ipc.getOfflineInfo();
+        if (cancelled) return;
+        setRuntimeRunning(info.isRuntimeRunning);
+        if (!info.isRuntimeRunning) {
+          // Runtime drained — clear the pending flag so Force Stop hides
+          // immediately and we don't keep polling.
+          setOfflineStopPendingAt(null);
+        }
+      } catch {
+        // Ignore — best-effort liveness probe.
+      }
+    };
+    void probe();
+    const probeInterval = setInterval(() => void probe(), RUNTIME_PROBE_INTERVAL_MS);
+
+    // Auto-clear the pending flag once the maximum window elapses so the
+    // affordance can't get stuck on screen if the runtime never reports.
+    const expireTimer = setTimeout(
+      () => {
+        if (cancelled) return;
+        setOfflineStopPendingAt(null);
+      },
+      Math.max(0, OFFLINE_STOP_PENDING_MAX_MS - elapsed),
+    );
+
+    return () => {
+      cancelled = true;
+      if (revealTimer) clearTimeout(revealTimer);
+      clearInterval(probeInterval);
+      clearTimeout(expireTimer);
+    };
+  }, [streamState, willUseOffline, offlineStopPendingAt, setOfflineStopPendingAt]);
+
+  // Hide Force Stop once we've confirmed the runtime is actually idle —
+  // even if the reveal timer already fired.
+  const showForceStop = forceStopAvailable && runtimeRunning !== false;
+
+  const handleForceStop = useCallback(async () => {
+    try {
+      await ipc.forceStopOfflineRuntime();
+      setOfflineStopPendingAt(null);
+      setForceStopAvailable(false);
+      setRuntimeRunning(false);
+      toast.success("Offline runtime force-stopped.");
+    } catch (err) {
+      console.error("[Composer] force-stop runtime failed:", err);
+      toast.error("Failed to force-stop the offline runtime.");
+    }
+  }, [setOfflineStopPendingAt]);
 
   // Auto-resize textarea
   const resize = useCallback(() => {
@@ -63,33 +197,58 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
 
   const handleSend = useCallback(() => {
     const text = draft.trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || disabled) return;
     setDraft("");
     onSend(text);
     requestAnimationFrame(() => ref.current?.focus());
-  }, [draft, isStreaming, setDraft, onSend]);
+  }, [draft, isStreaming, disabled, setDraft, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === "Enter" && !e.shiftKey && !isStreaming) {
+      if (e.key === "Enter" && !e.shiftKey && !isStreaming && !disabled) {
         e.preventDefault();
         handleSend();
       }
     },
-    [handleSend, isStreaming],
+    [handleSend, isStreaming, disabled],
   );
 
   const charCount = draft.length;
   const overWarn = charCount >= CHAR_WARN_THRESHOLD;
   const overMax = charCount >= CHAR_MAX;
-  const canSend = draft.trim().length > 0 && !isStreaming && !overMax;
+  const canSend = draft.trim().length > 0 && !isStreaming && !overMax && !disabled;
 
-  const placeholder = incognitoMode
+  // Mode-aware placeholder so the user always knows which backend will
+  // handle the next message.  In auto mode the live backend is whichever
+  // offline+installed/online combination is currently in effect.
+  const offlineLabel = activeOfflineModelLabel ?? "offline model";
+  const onlineModelHint = vendor ? `${modelName} · ${vendor}` : modelName;
+  const composerModelHint = willUseOffline
+    ? currentMode === "auto"
+      ? `Auto → ${offlineLabel} (offline)`
+      : `${offlineLabel} (offline)`
+    : currentMode === "auto"
+      ? `Auto → ${onlineModelHint} (online)`
+      : onlineModelHint;
+  const isOfflineUnready =
+    currentMode === "offline" && activeOfflineModelLabel === null;
+  const baseModePlaceholder = willUseOffline
+    ? isOfflineUnready
+      ? "Choose an offline model to start chatting…"
+      : currentMode === "auto"
+        ? `Auto routing · message ${offlineLabel} (offline)…`
+        : `Message ${offlineLabel} (offline)…`
+    : currentMode === "auto"
+      ? `Auto routing · message ${onlineModelHint} (online)…`
+      : `Message ${onlineModelHint}…`;
+  const placeholder = disabled
+    ? (disabledPlaceholder ?? "Resolve the issue above to continue chatting…")
+    : incognitoMode
     ? (isStreaming ? "Draft next message…" : "Incognito chat — messages not saved…")
-    : (isStreaming ? "Draft next message…" : "Message GHChat…");
+    : (isStreaming ? "Draft next message…" : baseModePlaceholder);
 
   return (
-    <div className="shrink-0 border-t border-border/30 bg-card/10 px-4 py-3">
+    <div className="shrink-0 border-t border-border/50 bg-[hsl(var(--surface-2))]/60 px-4 py-3 backdrop-blur-md">
       {/* Capability params bar — always shown, controls gated by model capabilities */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
           {/* Web Search toggle — only when model supports it */}
@@ -163,11 +322,11 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
 
       <div
         className={cn(
-          "focus-glow flex items-end gap-2 rounded-xl border bg-secondary/50 px-3 py-2.5 transition-all duration-200",
+          "focus-glow flex items-end gap-2 rounded-2xl border bg-[hsl(var(--surface-3))]/85 px-3 py-2.5 transition-all duration-200 elev-1",
           isStreaming
-            ? "border-primary/25 bg-secondary/40"
+            ? "border-primary/30 bg-[hsl(var(--surface-3))]/70"
             : incognitoMode
-              ? "border-amber-500/30 bg-amber-500/5"
+              ? "border-amber-500/35 bg-amber-500/5"
               : "border-border/60 hover:border-border/90",
         )}
       >
@@ -177,22 +336,41 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40"
+          disabled={disabled}
+          className="min-h-[36px] flex-1 resize-none border-0 bg-transparent p-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/40 disabled:cursor-not-allowed"
           rows={1}
           style={{ maxHeight: MAX_HEIGHT }}
         />
 
         {isStreaming ? (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95"
-            onClick={onStop}
-            onMouseDown={(e) => e.preventDefault()}
-            title="Stop generating"
-          >
-            <Square className="h-3.5 w-3.5 fill-current" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {/* Force-stop runtime: revealed only after a graceful stop has
+                been pending too long.  Hard-kills llama-server so the user
+                isn't left staring at "Stopping…" on a slow on-device model. */}
+            {showForceStop && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1 px-2 text-[10px] font-medium text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 border border-amber-500/30"
+                onClick={() => void handleForceStop()}
+                onMouseDown={(e) => e.preventDefault()}
+                title="Force-kill the offline runtime if it isn't unwinding"
+              >
+                <Zap className="h-3 w-3" />
+                Force stop
+              </Button>
+            )}
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95"
+              onClick={onStop}
+              onMouseDown={(e) => e.preventDefault()}
+              title="Stop generating"
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+            </Button>
+          </div>
         ) : (
           <Button
             size="icon"
@@ -212,7 +390,7 @@ export function Composer({ onSend, onStop, isStreaming }: Props) {
 
       <div className="mt-1.5 flex items-center justify-between px-1">
         <p className="text-[10px] text-muted-foreground/50">
-          {modelName}
+          {composerModelHint}
           {!isStreaming && (
             <span className="ml-2 opacity-60">↵ send · ⇧↵ newline</span>
           )}
