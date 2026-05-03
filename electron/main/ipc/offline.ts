@@ -30,6 +30,7 @@ import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
 import { runtimeManager, getRuntimeFailureLogPath } from "../services/offline/runtime-manager";
+import type { RuntimeState } from "../services/offline/runtime-manager";
 import { modelRegistry } from "../services/offline/model-registry";
 import { storageService } from "../services/offline/storage";
 import { offlineCatalog } from "../services/offline/catalog";
@@ -981,6 +982,12 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           win.webContents.send(IPC.OFFLINE_ACTIVE_MODEL_CHANGED, info);
         }
       }
+      // Composite runtime state (`unconfigured` / `model-missing`)
+      // depends on the installed-model list and the active model
+      // selection.  Re-broadcast so listeners that don't separately
+      // subscribe to `OFFLINE_ACTIVE_MODEL_CHANGED` still pick up the
+      // composite kind change.
+      broadcastRuntimeState(computeOfflineRuntimeState());
     } catch (err) {
       console.warn("[offline] failed to broadcast active-model-changed:", err);
     }
@@ -1043,6 +1050,71 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     }
   }
 
+  /**
+   * Compose the renderer-facing offline runtime state.
+   *
+   * The runtime manager tracks process-level kinds (validating →
+   * launching → … → stopped/failed).  Two additional *composite*
+   * kinds layer on top here because they depend on data the runtime
+   * manager doesn't own:
+   *   - `unconfigured`   offline mode is not installed yet
+   *   - `model-missing`  offline mode is installed but no models are
+   *
+   * When the composite preconditions are satisfied, we passthrough
+   * `runtimeManager.getState()` verbatim — the runtime manager is the
+   * single source of truth for `validating`/`launching`/.../`failed`.
+   */
+  function computeOfflineRuntimeState(): RuntimeState {
+    const setupState = _offlineReadiness.state;
+    if (setupState !== "installed") {
+      return {
+        kind: "unconfigured",
+        enteredAt: Date.now(),
+        progressLabel:
+          setupState === "installing"
+            ? "Offline mode is being installed."
+            : "Offline mode is not installed yet.",
+      };
+    }
+    const installedCount = isDatabaseReady() ? listOfflineModels().length : 0;
+    if (installedCount === 0) {
+      return {
+        kind: "model-missing",
+        enteredAt: Date.now(),
+        progressLabel: "No offline models installed.",
+      };
+    }
+    return runtimeManager.getState();
+  }
+
+  /**
+   * Broadcast the composite runtime state snapshot to every open
+   * window so non-chat callers (Settings → Runtime status, Sidebar
+   * banners, future status panels) render a single source of truth.
+   * Best-effort — send failures on a destroyed window are swallowed.
+   */
+  function broadcastRuntimeState(state: RuntimeState): void {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.OFFLINE_RUNTIME_STATE, state);
+        }
+      }
+    } catch (err) {
+      console.warn("[offline] failed to broadcast runtime-state:", err);
+    }
+  }
+
+  // Subscribe to runtime-manager state transitions and forward each
+  // one (overlaid with composite preconditions) to all windows.  A
+  // single subscription serves every renderer so we don't pay for
+  // per-window listeners.  Listener stays attached for the lifetime
+  // of the process — there is exactly one runtime manager and one
+  // ipcMain registration per app launch.
+  runtimeManager.subscribe(() => {
+    broadcastRuntimeState(computeOfflineRuntimeState());
+  });
+
   ipcMain.handle(IPC.OFFLINE_GET_INFO, async () => {
     const installRoot = storageService.getOfflineRoot();
     const storageBytesUsed = storageService.computeUsedBytes();
@@ -1076,6 +1148,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       installPath: installRoot,
       installedAt: installation?.installedAt ?? null,
       isRuntimeRunning,
+      runtimeState: computeOfflineRuntimeState(),
     };
   });
 

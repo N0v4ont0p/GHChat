@@ -8,6 +8,7 @@ import type {
   OfflineActiveModelInfo,
   OfflineModelSummary,
   OfflineReadiness,
+  OfflineRuntimeState,
 } from "@/types";
 
 const KEY = ["offline-state"] as const;
@@ -21,6 +22,18 @@ export interface OfflineStateSnapshot {
   activeModel: OfflineActiveModelInfo | null;
   /** True when the runtime subprocess is currently alive. */
   runtimeRunning: boolean;
+  /**
+   * Snapshot of the offline runtime state machine.  Replaces the
+   * old habit of stitching `runtimeRunning` together with the last
+   * `OFFLINE_RUNTIME_PHASE` event.  Updated in-place from
+   * `OFFLINE_RUNTIME_STATE` pushes so the UI reflects the actual
+   * runtime lifecycle without polling.
+   *
+   * Defaults to `{kind:"stopped"}` until the first IPC read lands
+   * — this guarantees no UI surface ever sees `undefined` and silently
+   * falls back to "idle".
+   */
+  runtimeState: OfflineRuntimeState;
 }
 
 /**
@@ -61,6 +74,10 @@ export function useOfflineState() {
         activeModel: activeR.status === "fulfilled" ? activeR.value : null,
         runtimeRunning:
           infoR.status === "fulfilled" ? infoR.value.isRuntimeRunning : false,
+        runtimeState:
+          infoR.status === "fulfilled" && infoR.value.runtimeState
+            ? infoR.value.runtimeState
+            : { kind: "stopped", enteredAt: Date.now() },
       };
       // Mirror into the global store so legacy subscribers stay live.
       setActiveOfflineModel(snapshot.activeModel);
@@ -87,9 +104,33 @@ export function useOfflineState() {
         qc.invalidateQueries({ queryKey: KEY });
       },
     );
+    // Push subscription — runtime state machine transitions
+    // (`validating` → `launching` → … → `stopped`/`failed`).  Patch the
+    // cached snapshot in-place so consumers reflect the new kind on
+    // the very next render without needing a full IPC refetch.  Also
+    // mirror `runtimeRunning` from `kind === "ready"` so legacy
+    // subscribers stay accurate.
+    const offState = window.ghchat?.on(
+      IPC.OFFLINE_RUNTIME_STATE,
+      (_e: IpcRendererEvent, state: OfflineRuntimeState) => {
+        qc.setQueryData<OfflineStateSnapshot | undefined>(KEY, (prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            runtimeState: state,
+            runtimeRunning: state.kind === "ready",
+          };
+        });
+      },
+    );
     return () => {
       try {
         off?.();
+      } catch {
+        /* listener may already have been removed during HMR */
+      }
+      try {
+        offState?.();
       } catch {
         /* listener may already have been removed during HMR */
       }

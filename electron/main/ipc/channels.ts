@@ -86,6 +86,14 @@ export const IPC = {
    */
   OFFLINE_RUNTIME_PHASE: "offline:runtime:phase",
   /**
+   * Push (main → renderer): snapshot of the offline runtime state
+   * machine. Payload: `OfflineRuntimeState` from src/types/index.ts.
+   * Broadcast on every state transition so the UI reads a single
+   * source of truth instead of stitching together `isRuntimeRunning`
+   * with the most recent `OFFLINE_RUNTIME_PHASE` event.
+   */
+  OFFLINE_RUNTIME_STATE: "offline:runtime:state",
+  /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
    */

@@ -615,6 +615,75 @@ export interface OfflineRuntimePhaseEvent {
   failure?: OfflineRuntimeFailureDetails;
 }
 
+/**
+ * Discrete states of the offline runtime, observed by the renderer.
+ *
+ * Layered on top of the per-event `OfflineRuntimeStartupPhase` stream:
+ * the phase events describe transient progress, this state machine
+ * describes the *current* condition of the offline runtime as a single
+ * snapshot.  Every UI surface that previously cobbled
+ * `isRuntimeRunning` together with the last phase event should read
+ * this single field instead.
+ *
+ * Composite (from `OFFLINE_RUNTIME_STATE` broadcast):
+ *   - `unconfigured`       offline mode is not installed yet
+ *   - `model-missing`      offline mode is installed but no models
+ *
+ * Process-level (from `runtimeManager`):
+ *   - `validating`         pre-spawn checks running
+ *   - `launching`          spawning the runtime process
+ *   - `waiting-for-ready`  HTTP server hand-shake in progress
+ *   - `warming-up`         model loading into memory
+ *   - `ready`              runtime serving requests
+ *   - `stopping`           shutdown requested, awaiting exit
+ *   - `stopped`            runtime is not running (terminal idle)
+ *   - `failed`             startup or runtime failed (carries `failure`)
+ */
+export type OfflineRuntimeStateKind =
+  | "unconfigured"
+  | "model-missing"
+  | "validating"
+  | "launching"
+  | "waiting-for-ready"
+  | "warming-up"
+  | "ready"
+  | "stopping"
+  | "stopped"
+  | "failed";
+
+/**
+ * Snapshot of the offline runtime state machine.  Sent on the
+ * `OFFLINE_RUNTIME_STATE` channel and embedded in `OfflineInfo` for
+ * first-paint reads.
+ */
+export interface OfflineRuntimeState {
+  kind: OfflineRuntimeStateKind;
+  /** Wall-clock ms when this `kind` was entered (stable across step refinements). */
+  enteredAt: number;
+  /**
+   * Optional fine-grained step within the current `kind` — e.g. while
+   * `validating`, the underlying check ("checking-model" /
+   * "checking-binary").  May correspond to an `OfflineRuntimeStartupPhase`
+   * but is intentionally typed as a free-form string so future
+   * sub-steps don't require a new enum value.
+   */
+  step?: string;
+  /** Optional user-facing label describing the current step. */
+  progressLabel?: string;
+  /** Model id the runtime is operating on, when known. */
+  modelId?: string | null;
+  /**
+   * Recovery actions the renderer should expose for the current state.
+   * Populated for `failed`; usually empty for healthy states.
+   */
+  recoveryActions?: OfflineRuntimeRecoveryAction[];
+  /**
+   * Structured diagnostics — only populated when `kind === "failed"`.
+   * Same shape as `OfflineRuntimePhaseEvent.failure`.
+   */
+  failure?: OfflineRuntimeFailureDetails;
+}
+
 export interface ProviderHealthResult {
   ok: boolean;
   message: string;
@@ -685,6 +754,14 @@ export interface OfflineInfo {
   installedAt: number | null;
   /** Whether the runtime subprocess is currently alive and responding. */
   isRuntimeRunning: boolean;
+  /**
+   * Current snapshot of the offline runtime state machine.  Lets the
+   * renderer render an accurate status on first paint without waiting
+   * for the next `OFFLINE_RUNTIME_STATE` push.  Older main-process
+   * builds may omit this field; renderers MUST treat `undefined` as a
+   * fallback and continue to read `isRuntimeRunning`.
+   */
+  runtimeState?: OfflineRuntimeState;
 }
 
 /** Per-model health/availability status. */
@@ -930,6 +1007,17 @@ export const IPC = {
    * `llama-server` boot is never hidden behind a single spinner.
    */
   OFFLINE_RUNTIME_PHASE: "offline:runtime:phase",
+  /**
+   * Push (main → renderer): snapshot of the offline runtime state
+   * machine.  Payload: `OfflineRuntimeState`.
+   *
+   * Broadcast on every state transition so the UI can render the
+   * current condition (validating / launching / waiting-for-ready /
+   * warming-up / ready / stopping / stopped / failed) from a single
+   * source of truth instead of stitching together `isRuntimeRunning`
+   * with the most recent `OFFLINE_RUNTIME_PHASE` event.
+   */
+  OFFLINE_RUNTIME_STATE: "offline:runtime:state",
   /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.

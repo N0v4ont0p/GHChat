@@ -45,6 +45,8 @@ import type {
   OfflineRuntimeStartupPhase,
   OfflineRuntimePhaseEvent,
   OfflineRuntimeFailureDetails,
+  OfflineRuntimeState,
+  OfflineRuntimeStateKind,
 } from "@/types";
 
 /** Display "12.3 GB" or "456 MB" for byte counts. */
@@ -124,6 +126,25 @@ export function OfflineSettingsTab() {
     null,
   );
   /**
+   * Snapshot of the offline runtime state machine (single source of
+   * truth: `unconfigured | model-missing | validating | launching |
+   * waiting-for-ready | warming-up | ready | stopping | stopped |
+   * failed`).  Drives the Running/Stopped pill, the busy gating on
+   * Restart/Stop/Force-stop buttons, and the failure banner — all
+   * three previously cobbled together `info?.isRuntimeRunning` and
+   * the last phase event, which made transient/failed states display
+   * inconsistently.
+   *
+   * Initialised to `stopped` so first-paint never sees `undefined`
+   * (no silent fallback to idle), then immediately overwritten by
+   * the first `OFFLINE_RUNTIME_STATE` push or `getOfflineInfo()`
+   * read.
+   */
+  const [runtimeState, setRuntimeState] = useState<OfflineRuntimeState>(() => ({
+    kind: "stopped",
+    enteredAt: Date.now(),
+  }));
+  /**
    * Last non-terminal phase observed (i.e. not `ready`/`failed`).  Used
    * to attribute a `failed` event to the step that was actually in
    * progress when llama.cpp blew up — without it, the trail would only
@@ -138,6 +159,14 @@ export function OfflineSettingsTab() {
   const setOfflineRecommendation = useModeStore((s) => s.setOfflineRecommendation);
   const setMode = useModeStore((s) => s.setMode);
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
+
+  // Effective busy: either we have an in-flight local IPC call, or the
+  // runtime state machine reports a transition in progress (which can
+  // happen when another window — e.g. a chat-driven start — drives the
+  // runtime).  Both sources gate the same Restart/Stop buttons so the
+  // user can't issue conflicting operations.
+  const runtimeStateBusy = RUNTIME_BUSY_KINDS.has(runtimeState.kind);
+  const runtimeBusyEffective = runtimeBusy || runtimeStateBusy;
 
   const refreshInfo = useCallback(async () => {
     try {
@@ -172,6 +201,9 @@ export function OfflineSettingsTab() {
         setHwProfile(hw);
         setInstalledModels(models);
         setInfo(i);
+        if (i?.runtimeState) {
+          setRuntimeState(i.runtimeState);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -209,6 +241,17 @@ export function OfflineSettingsTab() {
     });
     return () => off();
   }, [refreshInfo]);
+
+  // Subscribe to the runtime state machine.  Single source of truth
+  // for the Running/Stopped pill, the busy gating, and the failure
+  // banner — replaces the old habit of stitching `info.isRuntimeRunning`
+  // together with the last `OFFLINE_RUNTIME_PHASE` event.
+  useEffect(() => {
+    const off = ipc.onOfflineRuntimeState((state) => {
+      setRuntimeState(state);
+    });
+    return () => off();
+  }, []);
 
   /**
    * Trigger a runtime restart from any caller (Restart button, Retry
@@ -408,49 +451,63 @@ export function OfflineSettingsTab() {
         )}
       </div>
 
-      {/* Runtime status */}
+      {/* Runtime status — driven by the runtime state machine. */}
       <div className="space-y-2 rounded-md border border-border/50 bg-muted/10 p-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-xs font-medium">
             <span
               className={cn(
                 "inline-block h-2 w-2 rounded-full",
-                info?.isRuntimeRunning ? "bg-emerald-400 animate-pulse" : "bg-muted-foreground/40",
+                runtimeState.kind === "ready"
+                  ? "bg-emerald-400 animate-pulse"
+                  : runtimeState.kind === "failed"
+                    ? "bg-red-500"
+                    : RUNTIME_BUSY_KINDS.has(runtimeState.kind)
+                      ? "bg-amber-400 animate-pulse"
+                      : "bg-muted-foreground/40",
               )}
             />
             <span>Runtime</span>
             <span
               className={cn(
                 "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                info?.isRuntimeRunning
+                runtimeState.kind === "ready"
                   ? "bg-emerald-500/20 text-emerald-300"
-                  : "bg-muted text-muted-foreground",
+                  : runtimeState.kind === "failed"
+                    ? "bg-red-500/20 text-red-300"
+                    : RUNTIME_BUSY_KINDS.has(runtimeState.kind)
+                      ? "bg-amber-500/20 text-amber-300"
+                      : "bg-muted text-muted-foreground",
               )}
             >
-              {info?.isRuntimeRunning ? "Running" : "Stopped"}
+              {RUNTIME_STATE_LABEL[runtimeState.kind]}
             </span>
           </div>
         </div>
         <p className="text-[10px] text-muted-foreground">
-          {info?.isRuntimeRunning
-            ? "The local runtime is loaded and ready to stream."
-            : "The runtime starts automatically the next time you send an offline message."}
+          {RUNTIME_STATE_DESCRIPTION[runtimeState.kind]}
         </p>
-        {runtimePhase?.phase === "failed" && (
+        {runtimeState.kind === "failed" && (
           <RuntimeFailureBanner
-            failure={runtimePhase.failure ?? null}
-            detail={runtimePhase.detail ?? null}
+            failure={runtimeState.failure ?? runtimePhase?.failure ?? null}
+            detail={
+              runtimeState.progressLabel ?? runtimePhase?.detail ?? null
+            }
             onRetry={triggerRestart}
             onManageModel={() => {
               setOfflineManagementOpen(true);
             }}
-            disabled={runtimeBusy}
+            disabled={runtimeBusyEffective}
           />
         )}
-        {(runtimeBusy || (runtimePhase && runtimePhase.phase !== "ready")) && (
+        {(runtimeBusyEffective ||
+          (runtimePhase &&
+            runtimePhase.phase !== "ready" &&
+            runtimeState.kind !== "ready" &&
+            runtimeState.kind !== "stopped")) && (
           <RuntimePhaseTrail
             phase={runtimePhase}
-            busy={runtimeBusy}
+            busy={runtimeBusyEffective}
             lastInProgressPhase={lastInProgressPhase}
           />
         )}
@@ -458,7 +515,7 @@ export function OfflineSettingsTab() {
           <Button
             variant="outline"
             size="sm"
-            disabled={runtimeBusy || installedModels.length === 0 || !activeModel}
+            disabled={runtimeBusyEffective || installedModels.length === 0 || !activeModel}
             title={
               installedModels.length === 0
                 ? "Install an offline model first to start the runtime"
@@ -470,7 +527,7 @@ export function OfflineSettingsTab() {
               await triggerRestart();
             }}
           >
-            {runtimeBusy ? (
+            {runtimeBusyEffective ? (
               <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
             ) : (
               <RefreshCw className="mr-1 h-3.5 w-3.5" />
@@ -480,7 +537,7 @@ export function OfflineSettingsTab() {
           <Button
             variant="outline"
             size="sm"
-            disabled={runtimeBusy || !info?.isRuntimeRunning}
+            disabled={runtimeBusyEffective || runtimeState.kind !== "ready"}
             onClick={async () => {
               setRuntimeBusy(true);
               try {
@@ -500,7 +557,10 @@ export function OfflineSettingsTab() {
           <Button
             variant="outline"
             size="sm"
-            disabled={runtimeBusy || !info?.isRuntimeRunning}
+            disabled={
+              runtimeBusyEffective ||
+              (runtimeState.kind !== "ready" && !info?.isRuntimeRunning)
+            }
             className="border-red-500/30 text-red-400/80 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10"
             onClick={async () => {
               setRuntimeBusy(true);
@@ -928,6 +988,56 @@ export function OfflineSettingsTab() {
     </div>
   );
 }
+
+// ── Runtime state-machine display ─────────────────────────────────────────────
+
+/**
+ * UI-facing copy for each `OfflineRuntimeStateKind`.  Drives the
+ * Running/Stopped pill, the dot colour, and the description line
+ * under the Runtime row so the entire surface stays in lockstep.
+ *
+ * `ready` is the only "alive and serving" kind; everything else
+ * (`validating` … `warming-up`) is in-flight, `stopping` is mid-shutdown,
+ * `stopped` is idle, `failed` is broken.
+ */
+const RUNTIME_STATE_LABEL: Record<OfflineRuntimeStateKind, string> = {
+  unconfigured: "Not installed",
+  "model-missing": "No model",
+  validating: "Validating…",
+  launching: "Launching…",
+  "waiting-for-ready": "Waiting for server…",
+  "warming-up": "Loading model…",
+  ready: "Running",
+  stopping: "Stopping…",
+  stopped: "Stopped",
+  failed: "Failed",
+};
+
+/** Description shown under the Runtime label for each state. */
+const RUNTIME_STATE_DESCRIPTION: Record<OfflineRuntimeStateKind, string> = {
+  unconfigured: "Offline mode is not installed yet.",
+  "model-missing":
+    "No offline models installed. Install one to start the runtime.",
+  validating: "Checking installed model and runtime binary…",
+  launching: "Spawning the local runtime process…",
+  "waiting-for-ready": "Waiting for the local server to come up…",
+  "warming-up": "Loading the model into memory…",
+  ready: "The local runtime is loaded and ready to stream.",
+  stopping: "Shutting down the local runtime…",
+  stopped:
+    "The runtime starts automatically the next time you send an offline message.",
+  failed:
+    "The local runtime failed to start. See details below to recover.",
+};
+
+/** Kinds that block Restart/Stop/Force-stop while a transition is in flight. */
+const RUNTIME_BUSY_KINDS = new Set<OfflineRuntimeStateKind>([
+  "validating",
+  "launching",
+  "waiting-for-ready",
+  "warming-up",
+  "stopping",
+]);
 
 // ── Runtime startup phase trail ───────────────────────────────────────────────
 

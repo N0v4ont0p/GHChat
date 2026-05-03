@@ -634,6 +634,144 @@ let _modelId: string | null = null;
  *  callers can detect when a setting change requires a restart. */
 let _spawnOptions: RuntimeSpawnOptions = {};
 
+// ── Runtime state machine ─────────────────────────────────────────────────────
+
+/**
+ * Discrete states of the offline runtime as observed by the renderer.
+ * Mirrored by `OfflineRuntimeStateKind` in src/types/index.ts; kept
+ * duplicated here so the main-process module has no compile-time
+ * dependency on the renderer types barrel.
+ *
+ * `unconfigured` and `model-missing` are *composite* states — they
+ * depend on the offline setup-state and the installed-model list and
+ * are layered on by the IPC overlay (see `electron/main/ipc/offline.ts`).
+ * The runtime manager itself only emits process-level kinds.
+ */
+export type RuntimeStateKind =
+  | "unconfigured"
+  | "model-missing"
+  | "validating"
+  | "launching"
+  | "waiting-for-ready"
+  | "warming-up"
+  | "ready"
+  | "stopping"
+  | "stopped"
+  | "failed";
+
+/**
+ * Snapshot of the offline runtime state machine.  Mirrored by
+ * `OfflineRuntimeState` in src/types/index.ts.
+ */
+export interface RuntimeState {
+  kind: RuntimeStateKind;
+  /** Wall-clock ms when this `kind` was entered (stable across step refinements). */
+  enteredAt: number;
+  /** Optional fine-grained step within the current `kind`. */
+  step?: string;
+  /** Optional user-facing label describing the current step. */
+  progressLabel?: string;
+  /** Model id the runtime is operating on, when known. */
+  modelId?: string | null;
+  /** Recovery actions the renderer should expose for the current state. */
+  recoveryActions?: RuntimeRecoveryAction[];
+  /** Structured diagnostics — only populated when `kind === "failed"`. */
+  failure?: RuntimeStartupFailureDetails;
+}
+
+/** Listener notified on every observable state transition. */
+export type RuntimeStateListener = (state: RuntimeState) => void;
+
+let _state: RuntimeState = {
+  kind: "stopped",
+  enteredAt: Date.now(),
+};
+const _listeners = new Set<RuntimeStateListener>();
+
+/**
+ * Apply a state update.  Stamps `enteredAt: Date.now()` only when the
+ * `kind` actually changes (so step refinements within a kind keep the
+ * original anchor), notifies subscribers, and no-ops on byte-identical
+ * snapshots so spurious re-broadcasts don't churn the renderer.
+ *
+ * Listeners are invoked synchronously and inside a try/catch — a
+ * misbehaving listener can never derail the runtime lifecycle.
+ */
+function setState(next: Partial<RuntimeState> & { kind: RuntimeStateKind }): void {
+  const prev = _state;
+  const kindChanged = prev.kind !== next.kind;
+  // Carry forward modelId / failure / recoveryActions only when a step
+  // refinement within the same kind doesn't override them.  On a kind
+  // change, fields not specified in `next` are dropped — a fresh kind
+  // means a fresh snapshot.
+  const merged: RuntimeState = kindChanged
+    ? {
+        kind: next.kind,
+        enteredAt: Date.now(),
+        step: next.step,
+        progressLabel: next.progressLabel,
+        modelId: next.modelId ?? null,
+        recoveryActions: next.recoveryActions,
+        failure: next.failure,
+      }
+    : {
+        ...prev,
+        ...next,
+        // enteredAt anchored on the kind transition, NOT on each refinement.
+        enteredAt: prev.enteredAt,
+      };
+
+  // No-op on byte-identical snapshots.
+  if (
+    prev.kind === merged.kind &&
+    prev.enteredAt === merged.enteredAt &&
+    prev.step === merged.step &&
+    prev.progressLabel === merged.progressLabel &&
+    (prev.modelId ?? null) === (merged.modelId ?? null) &&
+    JSON.stringify(prev.recoveryActions ?? []) ===
+      JSON.stringify(merged.recoveryActions ?? []) &&
+    JSON.stringify(prev.failure ?? null) === JSON.stringify(merged.failure ?? null)
+  ) {
+    return;
+  }
+
+  _state = merged;
+  console.log(
+    `[runtimeManager.state] ${prev.kind} → ${merged.kind}` +
+      (merged.step ? ` (${merged.step})` : "") +
+      (merged.modelId ? ` modelId=${merged.modelId}` : ""),
+  );
+  for (const listener of _listeners) {
+    try {
+      listener(merged);
+    } catch (err) {
+      console.warn("[runtimeManager.state] listener threw:", err);
+    }
+  }
+}
+
+/** Map a startup phase to the corresponding state-machine kind. */
+function phaseToStateKind(
+  phase: RuntimeStartupPhase,
+): Exclude<RuntimeStateKind, "unconfigured" | "model-missing" | "stopping" | "stopped"> {
+  switch (phase) {
+    case "checking-model":
+    case "checking-binary":
+    case "preparing-config":
+      return "validating";
+    case "launching-process":
+      return "launching";
+    case "waiting-for-server":
+      return "waiting-for-ready";
+    case "warming-up":
+      return "warming-up";
+    case "ready":
+      return "ready";
+    case "failed":
+      return "failed";
+  }
+}
+
 // ── Runtime manager ───────────────────────────────────────────────────────────
 
 /**
@@ -780,6 +918,29 @@ export const runtimeManager = {
             err,
           );
         }
+      }
+      // Mirror this phase into the state machine so a single snapshot
+      // (`runtimeManager.getState()`) reflects the current condition.
+      // Failed → stash failure + recoveryActions; otherwise the kind
+      // overwrites any stale `failed`/`stopped` snapshot, which is
+      // exactly the "retry resets stale state" requirement.
+      const stateKind = phaseToStateKind(phase);
+      if (stateKind === "failed") {
+        setState({
+          kind: "failed",
+          modelId: typeof modelId === "string" && modelId.length > 0 ? modelId : null,
+          step: ctx.lastInProgressPhase ?? undefined,
+          progressLabel: detail,
+          recoveryActions,
+          failure,
+        });
+      } else {
+        setState({
+          kind: stateKind,
+          modelId,
+          step: phase,
+          progressLabel: detail,
+        });
       }
       try {
         onPhase?.(phase, detail, failure, now);
@@ -948,6 +1109,44 @@ export const runtimeManager = {
           console.log(
             `[runtimeManager] process exited (code=${code ?? "null"} signal=${signal ?? "null"})`,
           );
+          // If the runtime had already reached `ready` (i.e. an
+          // unexpected mid-stream death rather than a startup
+          // failure), surface this as `failed` so the renderer never
+          // silently falls back to `idle`.  Startup-time exits are
+          // already converted to `failed` by the readiness race
+          // (raceReadiness throws → reportPhase("failed", …)), so the
+          // `setState` here is a no-op in that path.  Stop()-driven
+          // exits transition `stopping → stopped` from stop() itself
+          // and we leave that snapshot alone here.
+          if (_state.kind === "ready") {
+            const failure: RuntimeStartupFailureDetails = {
+              phase: "ready",
+              lastInProgressPhase: "warming-up",
+              kind: "exited",
+              message:
+                `Offline runtime exited unexpectedly` +
+                ` (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
+              modelId: _modelId,
+              modelPath: ctx.modelPath,
+              modelPathExists: ctx.modelPath ? safeExists(ctx.modelPath) : null,
+              binaryPath: ctx.binaryPath,
+              binaryPathExists: ctx.binaryPath ? safeExists(ctx.binaryPath) : null,
+              phaseElapsedMs: null,
+              exitCode: code,
+              signal: signal ?? null,
+              exited: true,
+              stderrTail: ctx.stderr,
+              stdoutTail: ctx.stdout,
+              recoveryActions: [],
+            };
+            setState({
+              kind: "failed",
+              modelId: _modelId,
+              progressLabel: failure.message,
+              recoveryActions: [],
+              failure,
+            });
+          }
           _proc = null;
           _port = null;
           _modelId = null;
@@ -1096,33 +1295,82 @@ export const runtimeManager = {
       _port = null;
       _modelId = null;
       _spawnOptions = {};
+      // Already stopped — make sure the state machine reflects that.
+      // Don't downgrade a `failed` snapshot to `stopped` (the failure
+      // diagnostics are still relevant until the user retries), but
+      // any other lingering kind (`ready`, `warming-up`, etc.) should
+      // collapse to `stopped` so the UI doesn't claim the runtime is
+      // alive.
+      if (_state.kind !== "stopped" && _state.kind !== "failed") {
+        setState({ kind: "stopped" });
+      }
       return;
     }
 
     const proc = _proc;
+    const stoppingModelId = _modelId;
     _proc = null;
     _port = null;
     _modelId = null;
     _spawnOptions = {};
 
-    await new Promise<void>((resolve) => {
-      const onExit = () => resolve();
-      proc.once("exit", onExit);
-      proc.once("error", onExit);
-
-      if (opts.force) {
-        proc.kill("SIGKILL");
-        return;
-      }
-
-      // Give the process 3 s to shut down gracefully, then force-kill.
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (!proc.killed) {
-          proc.kill("SIGKILL");
-        }
-      }, 3_000);
+    setState({
+      kind: "stopping",
+      modelId: stoppingModelId,
+      step: opts.force ? "force-kill" : "graceful-shutdown",
     });
+
+    try {
+      await new Promise<void>((resolve) => {
+        const onExit = () => resolve();
+        proc.once("exit", onExit);
+        proc.once("error", onExit);
+
+        if (opts.force) {
+          proc.kill("SIGKILL");
+          return;
+        }
+
+        // Give the process 3 s to shut down gracefully, then force-kill.
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        }, 3_000);
+      });
+      setState({ kind: "stopped" });
+    } catch (err) {
+      // SIGKILL itself failed (extremely rare — typically EPERM).
+      // Surface this as `failed` so the user gets actionable diagnostics
+      // instead of a silent stuck-stopping state.
+      const message = err instanceof Error ? err.message : String(err);
+      const failure: RuntimeStartupFailureDetails = {
+        phase: "ready",
+        lastInProgressPhase: null,
+        kind: "unknown",
+        message: `Failed to stop runtime: ${message}`,
+        modelId: stoppingModelId,
+        modelPath: null,
+        modelPathExists: null,
+        binaryPath: null,
+        binaryPathExists: null,
+        phaseElapsedMs: null,
+        exitCode: null,
+        signal: null,
+        exited: false,
+        stderrTail: "",
+        stdoutTail: "",
+        recoveryActions: [],
+      };
+      setState({
+        kind: "failed",
+        modelId: stoppingModelId,
+        progressLabel: failure.message,
+        failure,
+      });
+      throw err;
+    }
   },
 
   /** Returns true when the server process is currently active. */
@@ -1138,6 +1386,28 @@ export const runtimeManager = {
   /** Returns the model id currently loaded in the runtime, or null. */
   getCurrentModelId(): string | null {
     return _modelId;
+  },
+
+  /**
+   * Returns a snapshot of the runtime state machine.  Safe to call
+   * any time — when no runtime has ever been started this returns the
+   * initial `{kind: "stopped"}` state.
+   */
+  getState(): RuntimeState {
+    return _state;
+  },
+
+  /**
+   * Subscribe to state-machine transitions.  The listener is invoked
+   * once per `setState` call that actually changes the snapshot.
+   * Returns an unsubscribe function — callers MUST call it on shutdown
+   * to avoid leaking listeners.
+   */
+  subscribe(listener: RuntimeStateListener): () => void {
+    _listeners.add(listener);
+    return () => {
+      _listeners.delete(listener);
+    };
   },
 
   // ── Inference ───────────────────────────────────────────────────────────────

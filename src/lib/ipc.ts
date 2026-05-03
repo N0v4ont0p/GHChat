@@ -16,6 +16,7 @@ import type {
   OfflineHardwareProfileSnapshot,
   OfflineActiveModelInfo,
   OfflineRuntimePhaseEvent,
+  OfflineRuntimeState,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -301,5 +302,20 @@ export const ipc = {
     api().on(
       IPC.OFFLINE_RUNTIME_PHASE,
       (_e: IpcRendererEvent, payload: OfflineRuntimePhaseEvent) => cb(payload),
+    ),
+
+  /**
+   * Subscribe to snapshots of the offline runtime state machine
+   * (`unconfigured | model-missing | validating | launching |
+   * waiting-for-ready | warming-up | ready | stopping | stopped |
+   * failed`).  Broadcast by the main process on every transition so
+   * any UI surface reads a single source of truth instead of stitching
+   * together `isRuntimeRunning` with the last `OFFLINE_RUNTIME_PHASE`
+   * event.  Returns an unsubscribe function — call on unmount.
+   */
+  onOfflineRuntimeState: (cb: (state: OfflineRuntimeState) => void) =>
+    api().on(
+      IPC.OFFLINE_RUNTIME_STATE,
+      (_e: IpcRendererEvent, payload: OfflineRuntimeState) => cb(payload),
     ),
 };
