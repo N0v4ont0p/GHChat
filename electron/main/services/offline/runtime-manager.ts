@@ -1,8 +1,15 @@
 import { spawn, ChildProcess } from "child_process";
 import * as net from "net";
 import * as os from "os";
-import { existsSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import {
+  existsSync,
+  writeFileSync,
+  mkdirSync,
+  statSync,
+  accessSync,
+  constants as fsConstants,
+} from "fs";
+import { extname, join } from "path";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
 import { storageService } from "./storage";
