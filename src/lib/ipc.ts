@@ -204,6 +204,13 @@ export const ipc = {
    * Open the offline root directory in the OS file manager.
    */
   revealOfflineFolder: () => api().invoke<void>(IPC.OFFLINE_REVEAL_FOLDER),
+  /**
+   * Reveal the on-disk `runtime-last-failure.log` (written when the
+   * offline runtime fails to start) in the OS file manager.  Used by
+   * the "Open Logs" action on the offline runtime failure banner.
+   */
+  revealOfflineRuntimeLog: () =>
+    api().invoke<void>(IPC.OFFLINE_REVEAL_RUNTIME_LOG),
 
   // ── Multi-model offline management ────────────────────────────────────
   /** List every installed offline model with health, active flag, and timestamps. */

@@ -29,7 +29,7 @@ import {
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
-import { runtimeManager } from "../services/offline/runtime-manager";
+import { runtimeManager, getRuntimeFailureLogPath } from "../services/offline/runtime-manager";
 import { modelRegistry } from "../services/offline/model-registry";
 import { storageService } from "../services/offline/storage";
 import { offlineCatalog } from "../services/offline/catalog";
@@ -559,8 +559,9 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       const handleRuntimePhase = (
         phase: import("../services/offline/runtime-manager").RuntimeStartupPhase,
         detail?: string,
+        failure?: import("../services/offline/runtime-manager").RuntimeStartupFailureDetails,
       ) => {
-        broadcastRuntimePhase({ phase, modelId, detail, requestId });
+        broadcastRuntimePhase({ phase, modelId, detail, failure, requestId });
         if (cancelledRequests.has(requestId)) return;
         if (
           phase === "checking-model" ||
@@ -917,11 +918,12 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             contextSize: settings.contextSize,
             threads: settings.threads,
           },
-          (phase, detail) => {
+          (phase, detail, failure) => {
             broadcastRuntimePhase({
               phase,
               modelId: activeId,
               detail,
+              failure,
               requestId: null,
             });
           },
@@ -986,6 +988,7 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     phase: import("../services/offline/runtime-manager").RuntimeStartupPhase;
     modelId: string | null;
     detail?: string;
+    failure?: import("../services/offline/runtime-manager").RuntimeStartupFailureDetails;
     requestId?: string | null;
   }): void {
     try {
@@ -1271,6 +1274,23 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     storageService.ensureDirectories();
     const dir = storageService.getOfflineRoot();
     await shell.openPath(dir);
+  });
+
+  ipcMain.handle(IPC.OFFLINE_REVEAL_RUNTIME_LOG, async (): Promise<void> => {
+    // Reveal the runtime-last-failure.log if it exists; otherwise fall
+    // back to opening the offline root so the user always lands on
+    // something meaningful instead of getting a silent no-op.
+    storageService.ensureDirectories();
+    const logPath = getRuntimeFailureLogPath();
+    try {
+      if (existsSync(logPath) && statSync(logPath).isFile()) {
+        shell.showItemInFolder(logPath);
+        return;
+      }
+    } catch {
+      /* fall through to folder open */
+    }
+    await shell.openPath(storageService.getOfflineRoot());
   });
 
   /**

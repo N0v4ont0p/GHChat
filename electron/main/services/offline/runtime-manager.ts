@@ -1,8 +1,11 @@
 import { spawn, ChildProcess } from "child_process";
 import * as net from "net";
 import * as os from "os";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
+import { storageService } from "./storage";
 import { touchOfflineModelLastUsed } from "../database";
 
 // ── Port utilities ────────────────────────────────────────────────────────────
@@ -69,6 +72,89 @@ async function pollUntilReady(
   return pollUntil(port, path, (res) => res.ok, timeoutMs, intervalMs);
 }
 
+// ── Diagnostics helpers ───────────────────────────────────────────────────────
+
+/** `existsSync` that swallows EACCES/EPERM/etc. and returns false. */
+function safeExists(path: string): boolean {
+  try {
+    return existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Append `chunk` to a bounded tail buffer used to capture llama-server
+ * stdout/stderr.  Newer bytes always win — when the combined size
+ * exceeds `maxBytes`, the leading bytes are discarded.  Newlines in the
+ * chunk are preserved so the rendered tail stays readable.
+ */
+function appendTail(prev: string, chunk: string, maxBytes: number): string {
+  const next = prev + chunk;
+  if (next.length <= maxBytes) return next;
+  return next.slice(next.length - maxBytes);
+}
+
+/** Return the last non-empty line of `text`, suitable for inline error display. */
+function tailLine(text: string): string {
+  const trimmed = text.replace(/\s+$/u, "");
+  const idx = trimmed.lastIndexOf("\n");
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+/**
+ * Absolute path to the on-disk "last runtime startup failure" log,
+ * persisted to the offline root so a user can hand it to support.
+ * The path is stable across runs so "Open Logs" always reveals the
+ * latest failure (or shows the user an empty file when no failure
+ * has happened yet).
+ */
+export function getRuntimeFailureLogPath(): string {
+  return join(storageService.getOfflineRoot(), "runtime-last-failure.log");
+}
+
+/**
+ * Persist a structured failure record to the offline root so the
+ * renderer's "Open Logs" action can reveal something concrete in the
+ * file manager.  Best-effort: write errors are logged but never
+ * propagated, and the file always overwrites the previous run so we
+ * don't leak unbounded history.
+ */
+function writeRuntimeFailureLog(failure: RuntimeStartupFailureDetails): void {
+  const path = getRuntimeFailureLogPath();
+  try {
+    mkdirSync(storageService.getOfflineRoot(), { recursive: true });
+  } catch {
+    /* ignore — write below will surface the real error */
+  }
+  const lines = [
+    `# GHChat offline runtime startup failure`,
+    `Timestamp:        ${new Date().toISOString()}`,
+    `Phase:            ${failure.phase}`,
+    `Message:          ${failure.message}`,
+    `Model ID:         ${failure.modelId ?? "<unknown>"}`,
+    `Model path:       ${failure.modelPath ?? "<unknown>"}` +
+      (failure.modelPathExists === null
+        ? ""
+        : ` (exists=${failure.modelPathExists})`),
+    `Binary path:      ${failure.binaryPath ?? "<unknown>"}` +
+      (failure.binaryPathExists === null
+        ? ""
+        : ` (exists=${failure.binaryPathExists})`),
+    `Process exited:   ${failure.exited}`,
+    `Exit code:        ${failure.exitCode ?? "<n/a>"}`,
+    `Signal:           ${failure.signal ?? "<n/a>"}`,
+    "",
+    "── stderr tail ─────────────────────────────",
+    failure.stderrTail || "<empty>",
+    "",
+    "── stdout tail ─────────────────────────────",
+    failure.stdoutTail || "<empty>",
+    "",
+  ];
+  writeFileSync(path, lines.join("\n"), "utf8");
+}
+
 // ── Chat message type ─────────────────────────────────────────────────────────
 
 export interface ChatMessage {
@@ -105,6 +191,53 @@ export type RuntimeStartupPhase =
   | "failed";
 
 /**
+ * Structured diagnostics attached to a `failed` startup phase so the
+ * renderer can render an actionable error UI (and so a user reporting
+ * "offline silently died" can copy-paste the values into a bug report).
+ *
+ * Every field is optional because the failure may happen before the
+ * value is known — e.g. a missing model record means we never resolve
+ * a model path; a missing binary means we never reach spawn.  All
+ * fields are best-effort, must never contain secrets, and must be
+ * safe to display to the user verbatim.
+ */
+export interface RuntimeStartupFailureDetails {
+  /** Phase in which the failure occurred. */
+  phase: RuntimeStartupPhase;
+  /** Short, user-facing failure message (same string as `detail`). */
+  message: string;
+  /** Active model id, when known. */
+  modelId: string | null;
+  /** Resolved on-disk model path, when known. */
+  modelPath: string | null;
+  /** Whether `modelPath` exists on disk at the moment of failure. */
+  modelPathExists: boolean | null;
+  /** Resolved llama-server binary path, when known. */
+  binaryPath: string | null;
+  /** Whether `binaryPath` exists on disk at the moment of failure. */
+  binaryPathExists: boolean | null;
+  /**
+   * Process exit code, when the runtime exited before becoming ready.
+   * Null when the runtime had not exited at the time of failure
+   * (e.g. readiness poll timeout while the process was still alive).
+   */
+  exitCode: number | null;
+  /** Process termination signal (e.g. "SIGKILL"), when known. */
+  signal: string | null;
+  /**
+   * Whether the runtime process had exited at the time of failure.
+   * Distinguishes "process crashed before ready" from "process is
+   * alive but slow" — both surface as a readiness failure but only
+   * the former is silent-exit.
+   */
+  exited: boolean;
+  /** Bounded tail of llama-server stderr (may be empty). */
+  stderrTail: string;
+  /** Bounded tail of llama-server stdout (may be empty). */
+  stdoutTail: string;
+}
+
+/**
  * Callback invoked at every stage of a runtime start so callers can
  * surface step-by-step progress in the UI and the Electron log.
  *
@@ -116,6 +249,12 @@ export type RuntimeStartupPhase =
 export type RuntimeStartupPhaseCallback = (
   phase: RuntimeStartupPhase,
   detail?: string,
+  /**
+   * Structured failure diagnostics — only populated when `phase` is
+   * `failed`.  Mutually compatible with the legacy `detail` string
+   * (callers that ignore this argument keep working).
+   */
+  failure?: RuntimeStartupFailureDetails,
 ) => void;
 
 /**
@@ -174,18 +313,84 @@ export const runtimeManager = {
     options: RuntimeSpawnOptions = {},
     onPhase?: RuntimeStartupPhaseCallback,
   ): Promise<void> {
+    // Track everything the renderer might need to surface in a failure
+    // banner.  These are scoped to a single start() call so a
+    // subsequent restart never inherits stale diagnostics.
+    const MAX_TAIL_BYTES = 1000;
+    const ctx: {
+      modelPath: string | null;
+      binaryPath: string | null;
+      stderr: string;
+      stdout: string;
+      exitCode: number | null;
+      signal: string | null;
+      exited: boolean;
+      currentPhase: RuntimeStartupPhase;
+    } = {
+      modelPath: null,
+      binaryPath: null,
+      stderr: "",
+      stdout: "",
+      exitCode: null,
+      signal: null,
+      exited: false,
+      currentPhase: "checking-model",
+    };
+
+    /**
+     * Compose the structured failure record used by the UI's "Show
+     * technical details" disclosure and the on-disk runtime-failure log.
+     * Always reflects the most recent state of `ctx` so it is safe to
+     * call from any failure branch — including the early-validation
+     * branches that have no spawned process.
+     */
+    const buildFailure = (
+      phase: RuntimeStartupPhase,
+      message: string,
+    ): RuntimeStartupFailureDetails => ({
+      phase,
+      message,
+      modelId: typeof modelId === "string" && modelId.length > 0 ? modelId : null,
+      modelPath: ctx.modelPath,
+      modelPathExists: ctx.modelPath ? safeExists(ctx.modelPath) : null,
+      binaryPath: ctx.binaryPath,
+      binaryPathExists: ctx.binaryPath ? safeExists(ctx.binaryPath) : null,
+      exitCode: ctx.exitCode,
+      signal: ctx.signal,
+      exited: ctx.exited,
+      stderrTail: ctx.stderr,
+      stdoutTail: ctx.stdout,
+    });
+
     // Wrap the user callback + structured log in one helper so every
     // startup phase is both visible in the UI and recoverable from a
     // post-mortem log.  Failures inside the callback must never crash
-    // the start sequence.
+    // the start sequence.  When `phase === "failed"` we additionally
+    // build structured diagnostics, persist them to disk, and forward
+    // them to the callback so the renderer can render an actionable
+    // error UI (with Retry / Open Logs / Manage Model actions) instead
+    // of a vague "loading…" spinner.
     const reportPhase = (phase: RuntimeStartupPhase, detail?: string) => {
+      ctx.currentPhase = phase;
       console.log(
         `[runtimeManager.start] phase=${phase}` +
           (detail ? ` detail=${detail}` : "") +
           ` modelId=${modelId}`,
       );
+      let failure: RuntimeStartupFailureDetails | undefined;
+      if (phase === "failed") {
+        failure = buildFailure(phase, detail ?? "Runtime startup failed.");
+        try {
+          writeRuntimeFailureLog(failure);
+        } catch (err) {
+          console.warn(
+            "[runtimeManager.start] failed to persist runtime-last-failure.log:",
+            err,
+          );
+        }
+      }
       try {
-        onPhase?.(phase, detail);
+        onPhase?.(phase, detail, failure);
       } catch (err) {
         console.warn("[runtimeManager.start] onPhase callback threw:", err);
       }
@@ -251,6 +456,7 @@ export const runtimeManager = {
         reportPhase("failed", msg);
         throw new Error(msg);
       }
+      ctx.modelPath = record.modelPath;
 
       reportPhase(
         "checking-binary",
@@ -274,8 +480,28 @@ export const runtimeManager = {
         reportPhase("failed", msg);
         throw new Error(msg);
       }
+      ctx.binaryPath = binaryPath;
 
       reportPhase("preparing-config", "selecting free port and runtime knobs");
+      // Pre-flight existence checks — surface "file is gone" errors
+      // here, before spawn, so the user sees a clear "model file not
+      // found" message instead of a timeout three minutes later when
+      // llama-server silently exits because it can't open the GGUF.
+      if (!safeExists(ctx.modelPath)) {
+        const msg =
+          `Model file is missing on disk: ${ctx.modelPath}. ` +
+          `Try repairing or reinstalling "${modelId}" from Manage models.`;
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
+      if (!safeExists(ctx.binaryPath)) {
+        const msg =
+          `Runtime binary is missing on disk: ${ctx.binaryPath}. ` +
+          `Reinstall the offline runtime to recover.`;
+        reportPhase("failed", msg);
+        throw new Error(msg);
+      }
+
       const port = await getFreePort();
 
       const ctxSize = options.contextSize ?? 4096;
@@ -283,12 +509,12 @@ export const runtimeManager = {
 
       console.log(
         `[runtimeManager] starting llama-server on port ${port} ` +
-          `(modelId=${modelId}, modelPath=${record.modelPath}, ` +
-          `binaryPath=${binaryPath}, ctx=${ctxSize}, threads=${threads})`,
+          `(modelId=${modelId}, modelPath=${ctx.modelPath}, ` +
+          `binaryPath=${ctx.binaryPath}, ctx=${ctxSize}, threads=${threads})`,
       );
 
       const args = [
-        "--model", record.modelPath,
+        "--model", ctx.modelPath,
         "--port", String(port),
         "--host", "127.0.0.1",
         "--ctx-size", String(ctxSize),
@@ -305,7 +531,7 @@ export const runtimeManager = {
 
       let proc: ChildProcess;
       try {
-        proc = spawn(binaryPath, args, {
+        proc = spawn(ctx.binaryPath, args, {
           stdio: ["ignore", "pipe", "pipe"],
           env: { ...process.env },
         });
@@ -320,43 +546,88 @@ export const runtimeManager = {
       _modelId = modelId;
       _spawnOptions = { contextSize: ctxSize, threads };
 
-      // Capture the most recent stderr line so a startup failure can
-      // surface it (e.g. "failed to load model" / "out of memory") rather
-      // than only the generic readiness-timeout.  Bounded so a chatty
-      // model log can't grow this buffer without limit.
-      const MAX_STDERR_TAIL_BYTES = 500;
-      let lastStderr = "";
-      _proc.on("error", (err) => {
+      // ── Output capture + early-exit detection ───────────────────────
+      // The previous implementation only kept stderr and treated a
+      // process exit during the readiness wait as a generic timeout.
+      // That was the root cause of "runtime silently stops" — when
+      // llama-server died on a bad GGUF or OOM, the user sat for 60+
+      // seconds before seeing a vague timeout message that omitted
+      // the exit code, signal, and stdout context entirely.
+      //
+      // Now: stdout and stderr are both tailed (bounded), exit code
+      // and signal are captured the instant the process dies, and a
+      // dedicated `exitPromise` lets the readiness poll abort the
+      // moment the process exits — surfacing the real reason in
+      // milliseconds instead of minutes.
+      let onExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | null = null;
+      const exitPromise = new Promise<void>((resolve) => {
+        onExit = (code, signal) => {
+          ctx.exited = true;
+          ctx.exitCode = code;
+          ctx.signal = signal ?? null;
+          console.log(
+            `[runtimeManager] process exited (code=${code ?? "null"} signal=${signal ?? "null"})`,
+          );
+          _proc = null;
+          _port = null;
+          _modelId = null;
+          _spawnOptions = {};
+          resolve();
+        };
+        proc.once("exit", onExit);
+      });
+
+      proc.on("error", (err) => {
         console.error("[runtimeManager] process error:", err);
-        _proc = null;
-        _port = null;
-        _modelId = null;
-        _spawnOptions = {};
-      });
-
-      _proc.on("exit", (code, signal) => {
-        console.log(
-          `[runtimeManager] process exited (code=${code ?? "null"} signal=${signal ?? "null"})`,
+        ctx.stderr = appendTail(
+          ctx.stderr,
+          `[process error] ${err.message}`,
+          MAX_TAIL_BYTES,
         );
-        _proc = null;
-        _port = null;
-        _modelId = null;
-        _spawnOptions = {};
       });
 
-      // Log stderr so failures are visible in the Electron log.  Keep
-      // the trailing window so we can attach it to a "failed" phase
-      // detail if the readiness wait times out.
-      _proc.stderr?.on("data", (data: Buffer) => {
-        const text = data.toString().trimEnd();
-        if (text.length > 0) {
-          lastStderr =
-            text.length > MAX_STDERR_TAIL_BYTES
-              ? text.slice(-MAX_STDERR_TAIL_BYTES)
-              : text;
-          console.log(`[llama-server] ${text}`);
-        }
+      proc.stderr?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        ctx.stderr = appendTail(ctx.stderr, text, MAX_TAIL_BYTES);
+        const trimmed = text.trimEnd();
+        if (trimmed.length > 0) console.log(`[llama-server] ${trimmed}`);
       });
+
+      proc.stdout?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        ctx.stdout = appendTail(ctx.stdout, text, MAX_TAIL_BYTES);
+        const trimmed = text.trimEnd();
+        if (trimmed.length > 0) console.log(`[llama-server:out] ${trimmed}`);
+      });
+
+      /**
+       * Run a readiness poll concurrently with the process exit
+       * promise.  Whichever resolves first wins:
+       *   - poll succeeds → readiness milestone reached
+       *   - process exits → throw an "exited before ready" error
+       *     carrying the captured code/signal/stderr/stdout
+       *   - poll times out → throw the timeout message
+       */
+      const raceReadiness = async (
+        path: string,
+        predicate: (res: Response) => boolean,
+        timeoutMs: number,
+        what: string,
+      ): Promise<void> => {
+        const pollPromise = pollUntil(port, path, predicate, timeoutMs).then(
+          () => "ready" as const,
+        );
+        const exitSentinel = exitPromise.then(() => "exited" as const);
+        const winner = await Promise.race([pollPromise, exitSentinel]);
+        if (winner === "exited") {
+          throw new Error(
+            `Runtime process exited before ${what}` +
+              ` (code=${ctx.exitCode ?? "null"}, signal=${ctx.signal ?? "null"})`,
+          );
+        }
+        // pollPromise won — let any rejection (timeout) propagate.
+        await pollPromise;
+      };
 
       // Wait for the HTTP server to start accepting connections.  Any
       // HTTP response (including 503 "loading model") proves the
@@ -367,16 +638,15 @@ export const runtimeManager = {
         `polling http://127.0.0.1:${port}/health for TCP readiness`,
       );
       try {
-        await pollUntil(port, "/health", () => true, 60_000);
+        await raceReadiness("/health", () => true, 60_000, "TCP readiness");
       } catch (err) {
-        const detail =
-          (err instanceof Error ? err.message : String(err)) +
-          (lastStderr ? ` — last stderr: ${lastStderr}` : "");
+        const baseMsg = err instanceof Error ? err.message : String(err);
+        const detail = ctx.exited
+          ? `${baseMsg}. The runtime process stopped before the HTTP server came up.`
+          : `${baseMsg}${ctx.stderr ? ` — last stderr: ${tailLine(ctx.stderr)}` : ""}`;
         reportPhase("failed", detail);
-        // Best-effort: kill the process we spawned so we don't leave a
-        // half-alive llama-server holding the port.
         try {
-          if (proc && !proc.killed) proc.kill("SIGKILL");
+          if (proc && !proc.killed && !ctx.exited) proc.kill("SIGKILL");
         } catch {
           /* ignore */
         }
@@ -392,14 +662,20 @@ export const runtimeManager = {
         // that it returns 503 with `{"status": "loading model"}`.  This
         // is the real "warming up" signal — the previous one-shot
         // spinner masked it entirely on slow disks.
-        await pollUntilReady(port, "/health", 120_000);
+        await raceReadiness(
+          "/health",
+          (res) => res.ok,
+          120_000,
+          "model warm-up",
+        );
       } catch (err) {
-        const detail =
-          (err instanceof Error ? err.message : String(err)) +
-          (lastStderr ? ` — last stderr: ${lastStderr}` : "");
+        const baseMsg = err instanceof Error ? err.message : String(err);
+        const detail = ctx.exited
+          ? `${baseMsg}. The runtime process stopped while loading the model.`
+          : `${baseMsg}${ctx.stderr ? ` — last stderr: ${tailLine(ctx.stderr)}` : ""}`;
         reportPhase("failed", detail);
         try {
-          if (proc && !proc.killed) proc.kill("SIGKILL");
+          if (proc && !proc.killed && !ctx.exited) proc.kill("SIGKILL");
         } catch {
           /* ignore */
         }

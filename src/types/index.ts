@@ -510,6 +510,30 @@ export type OfflineRuntimeStartupPhase =
   | "failed";
 
 /**
+ * Structured diagnostics emitted on `OFFLINE_RUNTIME_PHASE` when
+ * `phase === "failed"`.  Mirrors `RuntimeStartupFailureDetails` from
+ * the main-process runtime manager — duplicated here so the renderer
+ * has no compile-time dependency on Electron-only modules.
+ *
+ * Every field is safe to display to the user verbatim: there are no
+ * secrets, only paths and process diagnostics.
+ */
+export interface OfflineRuntimeFailureDetails {
+  phase: OfflineRuntimeStartupPhase;
+  message: string;
+  modelId: string | null;
+  modelPath: string | null;
+  modelPathExists: boolean | null;
+  binaryPath: string | null;
+  binaryPathExists: boolean | null;
+  exitCode: number | null;
+  signal: string | null;
+  exited: boolean;
+  stderrTail: string;
+  stdoutTail: string;
+}
+
+/**
  * Payload broadcast on `OFFLINE_RUNTIME_PHASE`.
  *
  * `requestId` is set when the start was triggered by an offline chat
@@ -525,6 +549,14 @@ export interface OfflineRuntimePhaseEvent {
   detail?: string;
   /** When triggered by a chat stream, the request id; otherwise null. */
   requestId?: string | null;
+  /**
+   * Structured failure diagnostics — only set when `phase === "failed"`.
+   * The Settings panel renders these as an actionable error UI with
+   * Retry / Open Logs / Manage Model buttons and a "Show technical
+   * details" disclosure listing model id, paths, exit code, signal,
+   * and stderr/stdout tails.
+   */
+  failure?: OfflineRuntimeFailureDetails;
 }
 
 export interface ProviderHealthResult {
@@ -859,6 +891,13 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  /**
+   * Reveal the on-disk `runtime-last-failure.log` (written whenever
+   * `runtimeManager.start()` reports a `failed` phase) in the OS file
+   * manager.  When the log does not exist yet, the offline root is
+   * opened instead so the user lands somewhere meaningful.
+   */
+  OFFLINE_REVEAL_RUNTIME_LOG: "offline:reveal-runtime-log",
   /**
    * Returns OfflineModelSummary[] — every installed offline model with
    * size on disk, health, active flag, and last-used timestamp.  Used by

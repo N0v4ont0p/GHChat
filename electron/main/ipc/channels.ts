@@ -102,6 +102,7 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  OFFLINE_REVEAL_RUNTIME_LOG: "offline:reveal-runtime-log",
   /** Returns OfflineModelSummary[] — every installed offline model. */
   OFFLINE_LIST_INSTALLED: "offline:list-installed",
   /** Returns OfflineCatalogEntrySummary[] — installable catalog entries. */

@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Loader2,
   FolderOpen,
+  FileText,
+  Settings2,
   Zap,
   Scale,
   Sparkles,
@@ -31,6 +33,7 @@ import {
 import { ipc } from "@/lib/ipc";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 import { useModeStore } from "@/stores/mode-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import type {
@@ -41,6 +44,7 @@ import type {
   OfflinePerformancePreset,
   OfflineRuntimeStartupPhase,
   OfflineRuntimePhaseEvent,
+  OfflineRuntimeFailureDetails,
 } from "@/types";
 
 /** Display "12.3 GB" or "456 MB" for byte counts. */
@@ -205,6 +209,59 @@ export function OfflineSettingsTab() {
     });
     return () => off();
   }, [refreshInfo]);
+
+  /**
+   * Trigger a runtime restart from any caller (Restart button, Retry
+   * button on the failure banner).  Centralised so the two surfaces
+   * stay in lockstep — same guard logic, same progress reset, same
+   * toast handling.
+   */
+  const triggerRestart = useCallback(async () => {
+    if (installedModels.length === 0 || !activeModel) {
+      console.warn(
+        `[OfflineSettingsTab] Restart runtime aborted: ` +
+          `installedCount=${installedModels.length}, ` +
+          `activeModelId=${activeModel?.id ?? "<none>"}`,
+      );
+      toast.error(
+        installedModels.length === 0
+          ? "No offline models installed. Install one to start the runtime."
+          : "No active offline model selected. Pick one in Offline Models.",
+      );
+      setOfflineManagementOpen(true);
+      return;
+    }
+    setRuntimeBusy(true);
+    setRuntimePhase(null);
+    setLastInProgressPhase(null);
+    try {
+      console.log(
+        `[OfflineSettingsTab] Restart runtime clicked ` +
+          `(activeModelId=${activeModel.id}, ` +
+          `installedCount=${installedModels.length}, ` +
+          `currentlyRunning=${info?.isRuntimeRunning ?? "unknown"})`,
+      );
+      const res = await ipc.restartOfflineRuntime();
+      if (res.ok) {
+        toast.success("Runtime restarted");
+      } else {
+        toast.error(res.error ?? "Restart failed");
+      }
+      await refreshInfo();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[OfflineSettingsTab] restartOfflineRuntime threw:", err);
+      toast.error(`Restart failed: ${msg}`);
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }, [
+    activeModel,
+    installedModels.length,
+    info?.isRuntimeRunning,
+    refreshInfo,
+    setOfflineManagementOpen,
+  ]);
 
   const update = useCallback(async (partial: Partial<OfflineSettings>) => {
     try {
@@ -379,6 +436,17 @@ export function OfflineSettingsTab() {
             ? "The local runtime is loaded and ready to stream."
             : "The runtime starts automatically the next time you send an offline message."}
         </p>
+        {runtimePhase?.phase === "failed" && (
+          <RuntimeFailureBanner
+            failure={runtimePhase.failure ?? null}
+            detail={runtimePhase.detail ?? null}
+            onRetry={triggerRestart}
+            onManageModel={() => {
+              setOfflineManagementOpen(true);
+            }}
+            disabled={runtimeBusy}
+          />
+        )}
         {(runtimeBusy || (runtimePhase && runtimePhase.phase !== "ready")) && (
           <RuntimePhaseTrail
             phase={runtimePhase}
@@ -399,50 +467,7 @@ export function OfflineSettingsTab() {
                   : undefined
             }
             onClick={async () => {
-              // Guard against the "no active model" edge case so we never
-              // dispatch a runtime-start IPC call without a resolvable
-              // model id.  Route the user to the management modal so
-              // they can pick or install one instead.
-              if (installedModels.length === 0 || !activeModel) {
-                console.warn(
-                  `[OfflineSettingsTab] Restart runtime aborted: ` +
-                    `installedCount=${installedModels.length}, ` +
-                    `activeModelId=${activeModel?.id ?? "<none>"}`,
-                );
-                toast.error(
-                  installedModels.length === 0
-                    ? "No offline models installed. Install one to start the runtime."
-                    : "No active offline model selected. Pick one in Offline Models.",
-                );
-                setOfflineManagementOpen(true);
-                return;
-              }
-              setRuntimeBusy(true);
-              setRuntimePhase(null);
-              setLastInProgressPhase(null);
-              try {
-                console.log(
-                  `[OfflineSettingsTab] Restart runtime clicked ` +
-                    `(activeModelId=${activeModel.id}, ` +
-                    `installedCount=${installedModels.length}, ` +
-                    `currentlyRunning=${info?.isRuntimeRunning ?? "unknown"})`,
-                );
-                const res = await ipc.restartOfflineRuntime();
-                if (res.ok) {
-                  toast.success("Runtime restarted");
-                } else {
-                  toast.error(res.error ?? "Restart failed");
-                }
-                await refreshInfo();
-              } catch (err) {
-                // Catch IPC bridge errors (e.g. preload missing / channel
-                // undefined) so the button never silently swallows them.
-                const msg = err instanceof Error ? err.message : String(err);
-                console.error("[OfflineSettingsTab] restartOfflineRuntime threw:", err);
-                toast.error(`Restart failed: ${msg}`);
-              } finally {
-                setRuntimeBusy(false);
-              }
+              await triggerRestart();
             }}
           >
             {runtimeBusy ? (
@@ -1021,11 +1046,139 @@ function RuntimePhaseTrail({
           );
         })}
       </ol>
-      {failed && phase?.detail && (
-        <p className="mt-2 rounded border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-red-300">
-          {phase.detail}
-        </p>
-      )}
+      {/*
+        Failure detail is rendered by the dedicated RuntimeFailureBanner
+        above this trail (with structured technical details + Retry /
+        Open Logs / Manage Model actions).  Keeping the trail itself
+        free of the error string avoids duplicating the message in two
+        adjacent UI surfaces.
+      */}
     </div>
+  );
+}
+
+// ── Runtime failure banner ────────────────────────────────────────────────────
+
+/**
+ * Actionable failure UI shown when `runtimeManager.start()` reports a
+ * `failed` phase.  Surfaces:
+ *   – the user-facing message
+ *   – Retry, Open Logs, and Manage Model action buttons
+ *   – a "Show technical details" disclosure (model id / paths /
+ *     existence flags / exit code / signal / stderr / stdout tails)
+ *
+ * Renders even when `failure` is null (legacy main-process build) so a
+ * downgrade never leaves the user with a half-broken banner.
+ */
+function RuntimeFailureBanner({
+  failure,
+  detail,
+  onRetry,
+  onManageModel,
+  disabled,
+}: {
+  failure: OfflineRuntimeFailureDetails | null;
+  detail: string | null;
+  onRetry: () => void | Promise<void>;
+  onManageModel: () => void;
+  disabled: boolean;
+}) {
+  const message = failure?.message ?? detail ?? "Runtime startup failed.";
+  const technical = failure ? renderTechnicalDetails(failure) : null;
+
+  return (
+    <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-[12px]">
+      <div className="flex items-start gap-2">
+        <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+        <div className="flex-1 space-y-2">
+          <p className="font-medium text-red-200">Offline runtime failed to start</p>
+          <p className="text-red-300/90">{message}</p>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => {
+                void onRetry();
+              }}
+            >
+              {disabled ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1 h-3.5 w-3.5" />
+              )}
+              Retry
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                try {
+                  await ipc.revealOfflineRuntimeLog();
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error
+                      ? err.message
+                      : "Could not open the runtime log",
+                  );
+                }
+              }}
+            >
+              <FileText className="mr-1 h-3.5 w-3.5" />
+              Open Logs
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onManageModel}
+            >
+              <Settings2 className="mr-1 h-3.5 w-3.5" />
+              Manage Model
+            </Button>
+          </div>
+          {technical && (
+            <TechnicalDetails tone="danger">{technical}</TechnicalDetails>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Render the structured failure record as a fixed-width key/value
+ * block.  Falsy values are kept as `<unknown>` / `<n/a>` placeholders
+ * so the user sees explicitly *what we don't know* instead of a
+ * misleadingly empty field.
+ */
+function renderTechnicalDetails(f: OfflineRuntimeFailureDetails) {
+  const fmt = (label: string, value: string) => `${label.padEnd(18)} ${value}`;
+  const exists = (b: boolean | null) =>
+    b === null ? "<unknown>" : b ? "yes" : "no";
+  const lines = [
+    fmt("Phase:", f.phase),
+    fmt("Model ID:", f.modelId ?? "<unknown>"),
+    fmt("Model path:", f.modelPath ?? "<unknown>"),
+    fmt("Model exists:", exists(f.modelPathExists)),
+    fmt("Binary path:", f.binaryPath ?? "<unknown>"),
+    fmt("Binary exists:", exists(f.binaryPathExists)),
+    fmt("Process exited:", String(f.exited)),
+    fmt("Exit code:", f.exitCode === null ? "<n/a>" : String(f.exitCode)),
+    fmt("Signal:", f.signal ?? "<n/a>"),
+    "",
+    "── stderr tail ───────────────",
+    f.stderrTail || "<empty>",
+    "",
+    "── stdout tail ───────────────",
+    f.stdoutTail || "<empty>",
+  ];
+  return (
+    <pre
+      role="log"
+      aria-label="Offline runtime startup technical details"
+      className="whitespace-pre-wrap break-all font-mono text-[10.5px] leading-relaxed"
+    >
+      {lines.join("\n")}
+    </pre>
   );
 }
