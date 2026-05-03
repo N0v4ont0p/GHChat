@@ -17,6 +17,10 @@ interface Props {
   onUseAuto: () => void;
   onRefreshModels: () => void;
   onOpenSettings: () => void;
+  onRestartRuntime: () => void;
+  onForceStopRuntime: () => void;
+  onManageOfflineModel: () => void;
+  onOpenDiagnostics: () => void;
 }
 
 const SCROLL_BOTTOM_THRESHOLD = 32;
@@ -45,7 +49,7 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-export function MessageList({ messages: dbMessages, onRegenerate, onEditUserMessage, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings }: Props) {
+export function MessageList({ messages: dbMessages, onRegenerate, onEditUserMessage, onRetry, onSwitchFallback, onUseAuto, onRefreshModels, onOpenSettings, onRestartRuntime, onForceStopRuntime, onManageOfflineModel, onOpenDiagnostics }: Props) {
   const {
     isStreaming, streamingText, streamState, lastStreamError,
     forceScrollToBottom, setForceScrollToBottom,
@@ -196,6 +200,10 @@ export function MessageList({ messages: dbMessages, onRegenerate, onEditUserMess
               onUseAuto={onUseAuto}
               onRefreshModels={onRefreshModels}
               onOpenSettings={onOpenSettings}
+              onRestartRuntime={onRestartRuntime}
+              onForceStopRuntime={onForceStopRuntime}
+              onManageOfflineModel={onManageOfflineModel}
+              onOpenDiagnostics={onOpenDiagnostics}
             />
           )}
 

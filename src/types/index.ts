@@ -400,7 +400,16 @@ export type ChatErrorRecoveryAction =
   | "auto"           // Switch to Auto mode and retry
   | "refresh-models" // Re-probe runtime model availability for this token
   | "settings"       // Open the Settings modal
-  | "verify-token";  // Re-open onboarding / Settings to re-enter the API key
+  | "verify-token"   // Re-open onboarding / Settings to re-enter the API key
+  // ── Offline-runtime-specific recovery actions ────────────────────────
+  // Surfaced when a stream fails because the local llama.cpp runtime
+  // couldn't start, exited mid-request, or hung past the watchdog.  The
+  // chat-level error panel renders one button per action so the user can
+  // recover without opening Settings:
+  | "restart-runtime"        // Stop + start the offline runtime, then retry
+  | "force-stop-runtime"     // SIGKILL the runtime (use when stop hangs)
+  | "manage-offline-model"   // Open the Offline Models modal
+  | "open-diagnostics";      // Open the Runtime Diagnostics modal
 
 export type ChatFailureKind =
   | "token-invalid"

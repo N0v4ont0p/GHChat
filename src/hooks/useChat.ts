@@ -63,6 +63,21 @@ const CANCELLED_REQUEST_CLEANUP_DELAY_MS = 5_000;
 const OFFLINE_STREAM_IDLE_TIMEOUT_MS = 180_000;
 
 /**
+ * Recovery actions surfaced for any offline-runtime-flavored chat
+ * failure (sync send throw, async OFFLINE_CHAT_ERROR, watchdog timeout).
+ * Consolidated here so every offline failure path offers the same set of
+ * one-click recoveries — Retry, Restart Runtime, Force Stop Runtime,
+ * Manage Model, Open Diagnostics — instead of just "Try again".
+ */
+const OFFLINE_RUNTIME_RECOVERY_ACTIONS: ChatErrorRecoveryAction[] = [
+  "retry",
+  "restart-runtime",
+  "force-stop-runtime",
+  "manage-offline-model",
+  "open-diagnostics",
+];
+
+/**
  * Returns true when a chat request should be routed to the local llama.cpp
  * runtime rather than OpenRouter.
  * - "offline" mode: always use local runtime.
@@ -199,7 +214,7 @@ export function useChat(conversationId: string | null) {
         resetStreaming();
         const message =
           "The offline runtime stopped responding. It may still be loading the model — try again, or restart the runtime from Offline Models.";
-        setLastStreamError({ message, actions: ["retry"] });
+        setLastStreamError({ message, actions: OFFLINE_RUNTIME_RECOVERY_ACTIONS });
         toast.error(message, { duration: 6000 });
         setTimeout(
           () => cancelledRequestIds.current.delete(requestId),
@@ -391,7 +406,7 @@ export function useChat(conversationId: string | null) {
 
         const structuredError: StructuredChatError = {
           message: p.error,
-          actions: ["retry"],
+          actions: OFFLINE_RUNTIME_RECOVERY_ACTIONS,
         };
         setLastStreamError(structuredError);
         toast.error(`Offline model error: ${p.error}`, { duration: 4000 });
@@ -564,7 +579,7 @@ export function useChat(conversationId: string | null) {
           setRoutingInfo(null);
           setLastStreamError({
             message: `Couldn't start the offline runtime: ${message}`,
-            actions: ["retry"],
+            actions: OFFLINE_RUNTIME_RECOVERY_ACTIONS,
           });
           toast.error(`Offline runtime failed to start: ${message}`, { duration: 6000 });
         }
