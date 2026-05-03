@@ -30,6 +30,7 @@ import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
 import { runtimeManager } from "../services/offline/runtime-manager";
+import { modelRegistry } from "../services/offline/model-registry";
 import { storageService } from "../services/offline/storage";
 import { offlineCatalog } from "../services/offline/catalog";
 import { formatErrorChain } from "../services/offline/runtime-catalog";
@@ -489,6 +490,33 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         messages,
       }: { requestId: string; modelId: string; messages: ChatMessage[] },
     ) => {
+      // Validate required args before kicking off any runtime work so a
+      // malformed payload from the renderer surfaces as a clean
+      // OFFLINE_CHAT_ERROR instead of crashing inside child_process.spawn
+      // or in the IPC bridge with the cryptic "conversion failure from
+      // undefined" message.
+      const missingArgs: string[] = [];
+      if (typeof requestId !== "string" || requestId.length === 0) missingArgs.push("requestId");
+      if (typeof modelId !== "string" || modelId.length === 0) missingArgs.push("modelId");
+      if (!Array.isArray(messages) || messages.length === 0) missingArgs.push("messages");
+      if (missingArgs.length > 0) {
+        const errorMsg =
+          `[offline] OFFLINE_CHAT_STREAM rejected: missing required args ` +
+          `[${missingArgs.join(", ")}] ` +
+          `(requestId=${requestId ?? "<undef>"}, modelId=${modelId ?? "<undef>"}, ` +
+          `messageCount=${Array.isArray(messages) ? messages.length : "<not-array>"})`;
+        console.error(errorMsg);
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC.OFFLINE_CHAT_ERROR, {
+            requestId: requestId ?? "unknown",
+            error: errorMsg,
+          });
+          // Always emit END so the renderer's streaming state is reset.
+          event.sender.send(IPC.OFFLINE_CHAT_END, { requestId: requestId ?? "unknown" });
+        }
+        return;
+      }
+
       const controller = new AbortController();
       activeStreams.set(requestId, controller);
 
@@ -821,11 +849,16 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     async (): Promise<{ ok: boolean; error?: string }> => {
       try {
         const activeId = resolveActiveModelId();
+        console.log(
+          `[offline] OFFLINE_RUNTIME_RESTART invoked ` +
+            `(activeModelId=${activeId ?? "<none>"}, ` +
+            `installedCount=${modelRegistry.listInstalled().length})`,
+        );
         if (!activeId) {
-          return {
-            ok: false,
-            error: "No active offline model to restart. Install or activate a model first.",
-          };
+          const error =
+            "No active offline model to restart. Install or activate a model first.";
+          console.warn(`[offline] OFFLINE_RUNTIME_RESTART aborted: ${error}`);
+          return { ok: false, error };
         }
         // Stop first so start() spawns a fresh process even when the
         // current spawn options match — restart must always recycle.

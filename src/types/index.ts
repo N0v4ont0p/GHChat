@@ -759,6 +759,15 @@ export const IPC = {
   /** Push (main → renderer): stream error. Payload: { requestId, error } */
   OFFLINE_CHAT_ERROR: "offline:chat:error",
   /**
+   * Push (main → renderer): coarse lifecycle phase for the offline stream.
+   * Lets the UI render honest progress through "starting runtime", "loading
+   * model", "processing prompt", "generating response" instead of a generic
+   * "streaming" spinner that hides slow on-device boot.
+   * Payload: { requestId, phase: "runtime-starting" | "loading-model" |
+   *   "processing-prompt" | "generating" }
+   */
+  OFFLINE_CHAT_PHASE: "offline:chat:phase",
+  /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
    */
@@ -830,6 +839,14 @@ export const IPC = {
   OFFLINE_RUNTIME_STOP: "offline:runtime:stop",
   /** Force-stop (SIGKILL) the offline runtime subprocess immediately. */
   OFFLINE_RUNTIME_FORCE_STOP: "offline:runtime:force-stop",
+  /**
+   * Restart the offline runtime subprocess: stop it (gracefully), then
+   * start it again for the currently active model.  Used by the offline
+   * manager's "Restart" / Settings "Restart runtime" actions when the
+   * user wants to recover from a runtime hiccup without sending a chat
+   * message first.  Returns `{ ok, error? }`.
+   */
+  OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */

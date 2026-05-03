@@ -29,6 +29,37 @@ function api() {
   return window.ghchat;
 }
 
+/**
+ * Defense-in-depth wrapper around `window.ghchat`.  Validates the
+ * channel name *before* it reaches the Electron preload bridge so a
+ * missing key on the renderer-side `IPC` constant (which would resolve
+ * to `undefined`) surfaces as a clear, actionable JS error instead of
+ * Electron's cryptic native binding message:
+ *   "Error processing argument at index 1, conversion failure from undefined"
+ *
+ * `caller` is included in the error text so the offending call site is
+ * obvious from the console without needing to expand a stack trace.
+ */
+function assertChannel(channel: string | undefined, caller: string): string {
+  if (typeof channel !== "string" || channel.length === 0) {
+    const msg =
+      `[ipc] ${caller}: channel is ${channel === undefined ? "undefined" : `"${String(channel)}"`}. ` +
+      `This usually means the renderer-side IPC constant is missing the corresponding key. ` +
+      `Add it to src/types/index.ts to match electron/main/ipc/channels.ts.`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+  return channel;
+}
+
+function safeInvoke<T>(channel: string | undefined, caller: string, ...args: unknown[]): Promise<T> {
+  return api().invoke<T>(assertChannel(channel, caller), ...args);
+}
+
+function safeSend(channel: string | undefined, caller: string, ...args: unknown[]): void {
+  api().send(assertChannel(channel, caller), ...args);
+}
+
 export const ipc = {
   // Conversations
   listConversations: () => api().invoke<Conversation[]>(IPC.CONVERSATIONS_LIST),
@@ -126,7 +157,30 @@ export const ipc = {
     requestId: string;
     modelId: string;
     messages: Array<{ role: string; content: string }>;
-  }) => api().send(IPC.OFFLINE_CHAT_STREAM, payload),
+  }) => {
+    // Validate required args before crossing the IPC bridge so missing
+    // fields surface as clear, actionable errors instead of cryptic
+    // Electron native binding "conversion failure from undefined" errors
+    // emitted somewhere deep in the runtime-start path.
+    const missing: string[] = [];
+    if (!payload || typeof payload !== "object") missing.push("payload");
+    else {
+      if (!payload.requestId) missing.push("requestId");
+      if (!payload.modelId) missing.push("modelId");
+      if (!Array.isArray(payload.messages) || payload.messages.length === 0) missing.push("messages");
+    }
+    if (missing.length > 0) {
+      const msg =
+        `[ipc.sendOfflineChatStream] refusing to dispatch — missing required args: ` +
+        `${missing.join(", ")}. ` +
+        `requestId=${payload?.requestId ?? "<undef>"} ` +
+        `modelId=${payload?.modelId ?? "<undef>"} ` +
+        `messageCount=${Array.isArray(payload?.messages) ? payload.messages.length : "<not-array>"}`;
+      console.error(msg);
+      throw new Error(msg);
+    }
+    safeSend(IPC.OFFLINE_CHAT_STREAM, "ipc.sendOfflineChatStream", payload);
+  },
 
   /** Cancel an in-progress offline chat stream. */
   stopOfflineStream: (requestId: string) =>
@@ -222,5 +276,8 @@ export const ipc = {
    * the error to the user.
    */
   restartOfflineRuntime: () =>
-    api().invoke<{ ok: boolean; error?: string }>(IPC.OFFLINE_RUNTIME_RESTART),
+    safeInvoke<{ ok: boolean; error?: string }>(
+      IPC.OFFLINE_RUNTIME_RESTART,
+      "ipc.restartOfflineRuntime",
+    ),
 };
