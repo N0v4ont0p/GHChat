@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
@@ -467,39 +468,80 @@ export function Sidebar() {
               <p className="text-xs text-amber-400/80 leading-relaxed font-medium">
                 Database unavailable
               </p>
-              <p className="text-xs text-muted-foreground/50 leading-relaxed">
-                Conversations cannot be loaded.
-                <br />
-                Restart the app to retry.
+              <p className="text-xs text-muted-foreground/60 leading-relaxed">
+                We couldn't open your local conversation database, so your chat
+                history can't be loaded right now. Your messages are safe — they
+                just need the database to come back online.
                 {dbInitError && NATIVE_MODULE_ERROR_RE.test(dbInitError) && (
                   <>
-                    {" "}Or run{" "}
-                    <code className="rounded bg-secondary/60 px-1 font-mono text-[10px]">
-                      pnpm run rebuild:native
-                    </code>
-                    {" "}to rebuild native dependencies.
+                    {" "}This usually means a native module needs to be rebuilt
+                    for your current Electron version.
                   </>
                 )}
               </p>
+              <div className="mt-1 flex flex-wrap items-center justify-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 rounded-lg text-xs"
+                  onClick={() => window.location.reload()}
+                >
+                  Reload app
+                </Button>
+                {dbInitError && NATIVE_MODULE_ERROR_RE.test(dbInitError) && (
+                  <code className="rounded bg-secondary/60 px-1.5 py-1 font-mono text-[10px] text-muted-foreground/80">
+                    pnpm run rebuild:native
+                  </code>
+                )}
+              </div>
               {dbInitError && (
-                <p className="mt-1 max-w-full break-all rounded bg-secondary/40 px-2 py-1 font-mono text-[10px] text-amber-300/70">
-                  {dbInitError}
-                </p>
+                <div className="mt-2 w-full">
+                  <TechnicalDetails
+                    details={dbInitError}
+                    tone="warning"
+                    label="error details"
+                  />
+                </div>
               )}
             </div>
           ) : conversations.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center">
+            <div className="flex flex-col items-center justify-center gap-3 px-3 py-10 text-center">
               <MessageSquare className="h-8 w-8 text-muted-foreground/25" />
-              <p className="text-xs text-muted-foreground/50 leading-relaxed">
-                No conversations yet.
-                <br />
-                Start a new chat above.
-              </p>
+              <div className="space-y-1">
+                <p className="text-xs text-foreground/80 font-medium">
+                  No conversations yet
+                </p>
+                <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+                  Start your first chat to see it appear here.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 rounded-lg text-xs"
+                onClick={() => createConversation.mutate()}
+                disabled={newChatDisabled}
+              >
+                <Plus className="h-3 w-3" />
+                Start a new chat
+              </Button>
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 px-3 py-8 text-center">
               <Search className="h-6 w-6 text-muted-foreground/25" />
-              <p className="text-xs text-muted-foreground/50">No results for "{searchQuery}"</p>
+              <p className="text-xs text-muted-foreground/60">
+                No conversations match{" "}
+                <span className="text-foreground/80">"{searchQuery}"</span>
+              </p>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 gap-1 rounded-lg text-[11px] text-muted-foreground hover:text-foreground"
+                onClick={() => setSearchQuery("")}
+              >
+                <X className="h-3 w-3" />
+                Clear search
+              </Button>
             </div>
           ) : (
             <AnimatePresence initial={false}>
@@ -610,19 +652,38 @@ export class SidebarErrorBoundary extends Component<
 
   override render() {
     if (this.state.error) {
+      const err = this.state.error;
+      const technical =
+        err.stack && err.stack.length > 0
+          ? err.stack
+          : `${err.name ?? "Error"}: ${err.message}`;
       return (
         <aside className="flex h-full w-[260px] shrink-0 flex-col border-r border-border/50 bg-[hsl(var(--surface-1))]/85 backdrop-blur-md items-center justify-center gap-3 px-4 py-8 text-center">
           <AlertTriangle className="h-7 w-7 text-amber-400/60" />
-          <p className="text-xs text-amber-400/80 font-medium">Sidebar error</p>
-          <p className="text-[11px] text-muted-foreground/60 leading-relaxed break-all">
-            {this.state.error.message}
+          <p className="text-xs text-amber-400/80 font-medium">
+            The sidebar hit an unexpected problem
           </p>
-          <button
-            className="mt-2 rounded-lg border border-border/40 px-3 py-1 text-xs text-muted-foreground hover:bg-secondary/50 transition-colors"
-            onClick={() => this.setState({ error: null })}
-          >
-            Retry
-          </button>
+          <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
+            Your chats and data are safe — only this panel failed to render.
+            Try again, or reload the app if the issue continues.
+          </p>
+          <div className="flex items-center gap-1.5">
+            <button
+              className="rounded-lg border border-border/40 px-3 py-1 text-xs text-muted-foreground hover:bg-secondary/50 transition-colors"
+              onClick={() => this.setState({ error: null })}
+            >
+              Try again
+            </button>
+            <button
+              className="rounded-lg border border-border/40 px-3 py-1 text-xs text-muted-foreground hover:bg-secondary/50 transition-colors"
+              onClick={() => window.location.reload()}
+            >
+              Reload app
+            </button>
+          </div>
+          <div className="w-full">
+            <TechnicalDetails details={technical} tone="warning" label="error details" />
+          </div>
         </aside>
       );
     }

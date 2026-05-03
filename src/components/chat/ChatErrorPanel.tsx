@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { AlertTriangle, RefreshCw, Zap, Settings, KeyRound, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 import { cn } from "@/lib/utils";
 import type { StructuredChatError } from "@/types";
 
@@ -43,6 +44,17 @@ export function ChatErrorPanel({
 }: ChatErrorPanelProps) {
   const context = contextForStatus(error.status);
 
+  // Build a compact technical block with whatever optional fields the
+  // structured error included.  Hidden behind a disclosure so the
+  // friendly summary stays the dominant message.
+  const technicalLines: string[] = [];
+  if (error.kind) technicalLines.push(`kind: ${error.kind}`);
+  if (typeof error.status === "number") technicalLines.push(`status: ${error.status}`);
+  if (error.failedModel) technicalLines.push(`failedModel: ${error.failedModel}`);
+  if (error.fallbackModel) technicalLines.push(`fallbackModel: ${error.fallbackModel}`);
+  technicalLines.push(`message: ${error.message}`);
+  const technical = technicalLines.join("\n");
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -50,7 +62,6 @@ export function ChatErrorPanel({
       transition={{ duration: 0.2, ease: "easeOut" }}
       className="mx-4 mb-4 sm:mx-6 rounded-xl border border-red-500/15 bg-red-500/[0.04] p-4 space-y-3"
     >
-      {/* Header */}
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex-shrink-0 flex h-7 w-7 items-center justify-center rounded-full bg-red-500/12 ring-1 ring-red-500/20">
           <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
@@ -139,6 +150,11 @@ export function ChatErrorPanel({
             Update API key
           </Button>
         )}
+      </div>
+
+      {/* Raw technical info hidden behind a disclosure */}
+      <div className="pl-10">
+        <TechnicalDetails details={technical} tone="danger" />
       </div>
     </motion.div>
   );

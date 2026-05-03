@@ -722,18 +722,35 @@ export function SettingsModal() {
                   );
                 })}
                 {sortedModels.length === 0 && (
-                  <div className="py-8 text-center">
-                    <p className="text-sm text-muted-foreground/50">
-                      {modelSearch ? `No models match "${modelSearch}"` : "No models in this category yet."}
+                  <div className="py-8 text-center space-y-2">
+                    <p className="text-sm text-foreground/80">
+                      {modelSearch
+                        ? `No models match "${modelSearch}"`
+                        : "No models in this category yet"}
                     </p>
-                    {modelSearch && (
-                      <button
-                        onClick={() => setModelSearch("")}
-                        className="mt-2 text-xs text-primary/70 hover:text-primary transition-colors"
-                      >
-                        Clear search
-                      </button>
-                    )}
+                    <p className="text-[11px] text-muted-foreground/60">
+                      {modelSearch
+                        ? "Try a different search, or browse every available model."
+                        : "Browse every model — Auto and the curated picks are always available."}
+                    </p>
+                    <div className="flex items-center justify-center gap-1.5 pt-1">
+                      {modelSearch && (
+                        <button
+                          onClick={() => setModelSearch("")}
+                          className="rounded-lg border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-colors"
+                        >
+                          Clear search
+                        </button>
+                      )}
+                      {selectedCategory !== "all" && (
+                        <button
+                          onClick={() => setSelectedCategory("all")}
+                          className="rounded-lg border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-colors"
+                        >
+                          Browse all models
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

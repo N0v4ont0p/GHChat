@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -662,20 +663,30 @@ export function OfflineManagementModal() {
 
           {/* Error */}
           {error && (
-            <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-              <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="text-xs text-red-400/90 break-words">{error}</p>
+            <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <p className="text-xs font-medium text-red-300/90">
+                    Something went wrong
+                  </p>
+                  <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+                    The last action couldn't complete. You can dismiss this and
+                    try again, or expand the details below to see what the
+                    runtime reported.
+                  </p>
+                  <TechnicalDetails details={error} tone="danger" label="error details" />
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 w-5 p-0 -mt-0.5"
+                  onClick={() => setError(null)}
+                  aria-label="Dismiss error"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 w-5 p-0 -mt-0.5"
-                onClick={() => setError(null)}
-                aria-label="Dismiss error"
-              >
-                <X className="h-3 w-3" />
-              </Button>
             </div>
           )}
 
@@ -902,8 +913,36 @@ export function OfflineManagementModal() {
                 offline folder and can be activated, removed, or revealed at any time.
               </p>
               {available.length === 0 ? (
-                <div className="text-xs text-muted-foreground/70 py-4 text-center">
-                  No catalog entries available.
+                <div className="rounded-xl border border-border/40 bg-secondary/20 px-4 py-6 text-center space-y-2.5">
+                  <Layers className="mx-auto h-6 w-6 text-muted-foreground/40" />
+                  <p className="text-xs text-foreground/80 font-medium">
+                    No additional models to install
+                  </p>
+                  <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
+                    Either every catalog entry is already installed, or the
+                    catalog couldn't be reached. You can refresh to check
+                    again.
+                  </p>
+                  <div className="flex items-center justify-center gap-1.5 pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1.5 rounded-lg text-xs"
+                      onClick={() => void reload()}
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      Refresh catalog
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 gap-1.5 rounded-lg text-xs"
+                      onClick={() => setView("list")}
+                    >
+                      <ArrowLeft className="h-3 w-3" />
+                      Back to installed models
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-2">
