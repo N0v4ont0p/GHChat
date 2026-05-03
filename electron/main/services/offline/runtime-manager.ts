@@ -113,6 +113,23 @@ export const runtimeManager = {
    * changed, the existing process is stopped and a new one is started.
    */
   async start(modelId: string, options: RuntimeSpawnOptions = {}): Promise<void> {
+    // ── Argument validation ─────────────────────────────────────────────
+    // Surface clear, actionable errors *before* anything reaches
+    // `child_process.spawn`.  Without this, an undefined/empty modelId
+    // or an undefined modelPath in the resolved record would crash deep
+    // inside Node's spawn validation (or, when invoked across the
+    // Electron IPC bridge with an undefined channel, surface as the
+    // cryptic native binding error
+    //   "Error processing argument at index 1, conversion failure from undefined").
+    if (typeof modelId !== "string" || modelId.length === 0) {
+      const msg =
+        `[runtimeManager.start] missing required argument "modelId" ` +
+        `(received ${modelId === undefined ? "undefined" : JSON.stringify(modelId)}). ` +
+        `Caller must resolve the active offline model id before calling start().`;
+      console.error(msg);
+      throw new Error(msg);
+    }
+
     const sameOptions =
       _spawnOptions.contextSize === options.contextSize &&
       _spawnOptions.threads === options.threads;
@@ -136,6 +153,15 @@ export const runtimeManager = {
       );
     }
 
+    if (typeof record.modelPath !== "string" || record.modelPath.length === 0) {
+      const msg =
+        `[runtimeManager.start] model record for "${modelId}" has no modelPath ` +
+        `(received ${record.modelPath === undefined ? "undefined" : JSON.stringify(record.modelPath)}). ` +
+        `The offline_models row appears corrupt — try repairing or reinstalling the model.`;
+      console.error(msg);
+      throw new Error(msg);
+    }
+
     let binaryPath: string;
     try {
       binaryPath = resolveRuntimeBinaryPath();
@@ -145,6 +171,15 @@ export const runtimeManager = {
       );
     }
 
+    if (typeof binaryPath !== "string" || binaryPath.length === 0) {
+      const msg =
+        `[runtimeManager.start] resolveRuntimeBinaryPath() returned an empty value ` +
+        `(received ${binaryPath === undefined ? "undefined" : JSON.stringify(binaryPath)}). ` +
+        `Run the offline install flow to download the llama-server binary.`;
+      console.error(msg);
+      throw new Error(msg);
+    }
+
     const port = await getFreePort();
 
     const ctxSize = options.contextSize ?? 4096;
@@ -152,7 +187,8 @@ export const runtimeManager = {
 
     console.log(
       `[runtimeManager] starting llama-server on port ${port} ` +
-        `with model ${record.modelPath} (ctx=${ctxSize}, threads=${threads})`,
+        `(modelId=${modelId}, modelPath=${record.modelPath}, ` +
+        `binaryPath=${binaryPath}, ctx=${ctxSize}, threads=${threads})`,
     );
 
     const args = [

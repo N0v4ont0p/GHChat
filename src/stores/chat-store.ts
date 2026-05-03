@@ -7,6 +7,20 @@ interface ChatState {
   draft: string;
   isStreaming: boolean;
   streamState: StreamLifecycleState;
+  /**
+   * Backend that the *currently in-flight* stream is using, or `null`
+   * when no stream is in flight.  Tracked separately from `currentMode`
+   * (the user's global selection) so a stream that's already underway
+   * is not affected by a mid-flight mode flip, and from `streamState`
+   * (the lifecycle phase) so mode-specific UI surfaces — most notably
+   * the offline-runtime phase labels in `StreamingIndicator` — never
+   * leak into a different mode after a context switch or failure.
+   *
+   * Set by `useChat.dispatchStream` when a backend is chosen, and
+   * cleared in every terminal path (END / ERROR / watchdog / stop /
+   * `resetStreaming`).
+   */
+  activeStreamKind: "offline" | "online" | null;
   streamingText: string;
   streamingTokenCount: number;
   /** Structured error from the most recent failed stream, cleared on next send */
@@ -33,6 +47,8 @@ interface ChatState {
   setDraft: (v: string) => void;
   setStreaming: (v: boolean) => void;
   setStreamState: (state: StreamLifecycleState) => void;
+  /** Set or clear the in-flight stream's backend. */
+  setActiveStreamKind: (kind: "offline" | "online" | null) => void;
   appendStreamingToken: (token: string) => void;
   resetStreaming: () => void;
   setLastStreamError: (err: StructuredChatError | null) => void;
@@ -51,6 +67,7 @@ export const useChatStore = create<ChatState>((set) => ({
   draft: "",
   isStreaming: false,
   streamState: "idle",
+  activeStreamKind: null,
   streamingText: "",
   streamingTokenCount: 0,
   lastStreamError: null,
@@ -64,13 +81,14 @@ export const useChatStore = create<ChatState>((set) => ({
   setDraft: (draft) => set({ draft }),
   setStreaming: (isStreaming) => set({ isStreaming }),
   setStreamState: (streamState) => set({ streamState }),
+  setActiveStreamKind: (activeStreamKind) => set({ activeStreamKind }),
   appendStreamingToken: (token) =>
     set((s) => ({
       streamingText: s.streamingText + token,
       streamingTokenCount: s.streamingTokenCount + 1,
     })),
   resetStreaming: () =>
-    set({ isStreaming: false, streamingText: "", streamingTokenCount: 0 }),
+    set({ isStreaming: false, streamingText: "", streamingTokenCount: 0, activeStreamKind: null }),
   setLastStreamError: (lastStreamError) => set({ lastStreamError }),
   setRoutingInfo: (routingInfo) => set({ routingInfo }),
   setForceScrollToBottom: (forceScrollToBottom) => set({ forceScrollToBottom }),

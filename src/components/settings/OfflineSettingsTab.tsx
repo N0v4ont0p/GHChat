@@ -341,10 +341,41 @@ export function OfflineSettingsTab() {
           <Button
             variant="outline"
             size="sm"
-            disabled={runtimeBusy || installedModels.length === 0}
+            disabled={runtimeBusy || installedModels.length === 0 || !activeModel}
+            title={
+              installedModels.length === 0
+                ? "Install an offline model first to start the runtime"
+                : !activeModel
+                  ? "No active offline model — pick one in Offline Models"
+                  : undefined
+            }
             onClick={async () => {
+              // Guard against the "no active model" edge case so we never
+              // dispatch a runtime-start IPC call without a resolvable
+              // model id.  Route the user to the management modal so
+              // they can pick or install one instead.
+              if (installedModels.length === 0 || !activeModel) {
+                console.warn(
+                  `[OfflineSettingsTab] Restart runtime aborted: ` +
+                    `installedCount=${installedModels.length}, ` +
+                    `activeModelId=${activeModel?.id ?? "<none>"}`,
+                );
+                toast.error(
+                  installedModels.length === 0
+                    ? "No offline models installed. Install one to start the runtime."
+                    : "No active offline model selected. Pick one in Offline Models.",
+                );
+                setOfflineManagementOpen(true);
+                return;
+              }
               setRuntimeBusy(true);
               try {
+                console.log(
+                  `[OfflineSettingsTab] Restart runtime clicked ` +
+                    `(activeModelId=${activeModel.id}, ` +
+                    `installedCount=${installedModels.length}, ` +
+                    `currentlyRunning=${info?.isRuntimeRunning ?? "unknown"})`,
+                );
                 const res = await ipc.restartOfflineRuntime();
                 if (res.ok) {
                   toast.success("Runtime restarted");
@@ -352,6 +383,12 @@ export function OfflineSettingsTab() {
                   toast.error(res.error ?? "Restart failed");
                 }
                 await refreshInfo();
+              } catch (err) {
+                // Catch IPC bridge errors (e.g. preload missing / channel
+                // undefined) so the button never silently swallows them.
+                const msg = err instanceof Error ? err.message : String(err);
+                console.error("[OfflineSettingsTab] restartOfflineRuntime threw:", err);
+                toast.error(`Restart failed: ${msg}`);
               } finally {
                 setRuntimeBusy(false);
               }
