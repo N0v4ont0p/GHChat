@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Loader2,
   FolderOpen,
@@ -978,6 +978,28 @@ function RuntimePhaseTrail({
 }) {
   const current = phase?.phase ?? null;
   const failed = current === "failed";
+  // Live "elapsed Xs" badge on the active phase row.  Tick a 1Hz timer
+  // while a non-terminal phase is active so the user has visible
+  // feedback that startup is still progressing — a slow load no longer
+  // looks identical to a frozen one.  The timer is anchored on the
+  // backend-supplied `phaseStartedAt` (preferred — survives renderer
+  // remounts) and falls back to the moment we received the event.
+  const phaseStartedAt = phase?.phaseStartedAt ?? null;
+  const localFallbackRef = useRef<number | null>(null);
+  if (phase && !phaseStartedAt && localFallbackRef.current === null) {
+    localFallbackRef.current = Date.now();
+  }
+  if (!phase) localFallbackRef.current = null;
+  const anchor = phaseStartedAt ?? localFallbackRef.current;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (failed || !current || current === "ready" || !anchor) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [failed, current, anchor]);
+  const elapsedMs = anchor ? Math.max(0, now - anchor) : 0;
+
   // Index of the most-recent non-terminal phase we've seen.  When the
   // event is `failed` we treat the previously-in-progress phase as the
   // failing step so the trail attributes the error to a specific row.
@@ -1041,7 +1063,12 @@ function RuntimePhaseTrail({
                   <span className="h-1 w-1 rounded-full bg-current" />
                 )}
               </span>
-              <span>{RUNTIME_PHASE_LABELS[step]}</span>
+              <span className="flex-1">{RUNTIME_PHASE_LABELS[step]}</span>
+              {isCurrent && elapsedMs >= 1000 && (
+                <span className="ml-auto font-mono tabular-nums text-[10px] text-muted-foreground">
+                  {formatElapsed(elapsedMs)}
+                </span>
+              )}
             </li>
           );
         })}
@@ -1083,7 +1110,35 @@ function RuntimeFailureBanner({
   onManageModel: () => void;
   disabled: boolean;
 }) {
+  const [forceStopping, setForceStopping] = useState(false);
+  // Pick a headline that matches the actual failure mode so the user
+  // immediately understands "timed out" vs "process crashed" vs
+  // "missing file" instead of staring at a generic "failed to start".
+  const headline = (() => {
+    if (!failure) return "Offline runtime failed to start";
+    switch (failure.kind) {
+      case "timeout":
+        return "Runtime did not become ready in time";
+      case "exited":
+        return "Runtime process stopped before becoming ready";
+      case "missing-file":
+        return "Required offline file is missing";
+      case "spawn-error":
+        return "Failed to launch the runtime process";
+      case "config-error":
+        return "Offline runtime is misconfigured";
+      default:
+        return "Offline runtime failed to start";
+    }
+  })();
   const message = failure?.message ?? detail ?? "Runtime startup failed.";
+  const lastStepLabel = failure?.lastInProgressPhase
+    ? RUNTIME_PHASE_LABELS[failure.lastInProgressPhase]
+    : null;
+  const elapsedLabel =
+    failure?.phaseElapsedMs && failure.phaseElapsedMs > 0
+      ? formatElapsed(failure.phaseElapsedMs)
+      : null;
   const technical = failure ? renderTechnicalDetails(failure) : null;
 
   return (
@@ -1091,13 +1146,20 @@ function RuntimeFailureBanner({
       <div className="flex items-start gap-2">
         <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
         <div className="flex-1 space-y-2">
-          <p className="font-medium text-red-200">Offline runtime failed to start</p>
+          <p className="font-medium text-red-200">{headline}</p>
           <p className="text-red-300/90">{message}</p>
+          {lastStepLabel && (
+            <p className="text-red-300/70">
+              Last step:{" "}
+              <span className="font-medium text-red-200">{lastStepLabel}</span>
+              {elapsedLabel ? ` (after ${elapsedLabel})` : null}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2 pt-1">
             <Button
               variant="outline"
               size="sm"
-              disabled={disabled}
+              disabled={disabled || forceStopping}
               onClick={() => {
                 void onRetry();
               }}
@@ -1108,6 +1170,36 @@ function RuntimeFailureBanner({
                 <RefreshCw className="mr-1 h-3.5 w-3.5" />
               )}
               Retry
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled || forceStopping}
+              // SIGKILL the runtime so a wedged llama-server can't keep
+              // the next start from acquiring its port.  Even when the
+              // process has already exited, this is a no-op rather than
+              // an error — useful for users who want a "fully reset"
+              // button alongside Retry.
+              onClick={async () => {
+                setForceStopping(true);
+                try {
+                  await ipc.forceStopOfflineRuntime();
+                  toast.success("Runtime force-stopped");
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error ? err.message : "Force stop failed",
+                  );
+                } finally {
+                  setForceStopping(false);
+                }
+              }}
+            >
+              {forceStopping ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ZapOff className="mr-1 h-3.5 w-3.5" />
+              )}
+              Force Stop Runtime
             </Button>
             <Button
               variant="outline"
@@ -1146,6 +1238,25 @@ function RuntimeFailureBanner({
 }
 
 /**
+ * Format a millisecond duration as a compact "Xs" / "X.Ys" / "Xm Ys"
+ * label.  Used by both the live elapsed badge in the phase trail and
+ * the "stuck for …" line in the failure banner — kept in one place so
+ * the two surfaces never disagree.
+ */
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) {
+    return totalSeconds < 10
+      ? `${totalSeconds.toFixed(1)}s`
+      : `${Math.round(totalSeconds)}s`;
+  }
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.round(totalSeconds - m * 60);
+  return `${m}m ${s}s`;
+}
+
+/**
  * Render the structured failure record as a fixed-width key/value
  * block.  Falsy values are kept as `<unknown>` / `<n/a>` placeholders
  * so the user sees explicitly *what we don't know* instead of a
@@ -1156,7 +1267,13 @@ function renderTechnicalDetails(f: OfflineRuntimeFailureDetails) {
   const exists = (b: boolean | null) =>
     b === null ? "<unknown>" : b ? "yes" : "no";
   const lines = [
+    fmt("Kind:", f.kind),
     fmt("Phase:", f.phase),
+    fmt("Last step:", f.lastInProgressPhase ?? "<n/a>"),
+    fmt(
+      "Phase elapsed:",
+      f.phaseElapsedMs === null ? "<n/a>" : `${f.phaseElapsedMs} ms`,
+    ),
     fmt("Model ID:", f.modelId ?? "<unknown>"),
     fmt("Model path:", f.modelPath ?? "<unknown>"),
     fmt("Model exists:", exists(f.modelPathExists)),

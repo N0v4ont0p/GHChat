@@ -130,7 +130,12 @@ function writeRuntimeFailureLog(failure: RuntimeStartupFailureDetails): void {
   const lines = [
     `# GHChat offline runtime startup failure`,
     `Timestamp:        ${new Date().toISOString()}`,
+    `Kind:             ${failure.kind}`,
     `Phase:            ${failure.phase}`,
+    `Last step:        ${failure.lastInProgressPhase ?? "<n/a>"}`,
+    `Phase elapsed:    ${
+      failure.phaseElapsedMs === null ? "<n/a>" : `${failure.phaseElapsedMs} ms`
+    }`,
     `Message:          ${failure.message}`,
     `Model ID:         ${failure.modelId ?? "<unknown>"}`,
     `Model path:       ${failure.modelPath ?? "<unknown>"}` +
@@ -172,7 +177,24 @@ export interface RuntimeSpawnOptions {
   contextSize?: number;
   /** Worker thread count; default = floor(cpus/2). */
   threads?: number;
+  /**
+   * How long (ms) to wait for the model to finish loading and the
+   * `/health` endpoint to flip to 200 OK during the `warming-up` phase
+   * before declaring the start a timeout failure.  Defaults to
+   * {@link DEFAULT_READINESS_TIMEOUT_MS}.  Smaller models on a fast
+   * SSD load in seconds; large 20+ GB GGUFs on spinning disks can
+   * take 2-3 minutes — this knob lets the user lift the cap if the
+   * default trips on their hardware.
+   */
+  readinessTimeoutMs?: number;
 }
+
+/**
+ * Default warm-up readiness timeout (ms).  Bumped from the legacy
+ * 120 s value so 7-13B models on spinning disks stop tripping the
+ * spurious "did not satisfy readiness" failure.
+ */
+export const DEFAULT_READINESS_TIMEOUT_MS = 180_000;
 
 /**
  * Fine-grained startup phase reported by `runtimeManager.start()`.
@@ -204,6 +226,30 @@ export type RuntimeStartupPhase =
 export interface RuntimeStartupFailureDetails {
   /** Phase in which the failure occurred. */
   phase: RuntimeStartupPhase;
+  /**
+   * The last *non-terminal* phase observed before failure.  When
+   * `phase === "failed"`, the failing step is whichever phase was in
+   * progress at that moment — recorded here so the renderer never has
+   * to guess.  May equal `phase` for very early failures (e.g. argument
+   * validation throws before the first phase).
+   */
+  lastInProgressPhase: RuntimeStartupPhase | null;
+  /**
+   * Coarse failure category.  Drives the user-facing copy:
+   *   - `timeout`        readiness poll exceeded its budget
+   *   - `exited`         process died before becoming ready
+   *   - `spawn-error`    `child_process.spawn` itself threw
+   *   - `missing-file`   model GGUF or runtime binary not on disk
+   *   - `config-error`   missing/invalid model record / binary path
+   *   - `unknown`        catch-all for anything else
+   */
+  kind:
+    | "timeout"
+    | "exited"
+    | "spawn-error"
+    | "missing-file"
+    | "config-error"
+    | "unknown";
   /** Short, user-facing failure message (same string as `detail`). */
   message: string;
   /** Active model id, when known. */
@@ -216,6 +262,13 @@ export interface RuntimeStartupFailureDetails {
   binaryPath: string | null;
   /** Whether `binaryPath` exists on disk at the moment of failure. */
   binaryPathExists: boolean | null;
+  /**
+   * How long (ms) the failing phase had been running when it failed.
+   * Surfaces "stuck for 180 s" without the renderer needing its own
+   * timer.  Null when the phase had not yet been entered (e.g. early
+   * validation failure before any phase was reported).
+   */
+  phaseElapsedMs: number | null;
   /**
    * Process exit code, when the runtime exited before becoming ready.
    * Null when the runtime had not exited at the time of failure
@@ -255,6 +308,12 @@ export type RuntimeStartupPhaseCallback = (
    * (callers that ignore this argument keep working).
    */
   failure?: RuntimeStartupFailureDetails,
+  /**
+   * Wall-clock timestamp (ms since epoch) when this phase was entered.
+   * The renderer ticks against `Date.now() - phaseStartedAt` to show a
+   * live "elapsed Xs" badge so a slow boot still feels responsive.
+   */
+  phaseStartedAt?: number,
 ) => void;
 
 /**
@@ -326,6 +385,10 @@ export const runtimeManager = {
       signal: string | null;
       exited: boolean;
       currentPhase: RuntimeStartupPhase;
+      /** Wall-clock ms when `currentPhase` was entered. */
+      phaseStartedAt: number;
+      /** Last *non-terminal* phase entered (i.e. excludes "ready"/"failed"). */
+      lastInProgressPhase: RuntimeStartupPhase | null;
     } = {
       modelPath: null,
       binaryPath: null,
@@ -335,6 +398,8 @@ export const runtimeManager = {
       signal: null,
       exited: false,
       currentPhase: "checking-model",
+      phaseStartedAt: Date.now(),
+      lastInProgressPhase: null,
     };
 
     /**
@@ -347,14 +412,18 @@ export const runtimeManager = {
     const buildFailure = (
       phase: RuntimeStartupPhase,
       message: string,
+      kind: RuntimeStartupFailureDetails["kind"],
     ): RuntimeStartupFailureDetails => ({
       phase,
+      lastInProgressPhase: ctx.lastInProgressPhase,
+      kind,
       message,
       modelId: typeof modelId === "string" && modelId.length > 0 ? modelId : null,
       modelPath: ctx.modelPath,
       modelPathExists: ctx.modelPath ? safeExists(ctx.modelPath) : null,
       binaryPath: ctx.binaryPath,
       binaryPathExists: ctx.binaryPath ? safeExists(ctx.binaryPath) : null,
+      phaseElapsedMs: Date.now() - ctx.phaseStartedAt,
       exitCode: ctx.exitCode,
       signal: ctx.signal,
       exited: ctx.exited,
@@ -370,8 +439,24 @@ export const runtimeManager = {
     // them to the callback so the renderer can render an actionable
     // error UI (with Retry / Open Logs / Manage Model actions) instead
     // of a vague "loading…" spinner.
-    const reportPhase = (phase: RuntimeStartupPhase, detail?: string) => {
+    const reportPhase = (
+      phase: RuntimeStartupPhase,
+      detail?: string,
+      kind: RuntimeStartupFailureDetails["kind"] = "unknown",
+    ) => {
+      const now = Date.now();
+      if (phase !== "failed" && phase !== "ready") {
+        ctx.lastInProgressPhase = phase;
+      }
       ctx.currentPhase = phase;
+      // IMPORTANT: only advance `phaseStartedAt` for *non-terminal*
+      // phase transitions.  `failed` and `ready` are outcomes of the
+      // previous step, not new steps — overwriting the anchor here
+      // would make `phaseElapsedMs` inside buildFailure(...) collapse
+      // to ~0 and mask the real "stuck for 180 s" signal.
+      if (phase !== "failed" && phase !== "ready") {
+        ctx.phaseStartedAt = now;
+      }
       console.log(
         `[runtimeManager.start] phase=${phase}` +
           (detail ? ` detail=${detail}` : "") +
@@ -379,7 +464,7 @@ export const runtimeManager = {
       );
       let failure: RuntimeStartupFailureDetails | undefined;
       if (phase === "failed") {
-        failure = buildFailure(phase, detail ?? "Runtime startup failed.");
+        failure = buildFailure(phase, detail ?? "Runtime startup failed.", kind);
         try {
           writeRuntimeFailureLog(failure);
         } catch (err) {
@@ -390,7 +475,7 @@ export const runtimeManager = {
         }
       }
       try {
-        onPhase?.(phase, detail, failure);
+        onPhase?.(phase, detail, failure, now);
       } catch (err) {
         console.warn("[runtimeManager.start] onPhase callback threw:", err);
       }
@@ -410,7 +495,7 @@ export const runtimeManager = {
         `(received ${modelId === undefined ? "undefined" : JSON.stringify(modelId)}). ` +
         `Caller must resolve the active offline model id before calling start().`;
       console.error(msg);
-      reportPhase("failed", msg);
+      reportPhase("failed", msg, "config-error");
       throw new Error(msg);
     }
 
@@ -429,7 +514,7 @@ export const runtimeManager = {
         return;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        reportPhase("failed", `warm-health check failed: ${msg}`);
+        reportPhase("failed", `warm-health check failed: ${msg}`, "timeout");
         throw err;
       }
     }
@@ -443,7 +528,7 @@ export const runtimeManager = {
       const record = modelRegistry.listInstalled().find((r) => r.id === modelId);
       if (!record) {
         const msg = `Model "${modelId}" is not installed. Run the offline install flow first.`;
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "config-error");
         throw new Error(msg);
       }
 
@@ -453,7 +538,7 @@ export const runtimeManager = {
           `(received ${record.modelPath === undefined ? "undefined" : JSON.stringify(record.modelPath)}). ` +
           `The offline_models row appears corrupt — try repairing or reinstalling the model.`;
         console.error(msg);
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "config-error");
         throw new Error(msg);
       }
       ctx.modelPath = record.modelPath;
@@ -467,7 +552,7 @@ export const runtimeManager = {
         binaryPath = resolveRuntimeBinaryPath();
       } catch (err) {
         const msg = `Cannot start offline runtime: ${err instanceof Error ? err.message : String(err)}`;
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "config-error");
         throw new Error(msg);
       }
 
@@ -477,7 +562,7 @@ export const runtimeManager = {
           `(received ${binaryPath === undefined ? "undefined" : JSON.stringify(binaryPath)}). ` +
           `Run the offline install flow to download the llama-server binary.`;
         console.error(msg);
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "config-error");
         throw new Error(msg);
       }
       ctx.binaryPath = binaryPath;
@@ -491,14 +576,14 @@ export const runtimeManager = {
         const msg =
           `Model file is missing on disk: ${ctx.modelPath}. ` +
           `Try repairing or reinstalling "${modelId}" from Manage models.`;
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "missing-file");
         throw new Error(msg);
       }
       if (!safeExists(ctx.binaryPath)) {
         const msg =
           `Runtime binary is missing on disk: ${ctx.binaryPath}. ` +
           `Reinstall the offline runtime to recover.`;
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "missing-file");
         throw new Error(msg);
       }
 
@@ -537,7 +622,7 @@ export const runtimeManager = {
         });
       } catch (err) {
         const msg = `Failed to spawn llama-server: ${err instanceof Error ? err.message : String(err)}`;
-        reportPhase("failed", msg);
+        reportPhase("failed", msg, "spawn-error");
         throw new Error(msg);
       }
 
@@ -644,7 +729,7 @@ export const runtimeManager = {
         const detail = ctx.exited
           ? `${baseMsg}. The runtime process stopped before the HTTP server came up.`
           : `${baseMsg}${ctx.stderr ? ` — last stderr: ${tailLine(ctx.stderr)}` : ""}`;
-        reportPhase("failed", detail);
+        reportPhase("failed", detail, ctx.exited ? "exited" : "timeout");
         try {
           if (proc && !proc.killed && !ctx.exited) proc.kill("SIGKILL");
         } catch {
@@ -653,9 +738,17 @@ export const runtimeManager = {
         throw new Error(detail);
       }
 
+      // Warm-up timeout is the dominant cost on slow disks / large
+      // models — make it configurable via RuntimeSpawnOptions so users
+      // hitting the default cap can lift it without code changes.
+      const readinessTimeoutMs =
+        options.readinessTimeoutMs && options.readinessTimeoutMs > 0
+          ? options.readinessTimeoutMs
+          : DEFAULT_READINESS_TIMEOUT_MS;
       reportPhase(
         "warming-up",
-        "waiting for model to finish loading into memory",
+        `waiting for model to finish loading into memory ` +
+          `(timeout=${Math.round(readinessTimeoutMs / 1000)}s)`,
       );
       try {
         // /health returns 200 once the GGUF is fully loaded; before
@@ -665,7 +758,7 @@ export const runtimeManager = {
         await raceReadiness(
           "/health",
           (res) => res.ok,
-          120_000,
+          readinessTimeoutMs,
           "model warm-up",
         );
       } catch (err) {
@@ -673,7 +766,7 @@ export const runtimeManager = {
         const detail = ctx.exited
           ? `${baseMsg}. The runtime process stopped while loading the model.`
           : `${baseMsg}${ctx.stderr ? ` — last stderr: ${tailLine(ctx.stderr)}` : ""}`;
-        reportPhase("failed", detail);
+        reportPhase("failed", detail, ctx.exited ? "exited" : "timeout");
         try {
           if (proc && !proc.killed && !ctx.exited) proc.kill("SIGKILL");
         } catch {

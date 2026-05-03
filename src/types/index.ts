@@ -520,12 +520,33 @@ export type OfflineRuntimeStartupPhase =
  */
 export interface OfflineRuntimeFailureDetails {
   phase: OfflineRuntimeStartupPhase;
+  /**
+   * Last *non-terminal* phase observed before failure (i.e. the step
+   * that was actually in progress).  May equal `phase` for very early
+   * failures and may be null when the failure happened before any
+   * phase was entered.
+   */
+  lastInProgressPhase: OfflineRuntimeStartupPhase | null;
+  /**
+   * Coarse failure category — drives the user-facing copy.
+   * `timeout` triggers the "Runtime did not become ready in time"
+   * banner; `exited` triggers the "process stopped" banner.
+   */
+  kind:
+    | "timeout"
+    | "exited"
+    | "spawn-error"
+    | "missing-file"
+    | "config-error"
+    | "unknown";
   message: string;
   modelId: string | null;
   modelPath: string | null;
   modelPathExists: boolean | null;
   binaryPath: string | null;
   binaryPathExists: boolean | null;
+  /** ms the failing phase had been running when it failed. */
+  phaseElapsedMs: number | null;
   exitCode: number | null;
   signal: string | null;
   exited: boolean;
@@ -550,11 +571,18 @@ export interface OfflineRuntimePhaseEvent {
   /** When triggered by a chat stream, the request id; otherwise null. */
   requestId?: string | null;
   /**
+   * Wall-clock ms when this phase was entered.  Renderer ticks against
+   * `Date.now() - phaseStartedAt` to surface a live "elapsed Xs" badge
+   * on the active step, so a slow boot still feels responsive instead
+   * of looking frozen.
+   */
+  phaseStartedAt?: number;
+  /**
    * Structured failure diagnostics — only set when `phase === "failed"`.
    * The Settings panel renders these as an actionable error UI with
-   * Retry / Open Logs / Manage Model buttons and a "Show technical
-   * details" disclosure listing model id, paths, exit code, signal,
-   * and stderr/stdout tails.
+   * Retry / Force Stop / Open Logs / Manage Model buttons and a "Show
+   * technical details" disclosure listing model id, paths, exit code,
+   * signal, and stderr/stdout tails.
    */
   failure?: OfflineRuntimeFailureDetails;
 }

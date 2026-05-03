@@ -560,8 +560,16 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         phase: import("../services/offline/runtime-manager").RuntimeStartupPhase,
         detail?: string,
         failure?: import("../services/offline/runtime-manager").RuntimeStartupFailureDetails,
+        phaseStartedAt?: number,
       ) => {
-        broadcastRuntimePhase({ phase, modelId, detail, failure, requestId });
+        broadcastRuntimePhase({
+          phase,
+          modelId,
+          detail,
+          failure,
+          phaseStartedAt,
+          requestId,
+        });
         if (cancelledRequests.has(requestId)) return;
         if (
           phase === "checking-model" ||
@@ -918,12 +926,13 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             contextSize: settings.contextSize,
             threads: settings.threads,
           },
-          (phase, detail, failure) => {
+          (phase, detail, failure, phaseStartedAt) => {
             broadcastRuntimePhase({
               phase,
               modelId: activeId,
               detail,
               failure,
+              phaseStartedAt,
               requestId: null,
             });
           },
@@ -989,6 +998,8 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     modelId: string | null;
     detail?: string;
     failure?: import("../services/offline/runtime-manager").RuntimeStartupFailureDetails;
+    /** Wall-clock ms when the phase was entered (renderer uses for elapsed counter). */
+    phaseStartedAt?: number;
     requestId?: string | null;
   }): void {
     try {
