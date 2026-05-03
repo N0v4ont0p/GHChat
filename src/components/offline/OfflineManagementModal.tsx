@@ -21,6 +21,7 @@ import {
   Zap,
   Gauge,
   Circle,
+  Stethoscope,
 } from "lucide-react";
 import {
   Dialog,
@@ -31,6 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TechnicalDetails } from "@/components/ui/technical-details";
+import { RuntimeDiagnosticsModal } from "@/components/offline/RuntimeDiagnosticsModal";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -422,6 +424,7 @@ export function OfflineManagementModal() {
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [installProgress, setInstallProgress] = useState<OfflineInstallProgress | null>(null);
   const [hwProfile, setHwProfile] = useState<import("@/types").OfflineHardwareProfileSnapshot | null>(null);
 
@@ -604,7 +607,8 @@ export function OfflineManagementModal() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <Dialog open={offlineManagementOpen} onOpenChange={setOfflineManagementOpen}>
+    <>
+      <Dialog open={offlineManagementOpen} onOpenChange={setOfflineManagementOpen}>
       <DialogContent className="max-w-xl gap-0 p-0 overflow-hidden">
         {/* Header */}
         <DialogHeader className="px-5 pt-5 pb-3 border-b border-border/40">
@@ -774,6 +778,16 @@ export function OfflineManagementModal() {
                       <Zap className="h-3 w-3" />
                       Force stop
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1.5"
+                      onClick={() => setDiagnosticsOpen(true)}
+                      title="Open the runtime diagnostics panel"
+                    >
+                      <Stethoscope className="h-3 w-3" />
+                      Diagnostics
+                    </Button>
                   </div>
                 ) : (
                   installedCount > 0 && (
@@ -788,6 +802,16 @@ export function OfflineManagementModal() {
                       >
                         {runtimeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
                         Start
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[11px] gap-1.5"
+                        onClick={() => setDiagnosticsOpen(true)}
+                        title="Open the runtime diagnostics panel"
+                      >
+                        <Stethoscope className="h-3 w-3" />
+                        Diagnostics
                       </Button>
                     </div>
                   )
@@ -961,5 +985,10 @@ export function OfflineManagementModal() {
         </div>
       </DialogContent>
     </Dialog>
+    <RuntimeDiagnosticsModal
+      open={diagnosticsOpen}
+      onOpenChange={setDiagnosticsOpen}
+    />
+    </>
   );
 }

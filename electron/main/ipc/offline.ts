@@ -13,6 +13,7 @@ import type {
   OfflinePerformancePreset,
   OfflineReadiness,
   OfflineRecommendation,
+  OfflineRuntimeDiagnostics,
   OfflineSettings,
   OfflineSetupState,
 } from "../../../src/types";
@@ -1376,6 +1377,63 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     }
     await shell.openPath(storageService.getOfflineRoot());
   });
+
+  /**
+   * Compose a single OfflineRuntimeDiagnostics snapshot — every field
+   * the Runtime Diagnostics panel surfaces (status, paths, last attempt
+   * times, exit code/signal, stderr/stdout tail, last health check,
+   * last error).  Composes the runtime-manager's process-level
+   * diagnostics with the IPC-overlay's composite state and the offline
+   * root / log paths so the renderer never has to stitch together
+   * three IPC calls.  Safe to call any time; never starts the runtime.
+   */
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_GET_DIAGNOSTICS,
+    async (): Promise<OfflineRuntimeDiagnostics> => {
+      storageService.ensureDirectories();
+      const diag = runtimeManager.getDiagnostics();
+      const offlineRoot = storageService.getOfflineRoot();
+      const runtimeLogPath = getRuntimeFailureLogPath();
+      let runtimeLogExists = false;
+      try {
+        runtimeLogExists =
+          existsSync(runtimeLogPath) && statSync(runtimeLogPath).isFile();
+      } catch {
+        runtimeLogExists = false;
+      }
+      const safePathExists = (p: string | null): boolean | null => {
+        if (!p) return null;
+        try {
+          return existsSync(p);
+        } catch {
+          return false;
+        }
+      };
+      return {
+        runtimeState: computeOfflineRuntimeState(),
+        isRuntimeRunning: diag.isRunning,
+        modelId: diag.currentModelId ?? diag.modelId,
+        port: diag.port,
+        modelPath: diag.modelPath,
+        modelPathExists: safePathExists(diag.modelPath),
+        binaryPath: diag.binaryPath,
+        binaryPathExists: safePathExists(diag.binaryPath),
+        lastStartedAt: diag.lastStartedAt,
+        lastReadyAt: diag.lastReadyAt,
+        lastStartupDurationMs: diag.lastStartupDurationMs,
+        lastExitAt: diag.lastExitAt,
+        lastExitCode: diag.lastExitCode,
+        lastExitSignal: diag.lastExitSignal,
+        stderrTail: diag.stderrTail,
+        stdoutTail: diag.stdoutTail,
+        lastHealthCheck: diag.lastHealthCheck,
+        lastErrorMessage: diag.lastErrorMessage,
+        offlineRootPath: offlineRoot,
+        runtimeLogPath,
+        runtimeLogExists,
+      };
+    },
+  );
 
   /**
    * Wipe the offline `tmp/` and `downloads/` subdirectories.  These hold

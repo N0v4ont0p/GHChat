@@ -147,6 +147,13 @@ export const IPC = {
    */
   OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
   /**
+   * Get a `OfflineRuntimeDiagnostics` snapshot — every field surfaced
+   * by the Runtime Diagnostics panel (status, paths, last attempt
+   * times, exit code/signal, stderr/stdout tail, last health check,
+   * last error).  Safe to call any time; never starts the runtime.
+   */
+  OFFLINE_RUNTIME_GET_DIAGNOSTICS: "offline:runtime:get-diagnostics",
+  /**
    * Wipe the offline `tmp/` and `downloads/` subdirectories, freeing space
    * consumed by failed downloads, partial extracts, and runtime archives.
    * Installed models, runtime binary, and DB state are NOT touched.

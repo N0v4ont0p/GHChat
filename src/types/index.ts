@@ -764,6 +764,80 @@ export interface OfflineInfo {
   runtimeState?: OfflineRuntimeState;
 }
 
+/**
+ * Result of the most recent `/health` poll against the local runtime
+ * server.  Lets the diagnostics UI distinguish "server up, model still
+ * loading" (`status === 'loading'`) from "server unreachable" (`ok:
+ * false, status: 'unreachable'`) and from "fully ready" (`ok: true,
+ * status: 'ready'`).  `at` is a wall-clock anchor the UI can use to
+ * render "last checked Xs ago".
+ */
+export interface OfflineRuntimeHealthCheck {
+  ok: boolean;
+  status: "ready" | "loading" | "unreachable" | "unknown";
+  /** Wall-clock ms when the check completed. */
+  at: number;
+  /** Optional HTTP status code (when the request reached the server). */
+  httpStatus?: number;
+  /** Optional human-readable detail (e.g. error message). */
+  detail?: string;
+}
+
+/**
+ * Snapshot of every diagnostic field surfaced by the Runtime
+ * Diagnostics panel.  Returned by `IPC.OFFLINE_RUNTIME_GET_DIAGNOSTICS`
+ * and refreshed on every `OFFLINE_RUNTIME_STATE` push so the UI never
+ * shows stale values.
+ *
+ * All fields are `null` when never observed — the panel is responsible
+ * for rendering "—" placeholders rather than hiding the row, so the
+ * structure of the diagnostic surface stays stable across runs.
+ */
+export interface OfflineRuntimeDiagnostics {
+  /** Current state-machine snapshot (composite kinds applied). */
+  runtimeState: OfflineRuntimeState;
+  /** Whether the runtime subprocess is currently alive. */
+  isRuntimeRunning: boolean;
+  /** Model id the runtime is serving / last attempted, or null. */
+  modelId: string | null;
+  /** TCP port the runtime is listening on, or null. */
+  port: number | null;
+  /** Absolute path to the GGUF the runtime last attempted to load. */
+  modelPath: string | null;
+  /** Whether `modelPath` exists on disk at snapshot time. */
+  modelPathExists: boolean | null;
+  /** Absolute path to the runtime binary the runtime last spawned. */
+  binaryPath: string | null;
+  /** Whether `binaryPath` exists on disk at snapshot time. */
+  binaryPathExists: boolean | null;
+  /** Wall-clock ms of the most recent `start()` invocation, or null. */
+  lastStartedAt: number | null;
+  /** Wall-clock ms when the runtime last reached `ready`, or null. */
+  lastReadyAt: number | null;
+  /** ms between lastStartedAt and lastReadyAt for the most recent successful start. */
+  lastStartupDurationMs: number | null;
+  /** Wall-clock ms when the runtime process last exited, or null. */
+  lastExitAt: number | null;
+  /** Exit code of the most recent process termination, or null. */
+  lastExitCode: number | null;
+  /** Signal of the most recent process termination, or null. */
+  lastExitSignal: string | null;
+  /** Tail of the most recent stderr stream (bounded). */
+  stderrTail: string;
+  /** Tail of the most recent stdout stream (bounded). */
+  stdoutTail: string;
+  /** Most recent `/health` poll result, or null when never observed. */
+  lastHealthCheck: OfflineRuntimeHealthCheck | null;
+  /** Most recent error message from a failed start / health poll / exit. */
+  lastErrorMessage: string | null;
+  /** Absolute path to the offline root directory (for "open folder"). */
+  offlineRootPath: string;
+  /** Absolute path to the runtime-last-failure.log on disk. */
+  runtimeLogPath: string;
+  /** Whether `runtimeLogPath` exists on disk at snapshot time. */
+  runtimeLogExists: boolean;
+}
+
 /** Per-model health/availability status. */
 export type OfflineModelHealth = "ok" | "missing" | "incomplete" | "unknown";
 
@@ -1105,6 +1179,13 @@ export const IPC = {
    * message first.  Returns `{ ok, error? }`.
    */
   OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
+  /**
+   * Get a `OfflineRuntimeDiagnostics` snapshot — every field surfaced
+   * by the Runtime Diagnostics panel (status, paths, last attempt
+   * times, exit code/signal, stderr/stdout tail, last health check,
+   * last error).  Safe to call any time; never starts the runtime.
+   */
+  OFFLINE_RUNTIME_GET_DIAGNOSTICS: "offline:runtime:get-diagnostics",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */

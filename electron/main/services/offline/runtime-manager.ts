@@ -55,11 +55,31 @@ async function pollUntil(
   intervalMs = 500,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  // The diagnostics snapshot captures the *most recent* /health poll
+  // result so the Runtime Diagnostics panel can show "server up, model
+  // still loading" vs "server unreachable" vs "fully ready".  Only
+  // writes when the path is /health to avoid polluting the snapshot
+  // with unrelated probes.
+  const recordHealth = (res: HealthCheckResult) => {
+    if (path === "/health") _diagnostics.lastHealthCheck = res;
+  };
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}${path}`);
+      recordHealth({
+        ok: res.ok,
+        status: res.ok ? "ready" : res.status === 503 ? "loading" : "unknown",
+        at: Date.now(),
+        httpStatus: res.status,
+      });
       if (predicate(res)) return;
-    } catch {
+    } catch (err) {
+      recordHealth({
+        ok: false,
+        status: "unreachable",
+        at: Date.now(),
+        detail: err instanceof Error ? err.message : String(err),
+      });
       // Server not up yet — keep polling.
     }
     await new Promise((r) => setTimeout(r, intervalMs));
@@ -625,6 +645,87 @@ export interface RuntimeGenerationOptions {
   maxTokens?: number;
 }
 
+// ── Runtime diagnostics retention ─────────────────────────────────────────────
+
+/**
+ * Bounded snapshot of every diagnostic field the Runtime Diagnostics
+ * panel surfaces.  Lives at module scope (not inside `start()`) so the
+ * data persists across the start/ready/exit lifecycle and is queryable
+ * any time via `getDiagnostics()` — even while the runtime is `stopped`
+ * or `failed`.
+ *
+ * Mirrored as `OfflineRuntimeDiagnostics` in src/types/index.ts (less
+ * the composite `runtimeState` / path fields which the IPC overlay
+ * fills in).
+ */
+interface DiagnosticsSnapshot {
+  modelId: string | null;
+  modelPath: string | null;
+  binaryPath: string | null;
+  lastStartedAt: number | null;
+  lastReadyAt: number | null;
+  lastStartupDurationMs: number | null;
+  lastExitAt: number | null;
+  lastExitCode: number | null;
+  lastExitSignal: string | null;
+  stderrTail: string;
+  stdoutTail: string;
+  lastHealthCheck: HealthCheckResult | null;
+  lastErrorMessage: string | null;
+}
+
+/** Result of the most recent `/health` poll, retained for diagnostics. */
+export interface HealthCheckResult {
+  ok: boolean;
+  status: "ready" | "loading" | "unreachable" | "unknown";
+  at: number;
+  httpStatus?: number;
+  detail?: string;
+}
+
+let _diagnostics: DiagnosticsSnapshot = {
+  modelId: null,
+  modelPath: null,
+  binaryPath: null,
+  lastStartedAt: null,
+  lastReadyAt: null,
+  lastStartupDurationMs: null,
+  lastExitAt: null,
+  lastExitCode: null,
+  lastExitSignal: null,
+  stderrTail: "",
+  stdoutTail: "",
+  lastHealthCheck: null,
+  lastErrorMessage: null,
+};
+
+/** Patch helper — only overrides supplied fields, preserving the rest. */
+function updateDiagnostics(patch: Partial<DiagnosticsSnapshot>): void {
+  _diagnostics = { ..._diagnostics, ...patch };
+}
+
+/**
+ * Reset the per-attempt diagnostic fields when a fresh `start()` begins.
+ * Keeps the *last* known model/binary/exit telemetry intact (so the
+ * Diagnostics panel can still show "previous run exited with code X"
+ * during the new start), but clears the just-started attempt's stderr,
+ * stdout, health check, and error so the user doesn't see stale data
+ * attributed to the new attempt.
+ */
+function resetDiagnosticsForAttempt(modelId: string): void {
+  _diagnostics = {
+    ..._diagnostics,
+    modelId,
+    lastStartedAt: Date.now(),
+    lastReadyAt: null,
+    lastStartupDurationMs: null,
+    stderrTail: "",
+    stdoutTail: "",
+    lastHealthCheck: null,
+    lastErrorMessage: null,
+  };
+}
+
 // ── Runtime manager state ─────────────────────────────────────────────────────
 
 let _proc: ChildProcess | null = null;
@@ -902,6 +1003,17 @@ export const runtimeManager = {
           (detail ? ` detail=${detail}` : "") +
           ` modelId=${modelId}`,
       );
+      // Persist resolved paths into module-scope diagnostics as soon
+      // as they're known so the Diagnostics panel can show them even
+      // mid-validation (when the panel is opened during a stuck
+      // start).  We pull from `ctx` because that's where the spawn
+      // pipeline writes them — module-scope just mirrors the latest.
+      updateDiagnostics({
+        modelPath: ctx.modelPath ?? _diagnostics.modelPath,
+        binaryPath: ctx.binaryPath ?? _diagnostics.binaryPath,
+        stderrTail: ctx.stderr || _diagnostics.stderrTail,
+        stdoutTail: ctx.stdout || _diagnostics.stdoutTail,
+      });
       let failure: RuntimeStartupFailureDetails | undefined;
       if (phase === "failed") {
         failure = buildFailure(
@@ -918,6 +1030,24 @@ export const runtimeManager = {
             err,
           );
         }
+        // Pin the failure message + final exit telemetry into the
+        // diagnostics snapshot so the panel surfaces the same root
+        // cause the failure banner shows, even after the user
+        // dismisses the banner.
+        updateDiagnostics({
+          lastErrorMessage: failure.message,
+          lastExitCode: failure.exitCode ?? _diagnostics.lastExitCode,
+          lastExitSignal: failure.signal ?? _diagnostics.lastExitSignal,
+        });
+      } else if (phase === "ready") {
+        const readyAt = Date.now();
+        const startedAt = _diagnostics.lastStartedAt;
+        updateDiagnostics({
+          lastReadyAt: readyAt,
+          lastStartupDurationMs:
+            startedAt !== null ? readyAt - startedAt : null,
+          lastErrorMessage: null,
+        });
       }
       // Mirror this phase into the state machine so a single snapshot
       // (`runtimeManager.getState()`) reflects the current condition.
@@ -966,6 +1096,15 @@ export const runtimeManager = {
       reportPhase("failed", msg, "config-error", ["choose-other"]);
       throw new Error(msg);
     }
+
+    // Anchor diagnostics for this attempt — `lastStartedAt` becomes the
+    // "Last attempt" timestamp surfaced in the Diagnostics panel, and
+    // resetting per-attempt stderr/stdout/health/error keeps the panel
+    // from attributing the previous run's failure to this one.  We
+    // intentionally retain `lastExitCode/Signal/At` so the diagnostics
+    // panel can still show "previous run exited with code X" while the
+    // new attempt is in flight.
+    resetDiagnosticsForAttempt(modelId);
 
     const sameOptions =
       _spawnOptions.contextSize === options.contextSize &&
@@ -1106,6 +1245,17 @@ export const runtimeManager = {
           ctx.exited = true;
           ctx.exitCode = code;
           ctx.signal = signal ?? null;
+          // Capture into the persistent diagnostics snapshot so the
+          // Runtime Diagnostics panel can show the exit code/signal
+          // even after the runtime has been fully torn down (e.g.
+          // user opens the panel after a crash and clicks "stopped").
+          updateDiagnostics({
+            lastExitAt: Date.now(),
+            lastExitCode: code,
+            lastExitSignal: signal ?? null,
+            stderrTail: ctx.stderr,
+            stdoutTail: ctx.stdout,
+          });
           console.log(
             `[runtimeManager] process exited (code=${code ?? "null"} signal=${signal ?? "null"})`,
           );
@@ -1395,6 +1545,27 @@ export const runtimeManager = {
    */
   getState(): RuntimeState {
     return _state;
+  },
+
+  /**
+   * Returns a structured snapshot of every diagnostic field surfaced
+   * by the Runtime Diagnostics panel (paths, last attempt times,
+   * exit code/signal, stderr/stdout tail, last health check, last
+   * error).  Composes the module-level `_diagnostics` snapshot with
+   * live process data (port, isRunning) so a single read covers the
+   * full picture.  Safe to call any time; never starts the runtime.
+   */
+  getDiagnostics(): DiagnosticsSnapshot & {
+    isRunning: boolean;
+    port: number | null;
+    currentModelId: string | null;
+  } {
+    return {
+      ..._diagnostics,
+      isRunning: _proc !== null && !_proc.killed,
+      port: _port,
+      currentModelId: _modelId,
+    };
   },
 
   /**

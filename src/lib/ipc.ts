@@ -17,6 +17,7 @@ import type {
   OfflineActiveModelInfo,
   OfflineRuntimePhaseEvent,
   OfflineRuntimeState,
+  OfflineRuntimeDiagnostics,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -288,6 +289,17 @@ export const ipc = {
     safeInvoke<{ ok: boolean; error?: string }>(
       IPC.OFFLINE_RUNTIME_RESTART,
       "ipc.restartOfflineRuntime",
+    ),
+
+  /**
+   * Fetch a structured `OfflineRuntimeDiagnostics` snapshot for the
+   * Runtime Diagnostics panel — status, paths, last attempt times,
+   * exit code/signal, stderr/stdout tail, last health check, last
+   * error message.  Safe to call any time; never starts the runtime.
+   */
+  getOfflineRuntimeDiagnostics: () =>
+    api().invoke<OfflineRuntimeDiagnostics>(
+      IPC.OFFLINE_RUNTIME_GET_DIAGNOSTICS,
     ),
 
   /**

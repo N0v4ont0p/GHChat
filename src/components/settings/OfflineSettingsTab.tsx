@@ -20,6 +20,7 @@ import {
   Plus,
   Trash2,
   Eraser,
+  Stethoscope,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,7 @@ import { ipc } from "@/lib/ipc";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { TechnicalDetails } from "@/components/ui/technical-details";
+import { RuntimeDiagnosticsModal } from "@/components/offline/RuntimeDiagnosticsModal";
 import { useModeStore } from "@/stores/mode-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import type {
@@ -114,6 +116,7 @@ export function OfflineSettingsTab() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
   const [removingOffline, setRemovingOffline] = useState(false);
   /**
@@ -497,6 +500,7 @@ export function OfflineSettingsTab() {
             onManageModel={() => {
               setOfflineManagementOpen(true);
             }}
+            onOpenDiagnostics={() => setDiagnosticsOpen(true)}
             disabled={runtimeBusyEffective}
           />
         )}
@@ -577,6 +581,15 @@ export function OfflineSettingsTab() {
           >
             <ZapOff className="mr-1 h-3.5 w-3.5" />
             Force stop
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setDiagnosticsOpen(true)}
+            title="Inspect runtime status, paths, exit code, stderr/stdout, last health check, and last error"
+          >
+            <Stethoscope className="mr-1 h-3.5 w-3.5" />
+            Diagnostics
           </Button>
         </div>
       </div>
@@ -985,6 +998,10 @@ export function OfflineSettingsTab() {
           Reset offline settings to defaults
         </Button>
       </div>
+      <RuntimeDiagnosticsModal
+        open={diagnosticsOpen}
+        onOpenChange={setDiagnosticsOpen}
+      />
     </div>
   );
 }
@@ -1212,12 +1229,14 @@ function RuntimeFailureBanner({
   detail,
   onRetry,
   onManageModel,
+  onOpenDiagnostics,
   disabled,
 }: {
   failure: OfflineRuntimeFailureDetails | null;
   detail: string | null;
   onRetry: () => void | Promise<void>;
   onManageModel: () => void;
+  onOpenDiagnostics: () => void;
   disabled: boolean;
 }) {
   const [forceStopping, setForceStopping] = useState(false);
@@ -1328,6 +1347,14 @@ function RuntimeFailureBanner({
             >
               <FileText className="mr-1 h-3.5 w-3.5" />
               Open Logs
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onOpenDiagnostics}
+            >
+              <Stethoscope className="mr-1 h-3.5 w-3.5" />
+              Diagnostics
             </Button>
             <Button
               variant="outline"
