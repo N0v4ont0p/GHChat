@@ -13,6 +13,7 @@ import type {
   OfflinePerformancePreset,
   OfflineReadiness,
   OfflineRecommendation,
+  OfflineRuntimeDiagnostics,
   OfflineSettings,
   OfflineSetupState,
 } from "../../../src/types";
@@ -29,7 +30,8 @@ import {
 import { hardwareProfile } from "../services/offline/hardware-profile";
 import { recommendationService } from "../services/offline/recommendation";
 import { installManager } from "../services/offline/install-manager";
-import { runtimeManager } from "../services/offline/runtime-manager";
+import { runtimeManager, getRuntimeFailureLogPath } from "../services/offline/runtime-manager";
+import type { RuntimeState } from "../services/offline/runtime-manager";
 import { modelRegistry } from "../services/offline/model-registry";
 import { storageService } from "../services/offline/storage";
 import { offlineCatalog } from "../services/offline/catalog";
@@ -536,10 +538,51 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           | "runtime-starting"
           | "loading-model"
           | "processing-prompt"
-          | "generating",
+          | "generating"
+          | "checking-model"
+          | "checking-binary"
+          | "preparing-config"
+          | "launching-process"
+          | "waiting-for-server"
+          | "warming-up",
       ) => {
         if (cancelledRequests.has(requestId)) return;
         send(IPC.OFFLINE_CHAT_PHASE, { requestId, phase });
+      };
+
+      // Forward fine-grained runtime startup phases coming out of
+      // runtimeManager.start() to BOTH the per-request OFFLINE_CHAT_PHASE
+      // channel (so the streaming indicator updates) AND the broadcast
+      // OFFLINE_RUNTIME_PHASE channel (so the Settings → Runtime status
+      // panel updates in lockstep, even though it didn't initiate the
+      // start).  `ready` / `failed` are terminal — we forward them on
+      // OFFLINE_RUNTIME_PHASE only; the chat indicator advances on its
+      // own milestones (processing-prompt / generating / END / ERROR).
+      const handleRuntimePhase = (
+        phase: import("../services/offline/runtime-manager").RuntimeStartupPhase,
+        detail?: string,
+        failure?: import("../services/offline/runtime-manager").RuntimeStartupFailureDetails,
+        phaseStartedAt?: number,
+      ) => {
+        broadcastRuntimePhase({
+          phase,
+          modelId,
+          detail,
+          failure,
+          phaseStartedAt,
+          requestId,
+        });
+        if (cancelledRequests.has(requestId)) return;
+        if (
+          phase === "checking-model" ||
+          phase === "checking-binary" ||
+          phase === "preparing-config" ||
+          phase === "launching-process" ||
+          phase === "waiting-for-server" ||
+          phase === "warming-up"
+        ) {
+          emitPhase(phase);
+        }
       };
 
       // Resolve the user's runtime knobs once per request.
@@ -593,6 +636,12 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
             onPromptSent: () => {
               if (!firstTokenSeen) emitPhase("processing-prompt");
             },
+            // Forward fine-grained startup phases (checking-model →
+            // launching-process → warming-up → ready) so the chat
+            // indicator and Settings panel both reflect what
+            // llama-server is actually doing instead of the previous
+            // single "starting runtime…" placeholder.
+            onRuntimePhase: handleRuntimePhase,
           },
         );
         // Only send END when the stop handler hasn't already done so.
@@ -858,22 +907,55 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           const error =
             "No active offline model to restart. Install or activate a model first.";
           console.warn(`[offline] OFFLINE_RUNTIME_RESTART aborted: ${error}`);
+          // Surface the failure as a runtime-phase event so the
+          // Settings panel's progress trail shows *which* step failed
+          // instead of just toast-erroring.
+          broadcastRuntimePhase({
+            phase: "failed",
+            modelId: null,
+            detail: error,
+            requestId: null,
+          });
           return { ok: false, error };
         }
         // Stop first so start() spawns a fresh process even when the
         // current spawn options match — restart must always recycle.
         await runtimeManager.stop();
         const settings = resolveOfflineSettings();
-        await runtimeManager.start(activeId, {
-          contextSize: settings.contextSize,
-          threads: settings.threads,
-        });
+        await runtimeManager.start(
+          activeId,
+          {
+            contextSize: settings.contextSize,
+            threads: settings.threads,
+          },
+          (phase, detail, failure, phaseStartedAt) => {
+            broadcastRuntimePhase({
+              phase,
+              modelId: activeId,
+              detail,
+              failure,
+              phaseStartedAt,
+              requestId: null,
+            });
+          },
+        );
         return { ok: true };
       } catch (err) {
         console.warn("[offline] runtime restart failed:", err);
+        const error = err instanceof Error ? err.message : String(err);
+        // start() already broadcast its own "failed" phase with the
+        // step-specific detail; re-broadcast here only as a safety
+        // net for the rare path where the throw originated outside
+        // start() (e.g. resolveOfflineSettings).
+        broadcastRuntimePhase({
+          phase: "failed",
+          modelId: resolveActiveModelId(),
+          detail: error,
+          requestId: null,
+        });
         return {
           ok: false,
-          error: err instanceof Error ? err.message : String(err),
+          error,
         };
       }
     },
@@ -901,8 +983,41 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           win.webContents.send(IPC.OFFLINE_ACTIVE_MODEL_CHANGED, info);
         }
       }
+      // Composite runtime state (`unconfigured` / `model-missing`)
+      // depends on the installed-model list and the active model
+      // selection.  Re-broadcast so listeners that don't separately
+      // subscribe to `OFFLINE_ACTIVE_MODEL_CHANGED` still pick up the
+      // composite kind change.
+      broadcastRuntimeState(computeOfflineRuntimeState());
     } catch (err) {
       console.warn("[offline] failed to broadcast active-model-changed:", err);
+    }
+  }
+
+  /**
+   * Broadcast a fine-grained runtime startup phase to every open
+   * window so non-chat callers (Settings → Restart runtime, headless
+   * starts, future status panels) can render the same step-by-step
+   * status as a chat-driven start.  Best-effort — send failures on a
+   * destroyed window are swallowed.
+   */
+  function broadcastRuntimePhase(payload: {
+    phase: import("../services/offline/runtime-manager").RuntimeStartupPhase;
+    modelId: string | null;
+    detail?: string;
+    failure?: import("../services/offline/runtime-manager").RuntimeStartupFailureDetails;
+    /** Wall-clock ms when the phase was entered (renderer uses for elapsed counter). */
+    phaseStartedAt?: number;
+    requestId?: string | null;
+  }): void {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.OFFLINE_RUNTIME_PHASE, payload);
+        }
+      }
+    } catch (err) {
+      console.warn("[offline] failed to broadcast runtime-phase:", err);
     }
   }
 
@@ -935,6 +1050,71 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       return null;
     }
   }
+
+  /**
+   * Compose the renderer-facing offline runtime state.
+   *
+   * The runtime manager tracks process-level kinds (validating →
+   * launching → … → stopped/failed).  Two additional *composite*
+   * kinds layer on top here because they depend on data the runtime
+   * manager doesn't own:
+   *   - `unconfigured`   offline mode is not installed yet
+   *   - `model-missing`  offline mode is installed but no models are
+   *
+   * When the composite preconditions are satisfied, we passthrough
+   * `runtimeManager.getState()` verbatim — the runtime manager is the
+   * single source of truth for `validating`/`launching`/.../`failed`.
+   */
+  function computeOfflineRuntimeState(): RuntimeState {
+    const setupState = _offlineReadiness.state;
+    if (setupState !== "installed") {
+      return {
+        kind: "unconfigured",
+        enteredAt: Date.now(),
+        progressLabel:
+          setupState === "installing"
+            ? "Offline mode is being installed."
+            : "Offline mode is not installed yet.",
+      };
+    }
+    const installedCount = isDatabaseReady() ? listOfflineModels().length : 0;
+    if (installedCount === 0) {
+      return {
+        kind: "model-missing",
+        enteredAt: Date.now(),
+        progressLabel: "No offline models installed.",
+      };
+    }
+    return runtimeManager.getState();
+  }
+
+  /**
+   * Broadcast the composite runtime state snapshot to every open
+   * window so non-chat callers (Settings → Runtime status, Sidebar
+   * banners, future status panels) render a single source of truth.
+   * Best-effort — send failures on a destroyed window are swallowed.
+   */
+  function broadcastRuntimeState(state: RuntimeState): void {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.OFFLINE_RUNTIME_STATE, state);
+        }
+      }
+    } catch (err) {
+      console.warn("[offline] failed to broadcast runtime-state:", err);
+    }
+  }
+
+  // Subscribe to runtime-manager state transitions and forward each
+  // one (overlaid with composite preconditions) to all windows.  A
+  // single subscription serves every renderer so we don't pay for
+  // per-window listeners.  Listener stays attached for the lifetime
+  // of the process — there is exactly one runtime manager and one
+  // ipcMain registration per app launch.
+  runtimeManager.subscribe(() => {
+    broadcastRuntimeState(computeOfflineRuntimeState());
+  });
 
   ipcMain.handle(IPC.OFFLINE_GET_INFO, async () => {
     const installRoot = storageService.getOfflineRoot();
@@ -969,6 +1149,11 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
       installPath: installRoot,
       installedAt: installation?.installedAt ?? null,
       isRuntimeRunning,
+      runtimeState: computeOfflineRuntimeState(),
+      // Per-model rolling startup-duration history for the active model
+      // — null when no successful start has been observed yet.  Lets
+      // the Offline Manager render measured perf data on first paint.
+      startupStats: model ? runtimeManager.getStartupStats(model.id) : null,
     };
   });
 
@@ -1179,6 +1364,81 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
     const dir = storageService.getOfflineRoot();
     await shell.openPath(dir);
   });
+
+  ipcMain.handle(IPC.OFFLINE_REVEAL_RUNTIME_LOG, async (): Promise<void> => {
+    // Reveal the runtime-last-failure.log if it exists; otherwise fall
+    // back to opening the offline root so the user always lands on
+    // something meaningful instead of getting a silent no-op.
+    storageService.ensureDirectories();
+    const logPath = getRuntimeFailureLogPath();
+    try {
+      if (existsSync(logPath) && statSync(logPath).isFile()) {
+        shell.showItemInFolder(logPath);
+        return;
+      }
+    } catch {
+      /* fall through to folder open */
+    }
+    await shell.openPath(storageService.getOfflineRoot());
+  });
+
+  /**
+   * Compose a single OfflineRuntimeDiagnostics snapshot — every field
+   * the Runtime Diagnostics panel surfaces (status, paths, last attempt
+   * times, exit code/signal, stderr/stdout tail, last health check,
+   * last error).  Composes the runtime-manager's process-level
+   * diagnostics with the IPC-overlay's composite state and the offline
+   * root / log paths so the renderer never has to stitch together
+   * three IPC calls.  Safe to call any time; never starts the runtime.
+   */
+  ipcMain.handle(
+    IPC.OFFLINE_RUNTIME_GET_DIAGNOSTICS,
+    async (): Promise<OfflineRuntimeDiagnostics> => {
+      storageService.ensureDirectories();
+      const diag = runtimeManager.getDiagnostics();
+      const offlineRoot = storageService.getOfflineRoot();
+      const runtimeLogPath = getRuntimeFailureLogPath();
+      let runtimeLogExists = false;
+      try {
+        runtimeLogExists =
+          existsSync(runtimeLogPath) && statSync(runtimeLogPath).isFile();
+      } catch {
+        runtimeLogExists = false;
+      }
+      const safePathExists = (p: string | null): boolean | null => {
+        if (!p) return null;
+        try {
+          return existsSync(p);
+        } catch {
+          return false;
+        }
+      };
+      return {
+        runtimeState: computeOfflineRuntimeState(),
+        isRuntimeRunning: diag.isRunning,
+        modelId: diag.currentModelId ?? diag.modelId,
+        port: diag.port,
+        modelPath: diag.modelPath,
+        modelPathExists: safePathExists(diag.modelPath),
+        binaryPath: diag.binaryPath,
+        binaryPathExists: safePathExists(diag.binaryPath),
+        lastStartedAt: diag.lastStartedAt,
+        lastReadyAt: diag.lastReadyAt,
+        lastStartupDurationMs: diag.lastStartupDurationMs,
+        lastExitAt: diag.lastExitAt,
+        lastExitCode: diag.lastExitCode,
+        lastExitSignal: diag.lastExitSignal,
+        stderrTail: diag.stderrTail,
+        stdoutTail: diag.stdoutTail,
+        lastHealthCheck: diag.lastHealthCheck,
+        lastErrorMessage: diag.lastErrorMessage,
+        offlineRootPath: offlineRoot,
+        runtimeLogPath,
+        runtimeLogExists,
+        startupStats: runtimeManager.getStartupStats(diag.currentModelId ?? diag.modelId),
+      };
+    },
+  );
 
   /**
    * Wipe the offline `tmp/` and `downloads/` subdirectories.  These hold

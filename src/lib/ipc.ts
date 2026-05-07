@@ -15,6 +15,9 @@ import type {
   OfflineSettings,
   OfflineHardwareProfileSnapshot,
   OfflineActiveModelInfo,
+  OfflineRuntimePhaseEvent,
+  OfflineRuntimeState,
+  OfflineRuntimeDiagnostics,
 } from "@/types";
 import type { IpcRendererEvent } from "electron";
 
@@ -203,6 +206,13 @@ export const ipc = {
    * Open the offline root directory in the OS file manager.
    */
   revealOfflineFolder: () => api().invoke<void>(IPC.OFFLINE_REVEAL_FOLDER),
+  /**
+   * Reveal the on-disk `runtime-last-failure.log` (written when the
+   * offline runtime fails to start) in the OS file manager.  Used by
+   * the "Open Logs" action on the offline runtime failure banner.
+   */
+  revealOfflineRuntimeLog: () =>
+    api().invoke<void>(IPC.OFFLINE_REVEAL_RUNTIME_LOG),
 
   // ── Multi-model offline management ────────────────────────────────────
   /** List every installed offline model with health, active flag, and timestamps. */
@@ -279,5 +289,45 @@ export const ipc = {
     safeInvoke<{ ok: boolean; error?: string }>(
       IPC.OFFLINE_RUNTIME_RESTART,
       "ipc.restartOfflineRuntime",
+    ),
+
+  /**
+   * Fetch a structured `OfflineRuntimeDiagnostics` snapshot for the
+   * Runtime Diagnostics panel — status, paths, last attempt times,
+   * exit code/signal, stderr/stdout tail, last health check, last
+   * error message.  Safe to call any time; never starts the runtime.
+   */
+  getOfflineRuntimeDiagnostics: () =>
+    api().invoke<OfflineRuntimeDiagnostics>(
+      IPC.OFFLINE_RUNTIME_GET_DIAGNOSTICS,
+    ),
+
+  /**
+   * Subscribe to fine-grained offline runtime startup phases
+   * (`checking-model` → `launching-process` → `warming-up` → `ready` /
+   * `failed`).  Broadcast by the main process for both chat-driven
+   * starts and explicit Restart calls so any UI surface can render
+   * step-by-step status without correlating with a chat request id.
+   * Returns an unsubscribe function — call on unmount.
+   */
+  onOfflineRuntimePhase: (cb: (event: OfflineRuntimePhaseEvent) => void) =>
+    api().on(
+      IPC.OFFLINE_RUNTIME_PHASE,
+      (_e: IpcRendererEvent, payload: OfflineRuntimePhaseEvent) => cb(payload),
+    ),
+
+  /**
+   * Subscribe to snapshots of the offline runtime state machine
+   * (`unconfigured | model-missing | validating | launching |
+   * waiting-for-ready | warming-up | ready | stopping | stopped |
+   * failed`).  Broadcast by the main process on every transition so
+   * any UI surface reads a single source of truth instead of stitching
+   * together `isRuntimeRunning` with the last `OFFLINE_RUNTIME_PHASE`
+   * event.  Returns an unsubscribe function — call on unmount.
+   */
+  onOfflineRuntimeState: (cb: (state: OfflineRuntimeState) => void) =>
+    api().on(
+      IPC.OFFLINE_RUNTIME_STATE,
+      (_e: IpcRendererEvent, payload: OfflineRuntimeState) => cb(payload),
     ),
 };

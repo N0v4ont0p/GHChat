@@ -78,6 +78,22 @@ export const IPC = {
    */
   OFFLINE_CHAT_PHASE: "offline:chat:phase",
   /**
+   * Push (main → renderer): fine-grained progress during a runtime
+   * start sequence (cold spawn or model swap).  Payload:
+   * `OfflineRuntimePhaseEvent` from src/types/index.ts.  Broadcast to
+   * every open window so non-chat callers (e.g. Settings → Restart
+   * runtime) render the same step-by-step status as the active chat.
+   */
+  OFFLINE_RUNTIME_PHASE: "offline:runtime:phase",
+  /**
+   * Push (main → renderer): snapshot of the offline runtime state
+   * machine. Payload: `OfflineRuntimeState` from src/types/index.ts.
+   * Broadcast on every state transition so the UI reads a single
+   * source of truth instead of stitching together `isRuntimeRunning`
+   * with the most recent `OFFLINE_RUNTIME_PHASE` event.
+   */
+  OFFLINE_RUNTIME_STATE: "offline:runtime:state",
+  /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
    */
@@ -94,6 +110,7 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  OFFLINE_REVEAL_RUNTIME_LOG: "offline:reveal-runtime-log",
   /** Returns OfflineModelSummary[] — every installed offline model. */
   OFFLINE_LIST_INSTALLED: "offline:list-installed",
   /** Returns OfflineCatalogEntrySummary[] — installable catalog entries. */
@@ -129,6 +146,13 @@ export const IPC = {
    * runtime hiccup without sending a chat message first.
    */
   OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
+  /**
+   * Get a `OfflineRuntimeDiagnostics` snapshot — every field surfaced
+   * by the Runtime Diagnostics panel (status, paths, last attempt
+   * times, exit code/signal, stderr/stdout tail, last health check,
+   * last error).  Safe to call any time; never starts the runtime.
+   */
+  OFFLINE_RUNTIME_GET_DIAGNOSTICS: "offline:runtime:get-diagnostics",
   /**
    * Wipe the offline `tmp/` and `downloads/` subdirectories, freeing space
    * consumed by failed downloads, partial extracts, and runtime archives.

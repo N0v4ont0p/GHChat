@@ -1,5 +1,16 @@
 import { motion } from "framer-motion";
-import { AlertTriangle, RefreshCw, Zap, Settings, KeyRound, ArrowRight } from "lucide-react";
+import {
+  AlertTriangle,
+  RefreshCw,
+  Zap,
+  Settings,
+  KeyRound,
+  ArrowRight,
+  RotateCw,
+  ZapOff,
+  Cpu,
+  Stethoscope,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TechnicalDetails } from "@/components/ui/technical-details";
 import { cn } from "@/lib/utils";
@@ -17,6 +28,14 @@ interface ChatErrorPanelProps {
   onRefreshModels: () => void;
   /** Open the Settings modal */
   onOpenSettings: () => void;
+  /** Restart the offline llama.cpp runtime, then retry the failed send */
+  onRestartRuntime: () => void;
+  /** Force-kill the offline runtime process (SIGKILL) */
+  onForceStopRuntime: () => void;
+  /** Open the Offline Models management modal */
+  onManageOfflineModel: () => void;
+  /** Open the Runtime Diagnostics modal */
+  onOpenDiagnostics: () => void;
 }
 
 /** Human-readable context for each known HTTP error status */
@@ -41,6 +60,10 @@ export function ChatErrorPanel({
   onUseAuto,
   onRefreshModels,
   onOpenSettings,
+  onRestartRuntime,
+  onForceStopRuntime,
+  onManageOfflineModel,
+  onOpenDiagnostics,
 }: ChatErrorPanelProps) {
   const context = contextForStatus(error.status);
 
@@ -148,6 +171,56 @@ export function ChatErrorPanel({
           >
             <KeyRound className="h-3 w-3" />
             Update API key
+          </Button>
+        )}
+
+        {/* Offline-runtime-flavored recovery actions.  Emerald accent so
+            users associate them with offline mode (matches MODE_ACCENT). */}
+        {error.actions.includes("restart-runtime") && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 rounded-lg border-emerald-500/30 text-xs text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-colors"
+            onClick={onRestartRuntime}
+          >
+            <RotateCw className="h-3 w-3" />
+            Restart runtime
+          </Button>
+        )}
+
+        {error.actions.includes("force-stop-runtime") && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 rounded-lg border-red-500/30 text-xs text-red-400 hover:border-red-500/60 hover:bg-red-500/5 transition-colors"
+            onClick={onForceStopRuntime}
+          >
+            <ZapOff className="h-3 w-3" />
+            Force stop
+          </Button>
+        )}
+
+        {error.actions.includes("manage-offline-model") && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={onManageOfflineModel}
+          >
+            <Cpu className="h-3 w-3" />
+            Manage model
+          </Button>
+        )}
+
+        {error.actions.includes("open-diagnostics") && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={onOpenDiagnostics}
+          >
+            <Stethoscope className="h-3 w-3" />
+            Diagnostics
           </Button>
         )}
       </div>

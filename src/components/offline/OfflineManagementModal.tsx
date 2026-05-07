@@ -21,6 +21,7 @@ import {
   Zap,
   Gauge,
   Circle,
+  Stethoscope,
 } from "lucide-react";
 import {
   Dialog,
@@ -31,6 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TechnicalDetails } from "@/components/ui/technical-details";
+import { RuntimeDiagnosticsModal } from "@/components/offline/RuntimeDiagnosticsModal";
 import { useModeStore } from "@/stores/mode-store";
 import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -40,7 +42,12 @@ import type {
   OfflineInstallProgress,
   OfflineModelHealth,
   OfflineModelSummary,
+  OfflineRuntimeStartupStats,
 } from "@/types";
+import {
+  formatStartupDuration,
+  formatTypicalRange,
+} from "@/lib/offline-startup-format";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -417,11 +424,13 @@ export function OfflineManagementModal() {
   const [storageBytes, setStorageBytes] = useState<number>(0);
   const [installPath, setInstallPath] = useState<string>("");
   const [isRuntimeRunning, setIsRuntimeRunning] = useState<boolean>(false);
+  const [startupStats, setStartupStats] = useState<OfflineRuntimeStartupStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [installProgress, setInstallProgress] = useState<OfflineInstallProgress | null>(null);
   const [hwProfile, setHwProfile] = useState<import("@/types").OfflineHardwareProfileSnapshot | null>(null);
 
@@ -442,6 +451,7 @@ export function OfflineManagementModal() {
       setStorageBytes(info.storageBytesUsed);
       setInstallPath(info.installPath);
       setIsRuntimeRunning(info.isRuntimeRunning);
+      setStartupStats(info.startupStats ?? null);
       setActiveOfflineModel(activeInfo);
       setHwProfile(hw);
     } catch (err: unknown) {
@@ -604,7 +614,8 @@ export function OfflineManagementModal() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <Dialog open={offlineManagementOpen} onOpenChange={setOfflineManagementOpen}>
+    <>
+      <Dialog open={offlineManagementOpen} onOpenChange={setOfflineManagementOpen}>
       <DialogContent className="max-w-xl gap-0 p-0 overflow-hidden">
         {/* Header */}
         <DialogHeader className="px-5 pt-5 pb-3 border-b border-border/40">
@@ -774,6 +785,16 @@ export function OfflineManagementModal() {
                       <Zap className="h-3 w-3" />
                       Force stop
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px] gap-1.5"
+                      onClick={() => setDiagnosticsOpen(true)}
+                      title="Open the runtime diagnostics panel"
+                    >
+                      <Stethoscope className="h-3 w-3" />
+                      Diagnostics
+                    </Button>
                   </div>
                 ) : (
                   installedCount > 0 && (
@@ -789,10 +810,57 @@ export function OfflineManagementModal() {
                         {runtimeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
                         Start
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[11px] gap-1.5"
+                        onClick={() => setDiagnosticsOpen(true)}
+                        title="Open the runtime diagnostics panel"
+                      >
+                        <Stethoscope className="h-3 w-3" />
+                        Diagnostics
+                      </Button>
                     </div>
                   )
                 )}
               </div>
+
+              {/* Startup performance — measured rolling history of the
+                  active model's successful starts.  Only rendered when
+                  at least one start has been recorded, so a fresh
+                  install doesn't show "—" placeholders that look
+                  broken.  The "typical" range comes from up to 5 most
+                  recent samples; the run count makes the confidence
+                  in that range obvious. */}
+              {startupStats && startupStats.samples.length > 0 && (
+                <div className="flex items-center justify-between rounded-xl border border-border/40 bg-secondary/20 px-3.5 py-2.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Gauge className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-medium">
+                        Startup performance
+                      </div>
+                      <div className="text-[10px] text-muted-foreground/60">
+                        Last:{" "}
+                        <span className="font-mono tabular-nums text-foreground/80">
+                          {formatStartupDuration(startupStats.lastDurationMs)}
+                        </span>
+                        {formatTypicalRange(startupStats) && (
+                          <>
+                            {" · typical "}
+                            <span className="font-mono tabular-nums text-foreground/80">
+                              {formatTypicalRange(startupStats)}
+                            </span>
+                          </>
+                        )}
+                        {" · "}
+                        {startupStats.count}
+                        {startupStats.count === 1 ? " run" : " runs"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Storage summary */}
               <div className="flex items-center justify-between rounded-xl border border-border/40 bg-secondary/20 px-3.5 py-2.5">
@@ -961,5 +1029,10 @@ export function OfflineManagementModal() {
         </div>
       </DialogContent>
     </Dialog>
+    <RuntimeDiagnosticsModal
+      open={diagnosticsOpen}
+      onOpenChange={setDiagnosticsOpen}
+    />
+    </>
   );
 }

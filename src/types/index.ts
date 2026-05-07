@@ -400,7 +400,16 @@ export type ChatErrorRecoveryAction =
   | "auto"           // Switch to Auto mode and retry
   | "refresh-models" // Re-probe runtime model availability for this token
   | "settings"       // Open the Settings modal
-  | "verify-token";  // Re-open onboarding / Settings to re-enter the API key
+  | "verify-token"   // Re-open onboarding / Settings to re-enter the API key
+  // ── Offline-runtime-specific recovery actions ────────────────────────
+  // Surfaced when a stream fails because the local llama.cpp runtime
+  // couldn't start, exited mid-request, or hung past the watchdog.  The
+  // chat-level error panel renders one button per action so the user can
+  // recover without opening Settings:
+  | "restart-runtime"        // Stop + start the offline runtime, then retry
+  | "force-stop-runtime"     // SIGKILL the runtime (use when stop hangs)
+  | "manage-offline-model"   // Open the Offline Models modal
+  | "open-diagnostics";      // Open the Runtime Diagnostics modal
 
 export type ChatFailureKind =
   | "token-invalid"
@@ -467,7 +476,222 @@ export type StreamLifecycleState =
   | "runtime-starting"
   | "loading-model"
   | "processing-prompt"
-  | "generating";
+  | "generating"
+  // Fine-grained offline runtime startup sub-phases — emitted by
+  // runtimeManager.start so a slow boot of `llama-server` shows what
+  // it is actually doing (rather than sitting on "Starting offline
+  // runtime…" for many seconds).  Each value maps 1:1 to a step the
+  // main process actually performs.
+  | "checking-model"
+  | "checking-binary"
+  | "preparing-config"
+  | "launching-process"
+  | "waiting-for-server"
+  | "warming-up";
+
+/**
+ * Fine-grained phases of the offline runtime startup sequence.
+ *
+ * Emitted by `runtimeManager.start()` (via `OFFLINE_RUNTIME_PHASE` and,
+ * for chat-driven starts, also forwarded over `OFFLINE_CHAT_PHASE`) so
+ * the renderer can show step-by-step status while `llama-server`
+ * boots — instead of a single "loading" spinner that hides multi-second
+ * on-disk model loads.
+ *
+ * Order in a healthy cold start:
+ *   checking-model      → resolving the installed offline_models row
+ *   checking-binary     → resolving llama-server binary path
+ *   preparing-config    → choosing free port, ctx size, threads
+ *   launching-process   → spawning llama-server
+ *   waiting-for-server  → waiting for the HTTP server to accept connections
+ *   warming-up          → waiting for the model file to finish loading into RAM
+ *   ready               → terminal success
+ *   failed              → terminal failure (carries an `error` string)
+ */
+export type OfflineRuntimeStartupPhase =
+  | "checking-model"
+  | "checking-binary"
+  | "preparing-config"
+  | "launching-process"
+  | "waiting-for-server"
+  | "warming-up"
+  | "ready"
+  | "failed";
+
+/**
+ * Structured diagnostics emitted on `OFFLINE_RUNTIME_PHASE` when
+ * `phase === "failed"`.  Mirrors `RuntimeStartupFailureDetails` from
+ * the main-process runtime manager — duplicated here so the renderer
+ * has no compile-time dependency on Electron-only modules.
+ *
+ * Every field is safe to display to the user verbatim: there are no
+ * secrets, only paths and process diagnostics.
+ */
+export interface OfflineRuntimeFailureDetails {
+  phase: OfflineRuntimeStartupPhase;
+  /**
+   * Last *non-terminal* phase observed before failure (i.e. the step
+   * that was actually in progress).  May equal `phase` for very early
+   * failures and may be null when the failure happened before any
+   * phase was entered.
+   */
+  lastInProgressPhase: OfflineRuntimeStartupPhase | null;
+  /**
+   * Coarse failure category — drives the user-facing copy.
+   * `timeout` triggers the "Runtime did not become ready in time"
+   * banner; `exited` triggers the "process stopped" banner.
+   */
+  kind:
+    | "timeout"
+    | "exited"
+    | "spawn-error"
+    | "missing-file"
+    | "config-error"
+    | "unknown";
+  message: string;
+  modelId: string | null;
+  modelPath: string | null;
+  modelPathExists: boolean | null;
+  binaryPath: string | null;
+  binaryPathExists: boolean | null;
+  /** ms the failing phase had been running when it failed. */
+  phaseElapsedMs: number | null;
+  exitCode: number | null;
+  signal: string | null;
+  exited: boolean;
+  stderrTail: string;
+  stdoutTail: string;
+  /**
+   * Recovery actions the renderer should expose for this failure.
+   * Computed by pre-launch validation in the main process so the UI
+   * can render only the buttons that make sense — e.g. an unsupported
+   * model format gets `["remove", "choose-other", "reveal-folder"]`
+   * but no "repair" affordance, and a missing runtime binary gets
+   * `["reinstall-runtime"]` only.
+   *
+   * Defaults to `[]` for failures raised after a successful spawn
+   * (where the right next step is "view logs" / "retry" rather than
+   * mutating the install).  Older main processes may omit the field
+   * entirely; renderers MUST treat `undefined` as `[]`.
+   */
+  recoveryActions?: OfflineRuntimeRecoveryAction[];
+}
+
+/**
+ * Mirrors `RuntimeRecoveryAction` in
+ * `electron/main/services/offline/runtime-manager.ts`.  Kept as a
+ * string-literal union so it crosses the IPC bridge as plain JSON
+ * and renderer can exhaustively map each value to a button.
+ */
+export type OfflineRuntimeRecoveryAction =
+  | "repair"
+  | "reinstall"
+  | "remove"
+  | "choose-other"
+  | "reveal-folder"
+  | "reinstall-runtime";
+
+/**
+ * Payload broadcast on `OFFLINE_RUNTIME_PHASE`.
+ *
+ * `requestId` is set when the start was triggered by an offline chat
+ * stream (so the renderer can correlate with the in-flight message);
+ * it is null for explicit Restart/Start-from-Settings calls which have
+ * no chat request to correlate with.
+ */
+export interface OfflineRuntimePhaseEvent {
+  phase: OfflineRuntimeStartupPhase;
+  /** Model id the runtime is starting for (or null when not yet resolved). */
+  modelId: string | null;
+  /** Optional user-facing detail (e.g. error message on `failed`). */
+  detail?: string;
+  /** When triggered by a chat stream, the request id; otherwise null. */
+  requestId?: string | null;
+  /**
+   * Wall-clock ms when this phase was entered.  Renderer ticks against
+   * `Date.now() - phaseStartedAt` to surface a live "elapsed Xs" badge
+   * on the active step, so a slow boot still feels responsive instead
+   * of looking frozen.
+   */
+  phaseStartedAt?: number;
+  /**
+   * Structured failure diagnostics — only set when `phase === "failed"`.
+   * The Settings panel renders these as an actionable error UI with
+   * Retry / Force Stop / Open Logs / Manage Model buttons and a "Show
+   * technical details" disclosure listing model id, paths, exit code,
+   * signal, and stderr/stdout tails.
+   */
+  failure?: OfflineRuntimeFailureDetails;
+}
+
+/**
+ * Discrete states of the offline runtime, observed by the renderer.
+ *
+ * Layered on top of the per-event `OfflineRuntimeStartupPhase` stream:
+ * the phase events describe transient progress, this state machine
+ * describes the *current* condition of the offline runtime as a single
+ * snapshot.  Every UI surface that previously cobbled
+ * `isRuntimeRunning` together with the last phase event should read
+ * this single field instead.
+ *
+ * Composite (from `OFFLINE_RUNTIME_STATE` broadcast):
+ *   - `unconfigured`       offline mode is not installed yet
+ *   - `model-missing`      offline mode is installed but no models
+ *
+ * Process-level (from `runtimeManager`):
+ *   - `validating`         pre-spawn checks running
+ *   - `launching`          spawning the runtime process
+ *   - `waiting-for-ready`  HTTP server hand-shake in progress
+ *   - `warming-up`         model loading into memory
+ *   - `ready`              runtime serving requests
+ *   - `stopping`           shutdown requested, awaiting exit
+ *   - `stopped`            runtime is not running (terminal idle)
+ *   - `failed`             startup or runtime failed (carries `failure`)
+ */
+export type OfflineRuntimeStateKind =
+  | "unconfigured"
+  | "model-missing"
+  | "validating"
+  | "launching"
+  | "waiting-for-ready"
+  | "warming-up"
+  | "ready"
+  | "stopping"
+  | "stopped"
+  | "failed";
+
+/**
+ * Snapshot of the offline runtime state machine.  Sent on the
+ * `OFFLINE_RUNTIME_STATE` channel and embedded in `OfflineInfo` for
+ * first-paint reads.
+ */
+export interface OfflineRuntimeState {
+  kind: OfflineRuntimeStateKind;
+  /** Wall-clock ms when this `kind` was entered (stable across step refinements). */
+  enteredAt: number;
+  /**
+   * Optional fine-grained step within the current `kind` — e.g. while
+   * `validating`, the underlying check ("checking-model" /
+   * "checking-binary").  May correspond to an `OfflineRuntimeStartupPhase`
+   * but is intentionally typed as a free-form string so future
+   * sub-steps don't require a new enum value.
+   */
+  step?: string;
+  /** Optional user-facing label describing the current step. */
+  progressLabel?: string;
+  /** Model id the runtime is operating on, when known. */
+  modelId?: string | null;
+  /**
+   * Recovery actions the renderer should expose for the current state.
+   * Populated for `failed`; usually empty for healthy states.
+   */
+  recoveryActions?: OfflineRuntimeRecoveryAction[];
+  /**
+   * Structured diagnostics — only populated when `kind === "failed"`.
+   * Same shape as `OfflineRuntimePhaseEvent.failure`.
+   */
+  failure?: OfflineRuntimeFailureDetails;
+}
 
 export interface ProviderHealthResult {
   ok: boolean;
@@ -519,6 +743,35 @@ export interface OfflineInstallProgress {
 }
 
 
+/**
+ * Aggregated startup-duration history for a single offline model.
+ *
+ * The runtime-manager records `lastStartupDurationMs` after every
+ * successful `phase === "ready"` transition and persists a rolling
+ * window (most recent 5 samples per model) to `runtime-startup-stats.json`
+ * inside the offline root.  The renderer uses this both to
+ *   (a) show a "typical" range alongside the live elapsed timer during
+ *       startup, so a slow boot looks normal vs. abnormal, and
+ *   (b) surface measured performance in the Offline Manager so users
+ *       have concrete numbers to compare against if a model "feels" slow.
+ *
+ * `null` means no successful start has been observed yet for this model.
+ */
+export interface OfflineRuntimeStartupStats {
+  /** Catalog model id these samples were measured for. */
+  modelId: string;
+  /** Total number of successful starts observed (may exceed samples.length). */
+  count: number;
+  /** Up to 5 most-recent successful startup durations in ms (oldest → newest). */
+  samples: number[];
+  /** The most recent successful startup duration in ms (== samples[last]). */
+  lastDurationMs: number;
+  /** Median of `samples` in ms — the "typical" anchor. */
+  medianMs: number;
+  /** Max of `samples` in ms — used as the "unusually slow" threshold base. */
+  maxMs: number;
+}
+
 /** Information about a fully installed offline setup, returned by OFFLINE_GET_INFO. */
 export interface OfflineInfo {
   /** Catalog model ID of the installed model (e.g. "gemma4-e4b-q4km"). */
@@ -539,6 +792,103 @@ export interface OfflineInfo {
   installedAt: number | null;
   /** Whether the runtime subprocess is currently alive and responding. */
   isRuntimeRunning: boolean;
+  /**
+   * Current snapshot of the offline runtime state machine.  Lets the
+   * renderer render an accurate status on first paint without waiting
+   * for the next `OFFLINE_RUNTIME_STATE` push.  Older main-process
+   * builds may omit this field; renderers MUST treat `undefined` as a
+   * fallback and continue to read `isRuntimeRunning`.
+   */
+  runtimeState?: OfflineRuntimeState;
+  /**
+   * Rolling window of measured startup durations for the active model,
+   * or `null` when no successful start has been observed yet.  Lets the
+   * Offline Manager render "Last startup: 7s · typical 5–9s (4 runs)"
+   * without an extra IPC round-trip.  Older main-process builds may
+   * omit this field; renderers MUST treat `undefined` as "no data".
+   */
+  startupStats?: OfflineRuntimeStartupStats | null;
+}
+
+/**
+ * Result of the most recent `/health` poll against the local runtime
+ * server.  Lets the diagnostics UI distinguish "server up, model still
+ * loading" (`status === 'loading'`) from "server unreachable" (`ok:
+ * false, status: 'unreachable'`) and from "fully ready" (`ok: true,
+ * status: 'ready'`).  `at` is a wall-clock anchor the UI can use to
+ * render "last checked Xs ago".
+ */
+export interface OfflineRuntimeHealthCheck {
+  ok: boolean;
+  status: "ready" | "loading" | "unreachable" | "unknown";
+  /** Wall-clock ms when the check completed. */
+  at: number;
+  /** Optional HTTP status code (when the request reached the server). */
+  httpStatus?: number;
+  /** Optional human-readable detail (e.g. error message). */
+  detail?: string;
+}
+
+/**
+ * Snapshot of every diagnostic field surfaced by the Runtime
+ * Diagnostics panel.  Returned by `IPC.OFFLINE_RUNTIME_GET_DIAGNOSTICS`
+ * and refreshed on every `OFFLINE_RUNTIME_STATE` push so the UI never
+ * shows stale values.
+ *
+ * All fields are `null` when never observed — the panel is responsible
+ * for rendering "—" placeholders rather than hiding the row, so the
+ * structure of the diagnostic surface stays stable across runs.
+ */
+export interface OfflineRuntimeDiagnostics {
+  /** Current state-machine snapshot (composite kinds applied). */
+  runtimeState: OfflineRuntimeState;
+  /** Whether the runtime subprocess is currently alive. */
+  isRuntimeRunning: boolean;
+  /** Model id the runtime is serving / last attempted, or null. */
+  modelId: string | null;
+  /** TCP port the runtime is listening on, or null. */
+  port: number | null;
+  /** Absolute path to the GGUF the runtime last attempted to load. */
+  modelPath: string | null;
+  /** Whether `modelPath` exists on disk at snapshot time. */
+  modelPathExists: boolean | null;
+  /** Absolute path to the runtime binary the runtime last spawned. */
+  binaryPath: string | null;
+  /** Whether `binaryPath` exists on disk at snapshot time. */
+  binaryPathExists: boolean | null;
+  /** Wall-clock ms of the most recent `start()` invocation, or null. */
+  lastStartedAt: number | null;
+  /** Wall-clock ms when the runtime last reached `ready`, or null. */
+  lastReadyAt: number | null;
+  /** ms between lastStartedAt and lastReadyAt for the most recent successful start. */
+  lastStartupDurationMs: number | null;
+  /** Wall-clock ms when the runtime process last exited, or null. */
+  lastExitAt: number | null;
+  /** Exit code of the most recent process termination, or null. */
+  lastExitCode: number | null;
+  /** Signal of the most recent process termination, or null. */
+  lastExitSignal: string | null;
+  /** Tail of the most recent stderr stream (bounded). */
+  stderrTail: string;
+  /** Tail of the most recent stdout stream (bounded). */
+  stdoutTail: string;
+  /** Most recent `/health` poll result, or null when never observed. */
+  lastHealthCheck: OfflineRuntimeHealthCheck | null;
+  /** Most recent error message from a failed start / health poll / exit. */
+  lastErrorMessage: string | null;
+  /** Absolute path to the offline root directory (for "open folder"). */
+  offlineRootPath: string;
+  /** Absolute path to the runtime-last-failure.log on disk. */
+  runtimeLogPath: string;
+  /** Whether `runtimeLogPath` exists on disk at snapshot time. */
+  runtimeLogExists: boolean;
+  /**
+   * Rolling startup-duration history for the active model id (or `null`
+   * when no successful start has been observed yet).  Mirrors the same
+   * structure surfaced by `OfflineInfo.startupStats` so the diagnostics
+   * panel can render "typical 5–9s (4 runs)" without an extra fetch.
+   */
+  startupStats: OfflineRuntimeStartupStats | null;
 }
 
 /** Per-model health/availability status. */
@@ -764,9 +1114,37 @@ export const IPC = {
    * model", "processing prompt", "generating response" instead of a generic
    * "streaming" spinner that hides slow on-device boot.
    * Payload: { requestId, phase: "runtime-starting" | "loading-model" |
-   *   "processing-prompt" | "generating" }
+   *   "processing-prompt" | "generating" | <OfflineRuntimeStartupPhase> }
+   *
+   * The fine-grained `OfflineRuntimeStartupPhase` values
+   * (`checking-model`, `checking-binary`, `preparing-config`,
+   * `launching-process`, `waiting-for-server`, `warming-up`) are
+   * forwarded here as well so the chat indicator shows the same
+   * step-by-step status as the Settings → Restart button.
    */
   OFFLINE_CHAT_PHASE: "offline:chat:phase",
+  /**
+   * Push (main → renderer): fine-grained progress during a runtime
+   * start sequence (cold spawn or model swap).  Payload:
+   * `OfflineRuntimePhaseEvent`.
+   *
+   * Broadcast to every open window so non-chat callers (e.g. the
+   * Settings → Restart runtime button) can render the same
+   * step-by-step status as the active chat — and so a slow
+   * `llama-server` boot is never hidden behind a single spinner.
+   */
+  OFFLINE_RUNTIME_PHASE: "offline:runtime:phase",
+  /**
+   * Push (main → renderer): snapshot of the offline runtime state
+   * machine.  Payload: `OfflineRuntimeState`.
+   *
+   * Broadcast on every state transition so the UI can render the
+   * current condition (validating / launching / waiting-for-ready /
+   * warming-up / ready / stopping / stopped / failed) from a single
+   * source of truth instead of stitching together `isRuntimeRunning`
+   * with the most recent `OFFLINE_RUNTIME_PHASE` event.
+   */
+  OFFLINE_RUNTIME_STATE: "offline:runtime:state",
   /**
    * Returns OfflineInfo — installed package details, storage used, install path,
    * and whether the runtime process is currently alive.
@@ -784,6 +1162,13 @@ export const IPC = {
    * (Finder on macOS, Explorer on Windows, file manager on Linux).
    */
   OFFLINE_REVEAL_FOLDER: "offline:reveal-folder",
+  /**
+   * Reveal the on-disk `runtime-last-failure.log` (written whenever
+   * `runtimeManager.start()` reports a `failed` phase) in the OS file
+   * manager.  When the log does not exist yet, the offline root is
+   * opened instead so the user lands somewhere meaningful.
+   */
+  OFFLINE_REVEAL_RUNTIME_LOG: "offline:reveal-runtime-log",
   /**
    * Returns OfflineModelSummary[] — every installed offline model with
    * size on disk, health, active flag, and last-used timestamp.  Used by
@@ -847,6 +1232,13 @@ export const IPC = {
    * message first.  Returns `{ ok, error? }`.
    */
   OFFLINE_RUNTIME_RESTART: "offline:runtime:restart",
+  /**
+   * Get a `OfflineRuntimeDiagnostics` snapshot — every field surfaced
+   * by the Runtime Diagnostics panel (status, paths, last attempt
+   * times, exit code/signal, stderr/stdout tail, last health check,
+   * last error).  Safe to call any time; never starts the runtime.
+   */
+  OFFLINE_RUNTIME_GET_DIAGNOSTICS: "offline:runtime:get-diagnostics",
   /** Get the offline-specific settings record. */
   OFFLINE_SETTINGS_GET: "offline:settings-get",
   /** Update one or more offline-specific settings. */
