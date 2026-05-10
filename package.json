@@ -8,12 +8,16 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package:mac": "electron-vite build && electron-builder --mac --arm64 && electron-builder --mac --x64",
-    "package:mac:arm64": "electron-vite build && electron-builder --mac --arm64",
+    "clean:build": "rm -rf dist",
+    "clean:dmg-mounts": "bash scripts/clean-dmg-mounts.sh",
+    "package:mac": "electron-vite build && bash scripts/clean-dmg-mounts.sh && electron-builder --mac --arm64 && bash scripts/clean-dmg-mounts.sh && electron-builder --mac --x64",
+    "package:mac:arm64": "electron-vite build && bash scripts/clean-dmg-mounts.sh && electron-builder --mac --arm64",
+    "package:mac:x64": "electron-vite build && bash scripts/clean-dmg-mounts.sh && electron-builder --mac --x64",
+    "build:mac:zip": "electron-vite build && bash scripts/clean-dmg-mounts.sh && electron-builder --mac --arm64 --config '{\"mac\":{\"target\":[{\"target\":\"zip\",\"arch\":[\"arm64\"]}]}}'",
+    "build:mac:dmg": "electron-vite build && bash scripts/clean-dmg-mounts.sh && electron-builder --mac --arm64 --config '{\"mac\":{\"target\":[{\"target\":\"dmg\",\"arch\":[\"arm64\"]}]}}'",
     "lint": "eslint src electron --ext .ts,.tsx",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "package:mac:x64": "electron-vite build && electron-builder --mac --x64"
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.4",
