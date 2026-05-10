@@ -1407,7 +1407,7 @@ export const installManager = {
 
       if (!isRuntimeInstallComplete(runtimeDir)) {
         throw new Error(
-          "Runtime reinstall completed but installation appears incomplete — please retry.",
+          "Runtime reinstall verification failed — the installation may be incomplete. Please retry.",
         );
       }
 
