@@ -166,4 +166,12 @@ export const IPC = {
    * warn when the active model exceeds the local capacity.
    */
   OFFLINE_GET_HARDWARE_PROFILE: "offline:get-hardware-profile",
+  /**
+   * Reinstall the offline runtime (llama-server binary + required .dylib
+   * files on macOS) without touching installed models.  Use this to repair
+   * an incomplete runtime installation (e.g. one that was installed by an
+   * older version that only copied the binary).
+   * Returns `{ ok: boolean; error?: string }`.
+   */
+  OFFLINE_REINSTALL_RUNTIME: "offline:reinstall-runtime",
 } as const;

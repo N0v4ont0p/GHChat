@@ -1,7 +1,8 @@
-import { join } from "path";
+import { join, dirname } from "path";
 import {
   createWriteStream,
   createReadStream,
+  copyFileSync,
   existsSync,
   statSync,
   renameSync,
@@ -509,6 +510,60 @@ function findFileRecursive(dir: string, name: string): string | null {
   return null;
 }
 
+/**
+ * Return `true` when the runtime directory contains a complete runtime
+ * installation — binary present AND (on macOS) at least one `.dylib`
+ * companion library.
+ *
+ * On macOS, llama.cpp ships as a set of dynamically-linked files: the
+ * `llama-server` binary plus several `.dylib` libraries (e.g.
+ * `libllama-common.0.dylib`, `libggml.dylib`).  A legacy install that
+ * only copied the binary is incomplete and will immediately abort with
+ * `dyld: Library not loaded` when the OS linker tries to resolve
+ * `@rpath/libllama-common.0.dylib`.  Detecting this early lets the
+ * install pipeline skip the "already installed" short-circuit and
+ * always produce a complete installation.
+ *
+ * On Windows and Linux, the llama.cpp builds targeted by this project
+ * are statically linked, so the binary alone is sufficient.
+ */
+function isRuntimeInstallComplete(runtimeDir: string): boolean {
+  try {
+    const entries = readdirSync(runtimeDir);
+    const hasBinary = entries.includes(RUNTIME_BINARY_NAME);
+    if (!hasBinary) return false;
+    if (process.platform === "darwin") {
+      // macOS runtime requires accompanying .dylib files.
+      return entries.some((e) => e.endsWith(".dylib"));
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy every regular file from `srcDir` into `destDir`, overwriting any
+ * existing file of the same name.  Sub-directories inside `srcDir` are
+ * intentionally skipped — the llama.cpp release archives for macOS place
+ * all required files (binary + dylibs) flat in a single directory, so a
+ * flat copy is both correct and safe.
+ *
+ * This is used instead of a rename/move so the operation is safe across
+ * filesystem boundaries (e.g. when the tmp extract dir and the managed
+ * runtime dir are on different volumes).
+ */
+function copyRuntimeFiles(srcDir: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+  const entries = readdirSync(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const src = join(srcDir, entry.name);
+    const dest = join(destDir, entry.name);
+    copyFileSync(src, dest);
+  }
+}
+
 // ── Typed install errors ──────────────────────────────────────────────────────
 
 /**
@@ -676,8 +731,11 @@ export const installManager = {
       const manifestPath = join(manifestsDir, `${modelId}.json`);
 
       // ── 3. Download runtime binary ───────────────────────────────────────────
-      // Skip if the binary is already present (e.g. re-install of a model).
-      if (!existsSync(runtimeBinPath)) {
+      // Skip only when the runtime installation is complete — binary present
+      // AND (on macOS) all required .dylib companion libraries present.
+      // A legacy install that only copied the binary is treated as incomplete
+      // so the download+extract path runs again and produces a full install.
+      if (!isRuntimeInstallComplete(runtimeDir)) {
         report("downloading-runtime", "Looking up latest llama.cpp release…", 4);
 
         let runtimeDownloadUrl: string;
@@ -795,26 +853,35 @@ export const installManager = {
           );
         }
 
-        // Move the binary to the managed runtime dir.
-        if (existsSync(runtimeBinPath)) unlinkSync(runtimeBinPath);
-        renameSync(extractedBin, runtimeBinPath);
+        // Copy ALL files from the directory containing the binary to the
+        // managed runtime dir.  On macOS, llama.cpp archives ship as a flat
+        // directory of the binary plus required .dylib files (e.g.
+        // libllama-common.0.dylib, libggml.dylib).  The previous code only
+        // moved the binary itself and discarded the dylibs, causing dyld to
+        // abort with "Library not loaded: @rpath/libllama-common.0.dylib"
+        // at process start.  Copying all sibling files ensures every shared
+        // library is present alongside the binary.
+        const extractedBinDir = dirname(extractedBin);
+        copyRuntimeFiles(extractedBinDir, runtimeDir);
 
-        // Make it executable on Unix.
+        // Make the binary executable on Unix.
         if (process.platform !== "win32") {
           chmodSync(runtimeBinPath, 0o755);
         }
 
         // On macOS, remove the quarantine extended attribute that Gatekeeper
         // adds to files downloaded from the internet.  Without this the OS
-        // would refuse to run the unsigned binary or prompt the user.
+        // would refuse to run unsigned binaries or prompt the user.  Apply
+        // to the entire runtime dir so both the binary and every .dylib are
+        // cleared in one pass.
         if (process.platform === "darwin") {
           try {
             // execFile: no shell — args passed directly, no injection risk.
-            await execFileAsync("xattr", ["-dr", "com.apple.quarantine", runtimeBinPath]);
+            await execFileAsync("xattr", ["-dr", "com.apple.quarantine", runtimeDir]);
           } catch {
             // Not fatal — the binary may still work if the user approved it.
             console.warn(
-              "[installManager] could not remove quarantine attribute from llama-server",
+              "[installManager] could not remove quarantine attribute from runtime dir",
             );
           }
         }
@@ -831,8 +898,8 @@ export const installManager = {
 
         report("verifying-runtime", "Runtime ready", 25);
       } else {
-        // Binary already present — skip the download but still report the phases
-        // so the UI phase list is consistent.
+        // Runtime already completely installed — skip the download but still
+        // report the phases so the UI phase list is consistent.
         report("downloading-runtime", "Runtime already installed", 22);
         report("verifying-runtime", "Runtime verified", 25);
       }
@@ -1004,10 +1071,10 @@ export const installManager = {
         );
       }
 
-      // Verify the runtime binary is present and executable.
-      if (!existsSync(runtimeBinPath)) {
+      // Verify the runtime installation is complete (binary + dylibs on macOS).
+      if (!isRuntimeInstallComplete(runtimeDir)) {
         throw new Error(
-          "Runtime binary is missing after installation — please retry the install.",
+          "Runtime installation is incomplete after install — please retry the install.",
         );
       }
 
@@ -1062,10 +1129,20 @@ export const installManager = {
         };
       }
 
-      // Runtime binary must exist.
-      const runtimeBinPath = join(storageService.getSubdir("runtime"), RUNTIME_BINARY_NAME);
-      if (!existsSync(runtimeBinPath)) {
-        return { ok: false, reason: "Runtime binary missing — the runtime must be reinstalled" };
+      // Runtime binary must exist and installation must be complete
+      // (on macOS this requires .dylib files alongside the binary).
+      const runtimeDir = storageService.getSubdir("runtime");
+      if (!isRuntimeInstallComplete(runtimeDir)) {
+        const runtimeBinPath = join(runtimeDir, RUNTIME_BINARY_NAME);
+        if (!existsSync(runtimeBinPath)) {
+          return { ok: false, reason: "Runtime binary missing — the runtime must be reinstalled" };
+        }
+        return {
+          ok: false,
+          reason:
+            "Runtime installation is incomplete (required .dylib files are missing on macOS) — " +
+            "the runtime must be reinstalled",
+        };
       }
 
       return { ok: true };
@@ -1140,6 +1217,203 @@ export const installManager = {
       return existsSync(join(storageService.getSubdir("runtime"), RUNTIME_BINARY_NAME));
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * True when the runtime installation is complete — binary present and (on
+   * macOS) required `.dylib` files are also present alongside the binary.
+   * A legacy install that only placed the binary is treated as incomplete.
+   */
+  isRuntimeInstallComplete(): boolean {
+    return isRuntimeInstallComplete(storageService.getSubdir("runtime"));
+  },
+
+  /**
+   * Download, extract, and install the llama.cpp runtime for the current
+   * platform — without touching any installed models.
+   *
+   * This is the "Repair Runtime" path: it wipes the existing runtime dir
+   * contents (if any), re-downloads the archive, extracts it, and copies
+   * all runtime files (binary + .dylib files on macOS) into the runtime dir.
+   *
+   * Throws on any error; callers must catch and handle the error state.
+   * Never touches model .gguf files, manifests, or DB records.
+   */
+  async installRuntimeOnly(onProgress?: ProgressCallback): Promise<void> {
+    if (_installing) {
+      throw new Error("An offline install is already in progress");
+    }
+    _installing = true;
+
+    const report = (
+      phase: OfflineInstallPhase,
+      step: string,
+      pct: number,
+      extra?: Pick<OfflineInstallProgress, "downloadedBytes" | "totalBytes" | "speedBps" | "etaSec">,
+    ) => {
+      onProgress?.({ phase, step, pct, ...extra });
+    };
+
+    try {
+      report("preflight", "Preparing runtime reinstall…", 1);
+
+      storageService.ensureDirectories();
+
+      const runtimeDir = storageService.getSubdir("runtime");
+      const downloadsDir = storageService.getSubdir("downloads");
+      const tmpDir = storageService.getSubdir("tmp");
+
+      const runtimeBinPath = join(runtimeDir, RUNTIME_BINARY_NAME);
+      const runtimeArchiveTmp = join(downloadsDir, "llama-runtime.archive.tmp");
+      const runtimeExtractDir = join(tmpDir, "llama-extract");
+
+      report("downloading-runtime", "Looking up latest llama.cpp release…", 4);
+
+      let runtimeDownloadUrl: string;
+      let runtimeSizeBytes: number;
+      let runtimeArchiveExt: string;
+      let runtimeAssetName: string;
+      try {
+        const release = await fetchLatestRuntimeRelease();
+        runtimeDownloadUrl = release.downloadUrl;
+        runtimeSizeBytes = release.sizeBytes;
+        runtimeArchiveExt = release.archiveExt;
+        runtimeAssetName = release.assetName;
+        const sourceLabel =
+          release.source === "pinned-fallback"
+            ? " (using pinned fallback — GitHub API unreachable)"
+            : "";
+        report(
+          "downloading-runtime",
+          `Downloading runtime ${release.tag} (${getRuntimePlatformTag()}: ${runtimeAssetName})${sourceLabel}…`,
+          5,
+        );
+      } catch (err) {
+        console.error(
+          "[install-manager] runtime release lookup failed:\n  " +
+            formatErrorChain(err),
+        );
+        if (err instanceof RuntimeReleaseLookupError) {
+          throw new RuntimeReleaseInstallError(
+            `Failed to locate llama.cpp runtime release: ${err.message}`,
+            err,
+          );
+        }
+        throw new Error(
+          `Failed to locate llama.cpp runtime release: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
+
+      if (existsSync(runtimeArchiveTmp)) unlinkSync(runtimeArchiveTmp);
+
+      const rtDownloadStart = Date.now();
+      try {
+        await downloadFile(
+          runtimeDownloadUrl,
+          runtimeArchiveTmp,
+          (received, total) => {
+            const dlPct = total > 0 ? received / total : 0;
+            const pct = 5 + Math.round(dlPct * 85);
+            const kb = (received / 1024).toFixed(0);
+            const totalKb = total > 0 ? ` / ${Math.round(total / 1024)} KB` : "";
+            const elapsedSec = (Date.now() - rtDownloadStart) / 1000;
+            let speedBps: number | undefined;
+            let etaSec: number | undefined;
+            if (elapsedSec >= 0.5 && received >= 64 * 1024) {
+              speedBps = received / elapsedSec;
+              if (speedBps > 0 && total > received) {
+                etaSec = Math.round((total - received) / speedBps);
+              }
+            }
+            report(
+              "downloading-runtime",
+              `Downloading runtime… ${kb} KB${totalKb}`,
+              pct,
+              {
+                downloadedBytes: received,
+                totalBytes: total > 0 ? total : runtimeSizeBytes || undefined,
+                speedBps,
+                etaSec,
+              },
+            );
+          },
+          { purpose: "runtime", phase: "downloading-runtime", pct: 5 },
+        );
+      } catch (err) {
+        if (err instanceof DownloadHttpError) {
+          report(
+            "downloading-runtime",
+            `Runtime download failed: HTTP ${err.status} from ${err.host}`,
+            Math.max(5, err.pct),
+          );
+          throw new AssetDownloadInstallError(
+            `Runtime download failed: HTTP ${err.status} from ${err.host}`,
+            err,
+          );
+        }
+        throw err;
+      }
+
+      report("verifying-runtime", "Extracting runtime…", 92);
+
+      await extractRuntimeArchive(runtimeArchiveTmp, runtimeArchiveExt, runtimeExtractDir);
+
+      const extractedBin = findFileRecursive(runtimeExtractDir, RUNTIME_BINARY_NAME);
+      if (!extractedBin) {
+        throw new Error(
+          `llama-server binary not found inside the downloaded archive. ` +
+            `This may indicate a release asset naming change — please file a bug.`,
+        );
+      }
+
+      // Wipe existing runtime dir contents before installing fresh files so
+      // stale dylibs from an older version can't conflict.
+      try {
+        const existing = readdirSync(runtimeDir, { withFileTypes: true });
+        for (const entry of existing) {
+          if (entry.isFile()) unlinkSync(join(runtimeDir, entry.name));
+        }
+      } catch {
+        /* best-effort — copyRuntimeFiles will overwrite anyway */
+      }
+
+      const extractedBinDir = dirname(extractedBin);
+      copyRuntimeFiles(extractedBinDir, runtimeDir);
+
+      if (process.platform !== "win32") {
+        chmodSync(runtimeBinPath, 0o755);
+      }
+
+      if (process.platform === "darwin") {
+        try {
+          await execFileAsync("xattr", ["-dr", "com.apple.quarantine", runtimeDir]);
+        } catch {
+          console.warn(
+            "[installManager] could not remove quarantine attribute from runtime dir",
+          );
+        }
+      }
+
+      try {
+        if (existsSync(runtimeArchiveTmp)) unlinkSync(runtimeArchiveTmp);
+        if (existsSync(runtimeExtractDir)) {
+          rmSync(runtimeExtractDir, { recursive: true, force: true });
+        }
+      } catch {
+        /* best-effort cleanup */
+      }
+
+      if (!isRuntimeInstallComplete(runtimeDir)) {
+        throw new Error(
+          "Runtime reinstall completed but installation appears incomplete — please retry.",
+        );
+      }
+
+      report("verifying-runtime", "Runtime reinstalled successfully", 100);
+    } finally {
+      _installing = false;
     }
   },
 

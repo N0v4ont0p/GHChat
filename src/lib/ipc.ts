@@ -266,6 +266,15 @@ export const ipc = {
     ),
 
   /**
+   * Reinstall the offline runtime (llama-server binary + required .dylib
+   * files on macOS) without touching installed models.  Use this to repair
+   * an incomplete runtime installation (e.g. an older install that only
+   * copied the binary and left dylibs missing).
+   */
+  reinstallRuntime: () =>
+    api().invoke<{ ok: boolean; error?: string }>(IPC.OFFLINE_REINSTALL_RUNTIME),
+
+  /**
    * Reset the consecutive Gemma 4 install failure counter.  Used when
    * the user explicitly chooses to keep trying Gemma 4 after the
    * fallback-offered screen instead of installing a Gemma 3 fallback.
