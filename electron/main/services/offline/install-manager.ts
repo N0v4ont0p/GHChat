@@ -5,6 +5,10 @@ import {
   copyFileSync,
   existsSync,
   statSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -511,18 +515,177 @@ function findFileRecursive(dir: string, name: string): string | null {
 }
 
 /**
+ * Names of `.dylib` files that MUST be present in the macOS runtime
+ * directory for `llama-server` to load.  These are the exact `@rpath/*`
+ * basenames the binary is linked against (see `otool -L llama-server`),
+ * NOT the un-versioned aliases.  llama.cpp's macOS release tarball
+ * ships each one as a symlink chain:
+ *
+ *   libllama-common.dylib  → libllama-common.0.dylib
+ *   libllama-common.0.dylib → libllama-common.0.0.<build>.dylib  (real file)
+ *
+ * If our copy step drops the symlink and only keeps the real file (the
+ * exact bug this commit fixes), dyld aborts with
+ * "Library not loaded: @rpath/libllama-common.0.dylib".  Listing each
+ * required `@rpath` name explicitly here means we can detect a partial
+ * install BEFORE spawn and surface the missing names by name.
+ *
+ * Treated as a *minimum* — the validator also accepts dependencies
+ * discovered dynamically by `otool -L` for forward-compatibility with
+ * future llama.cpp builds that add new dylibs.
+ */
+const REQUIRED_MACOS_RUNTIME_DYLIBS: readonly string[] = [
+  "libllama.0.dylib",
+  "libllama-common.0.dylib",
+  "libggml.0.dylib",
+  "libggml-base.0.dylib",
+  "libggml-cpu.0.dylib",
+];
+
+/**
+ * Return the list of basename entries (files + symlinks + dirs) present
+ * in `runtimeDir`, sorted.  Used by diagnostics to surface "actual
+ * runtime directory contents" when validation fails.  Returns an empty
+ * array on any error so the caller never has to wrap in try/catch.
+ */
+export function listRuntimeDirContents(runtimeDir: string): string[] {
+  try {
+    return readdirSync(runtimeDir).slice().sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Return `true` when an entry with name `name` exists in `dir` — even
+ * when that entry is a broken symlink.  We use `lstatSync` instead of
+ * `existsSync` because `existsSync` follows symlinks and returns false
+ * for a broken link, which would mis-report a present-but-broken dylib
+ * as "missing".  The validator that runs after install needs to count
+ * broken links as present (the link itself is what dyld resolves).
+ */
+function entryExists(dir: string, name: string): boolean {
+  try {
+    lstatSync(join(dir, name));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return the subset of {@link REQUIRED_MACOS_RUNTIME_DYLIBS} that are
+ * NOT present in `runtimeDir`.  Empty array means all required dylibs
+ * are accounted for.  Always returns `[]` on non-darwin platforms.
+ */
+export function findMissingMacRuntimeDylibs(runtimeDir: string): string[] {
+  if (process.platform !== "darwin") return [];
+  return REQUIRED_MACOS_RUNTIME_DYLIBS.filter((name) => !entryExists(runtimeDir, name));
+}
+
+/**
+ * Result of {@link validateMacRuntimeDependencies}.
+ *
+ *  - `ok`            — true when every required dylib is present AND every
+ *                       `@rpath/*` dep reported by `otool -L` resolves.
+ *  - `missing`       — required `@rpath` basenames missing from `runtimeDir`
+ *                       (union of the static minimum list and the dynamic
+ *                       `otool -L` dependency list).
+ *  - `rpathDeps`     — full list of `@rpath/*` basenames `otool -L` reported
+ *                       for `llama-server` (for diagnostics).
+ *  - `otoolAvailable` — false when `otool` could not be executed (e.g. on a
+ *                       system without Xcode CLT) — the static dylib presence
+ *                       check still ran and `missing` is still authoritative.
+ */
+export interface MacRuntimeDependencyCheck {
+  ok: boolean;
+  missing: string[];
+  rpathDeps: string[];
+  otoolAvailable: boolean;
+}
+
+/**
+ * Verify that every dynamic library `llama-server` is linked against
+ * via `@rpath/...` exists alongside it in `runtimeDir`.
+ *
+ * On darwin we run `otool -L <runtimeDir>/llama-server`, parse every
+ * line whose first token starts with `@rpath/`, take the basename, and
+ * confirm an entry of that name exists in `runtimeDir`.  Combined with
+ * the static {@link REQUIRED_MACOS_RUNTIME_DYLIBS} list this catches
+ * both:
+ *
+ *  1. The exact symlink-drop bug that triggered this fix (e.g.
+ *     `libllama-common.0.dylib` symlink missing, only the
+ *     `libllama-common.0.0.<build>.dylib` real file present).
+ *  2. Any new llama.cpp dylib added in a future release that we
+ *     haven't enumerated explicitly.
+ *
+ * On non-darwin platforms returns `{ ok: true, missing: [], rpathDeps: [],
+ * otoolAvailable: false }` — Windows/Linux builds are statically linked.
+ */
+export async function validateMacRuntimeDependencies(
+  runtimeDir: string,
+): Promise<MacRuntimeDependencyCheck> {
+  if (process.platform !== "darwin") {
+    return { ok: true, missing: [], rpathDeps: [], otoolAvailable: false };
+  }
+
+  const binaryPath = join(runtimeDir, RUNTIME_BINARY_NAME);
+  const staticMissing = findMissingMacRuntimeDylibs(runtimeDir);
+
+  let rpathDeps: string[] = [];
+  let otoolAvailable = false;
+  try {
+    const { stdout } = await execFileAsync("otool", ["-L", binaryPath]);
+    otoolAvailable = true;
+    // otool -L output:
+    //   <binary>:
+    //   \t@rpath/libllama.0.dylib (compatibility version 0.0.0, current version 0.0.0)
+    //   \t@rpath/libggml.0.dylib (...)
+    //   \t/usr/lib/libSystem.B.dylib (...)
+    // We only care about local @rpath/* deps; system /usr/lib/* deps are
+    // resolved by macOS and not our concern.
+    for (const rawLine of stdout.split("\n")) {
+      const line = rawLine.trim();
+      if (!line.startsWith("@rpath/")) continue;
+      const firstToken = line.split(/\s+/)[0];
+      // basename of @rpath/foo/bar/libxxx.dylib
+      const base = firstToken.split("/").pop();
+      if (base) rpathDeps.push(base);
+    }
+    // De-dupe while preserving order.
+    rpathDeps = Array.from(new Set(rpathDeps));
+  } catch (err) {
+    console.warn(
+      `[install-manager] otool -L failed for ${binaryPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const dynamicMissing = rpathDeps.filter((name) => !entryExists(runtimeDir, name));
+  const missing = Array.from(new Set([...staticMissing, ...dynamicMissing])).sort();
+
+  return {
+    ok: missing.length === 0,
+    missing,
+    rpathDeps,
+    otoolAvailable,
+  };
+}
+
+/**
  * Return `true` when the runtime directory contains a complete runtime
- * installation — binary present AND (on macOS) at least one `.dylib`
- * companion library.
+ * installation — binary present AND (on macOS) every required
+ * `@rpath/*.dylib` companion library present (real file or symlink).
  *
  * On macOS, llama.cpp ships as a set of dynamically-linked files: the
  * `llama-server` binary plus several `.dylib` libraries (e.g.
- * `libllama-common.0.dylib`, `libggml.dylib`).  A legacy install that
- * only copied the binary is incomplete and will immediately abort with
- * `dyld: Library not loaded` when the OS linker tries to resolve
- * `@rpath/libllama-common.0.dylib`.  Detecting this early lets the
- * install pipeline skip the "already installed" short-circuit and
- * always produce a complete installation.
+ * `libllama-common.0.dylib`, `libggml.0.dylib`) packaged as symlink
+ * chains.  A legacy install that only copied the binary — OR an install
+ * that copied the real dylib files but dropped the `.0.dylib` symlinks
+ * dyld actually resolves — is incomplete and will immediately abort
+ * with `dyld: Library not loaded` at process start.  Detecting this
+ * early lets the install pipeline skip the "already installed"
+ * short-circuit and always produce a complete installation.
  *
  * On Windows and Linux, the llama.cpp builds targeted by this project
  * are statically linked, so the binary alone is sufficient.
@@ -533,8 +696,7 @@ function isRuntimeInstallComplete(runtimeDir: string): boolean {
     const hasBinary = entries.includes(RUNTIME_BINARY_NAME);
     if (!hasBinary) return false;
     if (process.platform === "darwin") {
-      // macOS runtime requires accompanying .dylib files.
-      return entries.some((e) => e.endsWith(".dylib"));
+      return findMissingMacRuntimeDylibs(runtimeDir).length === 0;
     }
     return true;
   } catch {
@@ -543,13 +705,31 @@ function isRuntimeInstallComplete(runtimeDir: string): boolean {
 }
 
 /**
- * Copy every regular file from `srcDir` into `destDir`, overwriting any
- * existing file of the same name.  Sub-directories inside `srcDir` are
- * intentionally skipped — the llama.cpp release archives for macOS place
- * all required files (binary + dylibs) flat in a single directory, so a
- * flat copy is both correct and safe.
+ * Copy every regular file AND every symbolic link from `srcDir` into
+ * `destDir`, overwriting any existing entry of the same name.
+ * Sub-directories inside `srcDir` are intentionally skipped — the
+ * llama.cpp release archives for macOS place all required files (binary
+ * + dylibs) flat in a single directory, so a flat copy is correct.
  *
- * This is used instead of a rename/move so the operation is safe across
+ * Symlinks MUST be preserved verbatim on macOS: the release tarball
+ * ships dylibs as a chain
+ *
+ *   libllama-common.dylib   → libllama-common.0.dylib
+ *   libllama-common.0.dylib → libllama-common.0.0.<build>.dylib   (real file)
+ *
+ * and `llama-server` is linked against the symlink name
+ * `@rpath/libllama-common.0.dylib`.  An earlier version of this helper
+ * skipped non-`isFile()` entries, dropping every symlink, which left
+ * only the versioned real file behind and caused dyld to abort on
+ * spawn.  We now `symlinkSync(readlinkSync(src), dest)` to recreate
+ * each link with the same target string the archive shipped — both
+ * relative-target links (`libllama-common.0.dylib`) and absolute-target
+ * links round-trip correctly because we copy the link's target *string*
+ * unchanged.  If symlink creation fails (e.g. on a Windows volume that
+ * forbids unprivileged symlinks) we fall back to copying the resolved
+ * target file under the link's name.
+ *
+ * Used instead of a rename/move so the operation is safe across
  * filesystem boundaries (e.g. when the tmp extract dir and the managed
  * runtime dir are on different volumes).
  */
@@ -557,10 +737,164 @@ function copyRuntimeFiles(srcDir: string, destDir: string): void {
   mkdirSync(destDir, { recursive: true });
   const entries = readdirSync(srcDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isFile()) continue;
     const src = join(srcDir, entry.name);
     const dest = join(destDir, entry.name);
-    copyFileSync(src, dest);
+
+    // Remove any existing entry at dest (file or broken symlink) so the
+    // copy/symlink call doesn't fail with EEXIST.
+    try {
+      if (existsSync(dest) || lstatSync(dest)) {
+        unlinkSync(dest);
+      }
+    } catch {
+      /* dest doesn't exist — fine */
+    }
+
+    if (entry.isSymbolicLink()) {
+      try {
+        const target = readlinkSync(src);
+        symlinkSync(target, dest);
+      } catch (err) {
+        // Fallback: copy the resolved file under the link's name so the
+        // dependent binary can still find it by basename.
+        try {
+          copyFileSync(src, dest);
+        } catch {
+          console.warn(
+            `[install-manager] failed to copy symlink ${entry.name}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    } else if (entry.isFile()) {
+      copyFileSync(src, dest);
+    }
+    // Subdirectories intentionally skipped — see jsdoc.
+  }
+}
+
+/**
+ * Recursively list every regular-file/symlink entry under `dir`,
+ * returning paths relative to `dir`, sorted.  Used to log the full
+ * contents of a freshly-extracted runtime archive so post-mortem
+ * diagnostics can confirm whether a missing dylib was actually present
+ * in the upstream tarball.  Bounded only by archive size; llama.cpp
+ * tarballs are <50 entries so this is safe to log inline.
+ */
+function listArchiveEntriesRecursive(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (current: string, prefix: string) => {
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(join(current, entry.name), rel);
+      } else {
+        const tag = entry.isSymbolicLink() ? "@" : "";
+        out.push(`${rel}${tag}`);
+      }
+    }
+  };
+  walk(dir, "");
+  return out.sort();
+}
+
+/**
+ * Wipe every entry in `runtimeDir` (files, symlinks, and subdirs).
+ * Called by `installRuntimeOnly` (the Repair Runtime path) before
+ * re-extracting so a stale install — including the exact bug this
+ * commit fixes (real dylib files left behind, symlinks missing) —
+ * can't shadow the fresh files.  Best-effort: any per-entry failure
+ * is logged and skipped so a single locked file doesn't abort repair.
+ *
+ * Safe to call on a non-existent or empty dir.
+ */
+function clearRuntimeDir(runtimeDir: string): void {
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(runtimeDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const p = join(runtimeDir, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        rmSync(p, { recursive: true, force: true });
+      } else {
+        // Covers regular files AND symlinks (incl. broken ones).
+        unlinkSync(p);
+      }
+    } catch (err) {
+      console.warn(
+        `[install-manager] failed to remove stale runtime entry ${p}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+// ── Runtime install metadata (for diagnostics) ────────────────────────────────
+
+/** Filename of the runtime install metadata sidecar inside the runtime dir. */
+const RUNTIME_META_FILENAME = "runtime-meta.json";
+
+/**
+ * Persisted alongside the runtime binary so the diagnostics panel can
+ * surface "selected runtime release/asset name" without re-querying the
+ * GitHub releases API.  Written at the end of every successful install
+ * / repair; read opportunistically — missing/unparseable file is OK and
+ * just renders as "unknown".
+ */
+export interface RuntimeInstallMetadata {
+  /** Asset filename selected from the GitHub release (e.g. "llama-b9095-bin-macos-arm64.tar.gz"). */
+  assetName: string;
+  /** Release tag the asset came from (e.g. "b9095"). */
+  tag: string | null;
+  /** Wall-clock ms when the install completed. */
+  installedAt: number;
+  /** process.platform / process.arch tag for cross-checking on first run. */
+  platformTag: string;
+}
+
+function writeRuntimeMeta(runtimeDir: string, meta: RuntimeInstallMetadata): void {
+  try {
+    writeFileSync(join(runtimeDir, RUNTIME_META_FILENAME), JSON.stringify(meta, null, 2));
+  } catch (err) {
+    console.warn(
+      `[install-manager] failed to write runtime-meta.json: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Read the runtime install metadata sidecar.  Returns `null` when the
+ * file is missing, unreadable, or fails to parse — diagnostics treat
+ * that as "unknown" rather than surfacing a noisy error.
+ */
+export function readRuntimeMeta(runtimeDir: string): RuntimeInstallMetadata | null {
+  try {
+    const raw = readFileSync(join(runtimeDir, RUNTIME_META_FILENAME), "utf8");
+    const parsed = JSON.parse(raw) as RuntimeInstallMetadata;
+    if (
+      parsed &&
+      typeof parsed.assetName === "string" &&
+      typeof parsed.installedAt === "number" &&
+      typeof parsed.platformTag === "string"
+    ) {
+      return {
+        assetName: parsed.assetName,
+        tag: typeof parsed.tag === "string" ? parsed.tag : null,
+        installedAt: parsed.installedAt,
+        platformTag: parsed.platformTag,
+      };
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -742,12 +1076,14 @@ export const installManager = {
         let runtimeSizeBytes: number;
         let runtimeArchiveExt: string;
         let runtimeAssetName: string;
+        let runtimeReleaseTag: string;
         try {
           const release = await fetchLatestRuntimeRelease();
           runtimeDownloadUrl = release.downloadUrl;
           runtimeSizeBytes = release.sizeBytes;
           runtimeArchiveExt = release.archiveExt;
           runtimeAssetName = release.assetName;
+          runtimeReleaseTag = release.tag;
           const sourceLabel =
             release.source === "pinned-fallback"
               ? " (using pinned fallback — GitHub API unreachable)"
@@ -845,6 +1181,16 @@ export const installManager = {
 
         await extractRuntimeArchive(runtimeArchiveTmp, runtimeArchiveExt, runtimeExtractDir);
 
+        // Log the full extracted archive contents so post-mortem
+        // diagnostics can prove which dylibs were/weren't in the upstream
+        // tarball.  Bounded by archive size (<50 entries for llama.cpp).
+        const archiveEntries = listArchiveEntriesRecursive(runtimeExtractDir);
+        console.log(
+          `[install-manager] runtime archive ${runtimeAssetName} extracted ` +
+            `(${archiveEntries.length} entries):\n  ` +
+            archiveEntries.join("\n  "),
+        );
+
         const extractedBin = findFileRecursive(runtimeExtractDir, RUNTIME_BINARY_NAME);
         if (!extractedBin) {
           throw new Error(
@@ -853,14 +1199,17 @@ export const installManager = {
           );
         }
 
-        // Copy ALL files from the directory containing the binary to the
-        // managed runtime dir.  On macOS, llama.cpp archives ship as a flat
-        // directory of the binary plus required .dylib files (e.g.
-        // libllama-common.0.dylib, libggml.dylib).  The previous code only
-        // moved the binary itself and discarded the dylibs, causing dyld to
-        // abort with "Library not loaded: @rpath/libllama-common.0.dylib"
-        // at process start.  Copying all sibling files ensures every shared
-        // library is present alongside the binary.
+        // Copy ALL files (regular files AND symlinks) from the directory
+        // containing the binary to the managed runtime dir.  On macOS,
+        // llama.cpp archives ship as a flat directory of the binary plus
+        // required `.dylib` files, where each linkable name (e.g.
+        // `libllama-common.0.dylib`) is itself a SYMLINK to the versioned
+        // real file (`libllama-common.0.0.<build>.dylib`).  An earlier
+        // version of `copyRuntimeFiles` filtered out non-`isFile()`
+        // entries, dropping every symlink and leaving only the versioned
+        // real files behind, causing dyld to abort with
+        // "Library not loaded: @rpath/libllama-common.0.dylib" at process
+        // start.  The current implementation re-creates symlinks verbatim.
         const extractedBinDir = dirname(extractedBin);
         copyRuntimeFiles(extractedBinDir, runtimeDir);
 
@@ -885,6 +1234,38 @@ export const installManager = {
             );
           }
         }
+
+        // Hard validation: on macOS, confirm every required dylib (and
+        // every `@rpath/*` dep `otool -L` reports) actually resolves
+        // inside the runtime dir BEFORE we declare the install
+        // successful.  Failing here aborts the install with a precise
+        // missing-library list — much more actionable than waiting for
+        // dyld to SIGABRT the spawn at first chat attempt.
+        if (process.platform === "darwin") {
+          const depCheck = await validateMacRuntimeDependencies(runtimeDir);
+          if (!depCheck.ok) {
+            const dirContents = listRuntimeDirContents(runtimeDir);
+            throw new Error(
+              `Runtime install incomplete — missing required dynamic libraries on macOS: ` +
+                `${depCheck.missing.join(", ")}. ` +
+                `Asset "${runtimeAssetName}" was extracted but copy step did not preserve all dylibs. ` +
+                `Runtime dir contents: ${dirContents.join(", ")}.`,
+            );
+          }
+          console.log(
+            `[install-manager] macOS runtime dependency check OK ` +
+              `(${depCheck.rpathDeps.length} @rpath deps resolved)`,
+          );
+        }
+
+        // Persist install metadata for the diagnostics panel ("selected
+        // runtime release / asset name").
+        writeRuntimeMeta(runtimeDir, {
+          assetName: runtimeAssetName,
+          tag: runtimeReleaseTag,
+          installedAt: Date.now(),
+          platformTag: getRuntimePlatformTag(),
+        });
 
         // Clean up the archive and extract dir using Node.js fs (no shell needed).
         try {
@@ -1130,18 +1511,23 @@ export const installManager = {
       }
 
       // Runtime binary must exist and installation must be complete
-      // (on macOS this requires .dylib files alongside the binary).
+      // (on macOS this requires every required `.dylib` symlink target
+      // alongside the binary).
       const runtimeDir = storageService.getSubdir("runtime");
       if (!isRuntimeInstallComplete(runtimeDir)) {
         const runtimeBinPath = join(runtimeDir, RUNTIME_BINARY_NAME);
         if (!existsSync(runtimeBinPath)) {
           return { ok: false, reason: "Runtime binary missing — the runtime must be reinstalled" };
         }
+        const missing = findMissingMacRuntimeDylibs(runtimeDir);
+        const missingHint = missing.length
+          ? ` Missing: ${missing.join(", ")}.`
+          : "";
         return {
           ok: false,
           reason:
             "Runtime installation is incomplete (required .dylib files are missing on macOS) — " +
-            "the runtime must be reinstalled",
+            `the runtime must be reinstalled.${missingHint}`,
         };
       }
 
@@ -1274,12 +1660,14 @@ export const installManager = {
       let runtimeSizeBytes: number;
       let runtimeArchiveExt: string;
       let runtimeAssetName: string;
+      let runtimeReleaseTag: string;
       try {
         const release = await fetchLatestRuntimeRelease();
         runtimeDownloadUrl = release.downloadUrl;
         runtimeSizeBytes = release.sizeBytes;
         runtimeArchiveExt = release.archiveExt;
         runtimeAssetName = release.assetName;
+        runtimeReleaseTag = release.tag;
         const sourceLabel =
           release.source === "pinned-fallback"
             ? " (using pinned fallback — GitHub API unreachable)"
@@ -1360,6 +1748,16 @@ export const installManager = {
 
       await extractRuntimeArchive(runtimeArchiveTmp, runtimeArchiveExt, runtimeExtractDir);
 
+      // Log the full extracted archive contents for diagnostics — proves
+      // whether a missing dylib was actually present in the upstream
+      // tarball or filtered out by our copy step.
+      const archiveEntries = listArchiveEntriesRecursive(runtimeExtractDir);
+      console.log(
+        `[install-manager] (repair) runtime archive ${runtimeAssetName} extracted ` +
+          `(${archiveEntries.length} entries):\n  ` +
+          archiveEntries.join("\n  "),
+      );
+
       const extractedBin = findFileRecursive(runtimeExtractDir, RUNTIME_BINARY_NAME);
       if (!extractedBin) {
         throw new Error(
@@ -1368,16 +1766,12 @@ export const installManager = {
         );
       }
 
-      // Wipe existing runtime dir contents before installing fresh files so
-      // stale dylibs from an older version can't conflict.
-      try {
-        const existing = readdirSync(runtimeDir, { withFileTypes: true });
-        for (const entry of existing) {
-          if (entry.isFile()) unlinkSync(join(runtimeDir, entry.name));
-        }
-      } catch {
-        /* best-effort — copyRuntimeFiles will overwrite anyway */
-      }
+      // Wipe existing runtime dir contents (files, symlinks, AND
+      // subdirs) before installing fresh files so stale entries from a
+      // partial / older / broken install can't shadow the new ones.
+      // Preserves the runtime dir itself; never touches sibling dirs
+      // like `models/` so installed models survive Repair Runtime.
+      clearRuntimeDir(runtimeDir);
 
       const extractedBinDir = dirname(extractedBin);
       copyRuntimeFiles(extractedBinDir, runtimeDir);
@@ -1396,6 +1790,37 @@ export const installManager = {
         }
       }
 
+      // Hard validation BEFORE we declare repair successful.  Same
+      // dependency check as the full install — see the long comment in
+      // the install path for rationale.  If validation fails the repair
+      // is aborted with a precise missing-library list and the runtime
+      // is left in a marked-incomplete state so the next start surfaces
+      // the same missing-dependency banner instead of silently moving on.
+      if (process.platform === "darwin") {
+        const depCheck = await validateMacRuntimeDependencies(runtimeDir);
+        if (!depCheck.ok) {
+          const dirContents = listRuntimeDirContents(runtimeDir);
+          throw new Error(
+            `Runtime repair incomplete — missing required dynamic libraries on macOS: ` +
+              `${depCheck.missing.join(", ")}. ` +
+              `Asset "${runtimeAssetName}" was extracted but copy step did not preserve all dylibs. ` +
+              `Runtime dir contents: ${dirContents.join(", ")}.`,
+          );
+        }
+        console.log(
+          `[install-manager] (repair) macOS runtime dependency check OK ` +
+            `(${depCheck.rpathDeps.length} @rpath deps resolved)`,
+        );
+      }
+
+      // Persist install metadata for the diagnostics panel.
+      writeRuntimeMeta(runtimeDir, {
+        assetName: runtimeAssetName,
+        tag: runtimeReleaseTag,
+        installedAt: Date.now(),
+        platformTag: getRuntimePlatformTag(),
+      });
+
       try {
         if (existsSync(runtimeArchiveTmp)) unlinkSync(runtimeArchiveTmp);
         if (existsSync(runtimeExtractDir)) {
@@ -1406,8 +1831,12 @@ export const installManager = {
       }
 
       if (!isRuntimeInstallComplete(runtimeDir)) {
+        const missing = findMissingMacRuntimeDylibs(runtimeDir);
+        const missingHint = missing.length
+          ? ` Missing on disk: ${missing.join(", ")}.`
+          : "";
         throw new Error(
-          "Runtime reinstall verification failed — the installation may be incomplete. Please retry.",
+          `Runtime reinstall verification failed — the installation may be incomplete.${missingHint} Please retry.`,
         );
       }
 

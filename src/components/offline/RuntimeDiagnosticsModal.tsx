@@ -126,6 +126,26 @@ function formatReport(d: OfflineRuntimeDiagnostics): string {
     `Binary path: ${formatPathExists(d.binaryPath, d.binaryPathExists)}`,
     `Runtime log: ${d.runtimeLogPath} (${d.runtimeLogExists ? "exists" : "missing"})`,
     "",
+    "## Runtime asset",
+    d.runtimeAsset
+      ? `Asset: ${d.runtimeAsset.assetName}\nTag: ${d.runtimeAsset.tag ?? "—"}\nPlatform: ${d.runtimeAsset.platformTag}\nInstalled at: ${new Date(d.runtimeAsset.installedAt).toISOString()}`
+      : "— (no runtime-meta.json — legacy or fresh install)",
+    "",
+    "## Runtime directory contents",
+    d.runtimeDirContents && d.runtimeDirContents.length
+      ? d.runtimeDirContents.join("\n")
+      : "—",
+    "",
+    "## Runtime dependency check (otool -L)",
+    d.runtimeDependencyCheck
+      ? [
+          `Result: ${d.runtimeDependencyCheck.ok ? "OK" : "RUNTIME DEPENDENCY MISSING"}`,
+          `otool available: ${d.runtimeDependencyCheck.otoolAvailable ? "yes" : "no"}`,
+          `Missing libraries: ${d.runtimeDependencyCheck.missing.length ? d.runtimeDependencyCheck.missing.join(", ") : "—"}`,
+          `@rpath dependencies (${d.runtimeDependencyCheck.rpathDeps.length}): ${d.runtimeDependencyCheck.rpathDeps.length ? d.runtimeDependencyCheck.rpathDeps.join(", ") : "—"}`,
+        ].join("\n")
+      : "— (non-darwin or runtime not installed)",
+    "",
     "## Last attempt",
     `Started at: ${formatTimestamp(d.lastStartedAt)}`,
     `Ready at: ${formatTimestamp(d.lastReadyAt)}`,
@@ -442,6 +462,79 @@ export function RuntimeDiagnosticsModal({
                   label="Runtime log"
                   value={`${diag.runtimeLogPath} (${diag.runtimeLogExists ? "exists" : "missing"})`}
                 />
+              </DiagnosticsSection>
+
+              {/* Runtime asset (selected GitHub release / asset name) */}
+              <DiagnosticsSection title="Runtime asset">
+                <DiagnosticsRow
+                  label="Asset name"
+                  value={diag.runtimeAsset?.assetName ?? "— (legacy install: no metadata)"}
+                />
+                <DiagnosticsRow
+                  label="Release tag"
+                  value={diag.runtimeAsset?.tag ?? "—"}
+                />
+                <DiagnosticsRow
+                  label="Platform"
+                  value={diag.runtimeAsset?.platformTag ?? "—"}
+                />
+                <DiagnosticsRow
+                  label="Installed at"
+                  value={formatTimestamp(diag.runtimeAsset?.installedAt ?? null)}
+                />
+              </DiagnosticsSection>
+
+              {/* Runtime dependency check (otool -L parsed @rpath/* deps) */}
+              <DiagnosticsSection title="Runtime dependency check">
+                {diag.runtimeDependencyCheck ? (
+                  <>
+                    <DiagnosticsRow
+                      label="Result"
+                      value={
+                        diag.runtimeDependencyCheck.ok
+                          ? "OK — every required dylib resolves"
+                          : "RUNTIME DEPENDENCY MISSING"
+                      }
+                      warn={!diag.runtimeDependencyCheck.ok}
+                    />
+                    <DiagnosticsRow
+                      label="otool available"
+                      value={diag.runtimeDependencyCheck.otoolAvailable ? "yes" : "no"}
+                      warn={!diag.runtimeDependencyCheck.otoolAvailable}
+                    />
+                    <DiagnosticsRow
+                      label="Missing libraries"
+                      value={
+                        diag.runtimeDependencyCheck.missing.length
+                          ? diag.runtimeDependencyCheck.missing.join(", ")
+                          : "—"
+                      }
+                      warn={diag.runtimeDependencyCheck.missing.length > 0}
+                    />
+                    <DiagnosticsRow
+                      label={`@rpath dependencies (${diag.runtimeDependencyCheck.rpathDeps.length})`}
+                      value={
+                        diag.runtimeDependencyCheck.rpathDeps.length
+                          ? diag.runtimeDependencyCheck.rpathDeps.join(", ")
+                          : "—"
+                      }
+                    />
+                  </>
+                ) : (
+                  <DiagnosticsRow
+                    label="Status"
+                    value="— (not applicable — non-darwin or runtime not installed)"
+                  />
+                )}
+              </DiagnosticsSection>
+
+              {/* Runtime directory contents */}
+              <DiagnosticsSection title="Runtime directory contents">
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/40 bg-secondary/30 p-2 font-mono text-[11px] text-muted-foreground">
+                  {diag.runtimeDirContents && diag.runtimeDirContents.length
+                    ? diag.runtimeDirContents.join("\n")
+                    : "—"}
+                </pre>
               </DiagnosticsSection>
 
               {/* Last attempt */}

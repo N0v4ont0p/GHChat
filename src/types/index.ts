@@ -889,6 +889,67 @@ export interface OfflineRuntimeDiagnostics {
    * panel can render "typical 5–9s (4 runs)" without an extra fetch.
    */
   startupStats: OfflineRuntimeStartupStats | null;
+  /**
+   * Sorted basenames of every entry currently in the runtime directory
+   * (files, symlinks, and dirs).  Surfaced so the diagnostics panel can
+   * answer "is libllama-common.0.dylib actually on disk?" without an
+   * extra IPC round-trip.  `null` when the directory cannot be read.
+   */
+  runtimeDirContents: string[] | null;
+  /**
+   * Result of the macOS `@rpath` dependency check that runs `otool -L`
+   * against the runtime binary and verifies every reported dependency
+   * resolves inside the runtime dir.  `null` on non-darwin platforms or
+   * when the runtime is not installed yet.
+   */
+  runtimeDependencyCheck: OfflineRuntimeDependencyCheck | null;
+  /**
+   * The asset filename / release tag selected by the most recent
+   * runtime install — read from `runtime-meta.json` written at the end
+   * of every successful install.  `null` when the metadata file is
+   * missing (legacy install) or unparseable.
+   */
+  runtimeAsset: OfflineRuntimeAssetInfo | null;
+}
+
+/**
+ * Result of the macOS `otool -L` dependency check used by the runtime
+ * diagnostics panel.  `ok` is true only when every required `.dylib`
+ * (both the static minimum list and the dynamic `@rpath/*` deps
+ * reported by `otool -L`) is present alongside `llama-server`.
+ */
+export interface OfflineRuntimeDependencyCheck {
+  /** True when every required dylib resolves on disk. */
+  ok: boolean;
+  /**
+   * Required `@rpath` basenames that are NOT present in the runtime
+   * directory (union of the static minimum list and the dynamic
+   * `otool -L` dep list).  Empty when `ok` is true.
+   */
+  missing: string[];
+  /**
+   * Every `@rpath/*` basename `otool -L` reported for the runtime
+   * binary, in source order, de-duplicated.  Empty on non-darwin or
+   * when `otool` could not be executed.
+   */
+  rpathDeps: string[];
+  /**
+   * False when `otool` could not be executed (e.g. on a system without
+   * Xcode CLT) — `missing` still reflects the static-minimum check.
+   */
+  otoolAvailable: boolean;
+}
+
+/** Persisted metadata describing the most recent runtime install. */
+export interface OfflineRuntimeAssetInfo {
+  /** Asset filename selected from the GitHub release. */
+  assetName: string;
+  /** Release tag the asset came from, or null if not recorded. */
+  tag: string | null;
+  /** Wall-clock ms when the install completed. */
+  installedAt: number;
+  /** Platform tag the install targeted (e.g. "macos-arm64"). */
+  platformTag: string;
 }
 
 /** Per-model health/availability status. */
