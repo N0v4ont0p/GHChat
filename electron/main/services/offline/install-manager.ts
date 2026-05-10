@@ -740,12 +740,14 @@ function copyRuntimeFiles(srcDir: string, destDir: string): void {
     const src = join(srcDir, entry.name);
     const dest = join(destDir, entry.name);
 
-    // Remove any existing entry at dest (file or broken symlink) so the
-    // copy/symlink call doesn't fail with EEXIST.
+    // Remove any existing entry at dest (including broken symlinks) so
+    // the copy/symlink call doesn't fail with EEXIST.  `lstatSync`
+    // (unlike `existsSync`) does not follow links, so a broken symlink
+    // at `dest` still triggers the unlink path.  Any error here means
+    // there's nothing to remove — proceed with the install.
     try {
-      if (existsSync(dest) || lstatSync(dest)) {
-        unlinkSync(dest);
-      }
+      lstatSync(dest);
+      unlinkSync(dest);
     } catch {
       /* dest doesn't exist — fine */
     }
