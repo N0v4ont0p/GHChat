@@ -375,6 +375,44 @@ Adding **Ollama**, **LM Studio**, or an **OpenAI-compatible API** means implemen
 - Or go to System Settings → Privacy & Security → click "Open Anyway" next to GHchat
 - This is required for unsigned apps — expected behavior on macOS
 
+### macOS DMG packaging failures (`hdiutil: resize: failed`, error 35)
+
+`electron-builder` mounts a temporary DMG, copies the app bundle into it, then shrinks it with `hdiutil resize`. If a previous build was interrupted the volume stays mounted and the next build fails with:
+
+```
+hdiutil: resize: failed. Resource temporarily unavailable (35)
+```
+
+**Quick recovery:**
+
+```bash
+# 1. List all currently mounted disk images
+hdiutil info
+
+# 2. Force-detach any stale GHchat volumes
+hdiutil detach /Volumes/GHchat* --force
+
+# 3. Clean stale build output
+pnpm run clean:build       # removes dist/
+
+# 4. Retry — cleanup runs automatically before packaging
+pnpm run package:mac:arm64
+```
+
+Or use the dedicated cleanup script directly:
+
+```bash
+pnpm run clean:dmg-mounts  # detaches stale GHchat volumes
+```
+
+**For fast local testing (skips DMG, produces `.zip` only):**
+
+```bash
+pnpm run build:mac:zip     # builds a .zip artifact — never mounts a DMG
+```
+
+The `.zip` artifact in `dist/` can be unzipped and the `.app` inside dragged to `/Applications` for local testing. Use `pnpm run build:mac:dmg` when you need only the DMG installer, or `pnpm run package:mac:arm64` when you need both the DMG installer and a ZIP side-by-side.
+
 ---
 
 ## Development Commands
@@ -386,9 +424,17 @@ pnpm preview                # Preview the built renderer
 pnpm lint                   # Run ESLint
 pnpm format                 # Format with Prettier
 pnpm format:check           # Check formatting without writing
-pnpm run package:mac        # Build + package macOS .dmg (arm64 + x64)
-pnpm run package:mac:arm64  # Build + package macOS .dmg (Apple Silicon)
-pnpm run package:mac:x64    # Build + package macOS .dmg (Intel)
+
+# macOS packaging
+pnpm run package:mac        # Build + package macOS DMG + ZIP (arm64 and x64)
+pnpm run package:mac:arm64  # Build + package macOS DMG + ZIP (Apple Silicon)
+pnpm run package:mac:x64    # Build + package macOS DMG + ZIP (Intel)
+pnpm run build:mac:zip      # Build + package ZIP only — fast, no hdiutil (arm64)
+pnpm run build:mac:dmg      # Build + package DMG only (arm64)
+
+# Cleanup
+pnpm run clean:build        # Remove dist/ directory
+pnpm run clean:dmg-mounts   # Detach stale GHchat hdiutil volumes
 ```
 
 ---
