@@ -7,10 +7,11 @@ import {
   mkdirSync,
   statSync,
   accessSync,
+  readdirSync,
   readFileSync,
   constants as fsConstants,
 } from "fs";
-import { extname, join } from "path";
+import { dirname, extname, join } from "path";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
 import { storageService } from "./storage";
@@ -372,6 +373,40 @@ function validateLaunchPreconditions(modelId: string): LaunchPreconditionResult 
       modelPath,
       binaryPath,
     };
+  }
+
+  // 8.5. On macOS, verify that required dynamic libraries (.dylib files) are
+  //      present alongside the binary.  llama.cpp ships as a set of
+  //      dynamically-linked files; if the runtime was installed by an older
+  //      version of this app (which only copied the binary), dyld will abort
+  //      immediately with SIGABRT / "Library not loaded: @rpath/…" before
+  //      the HTTP server can start.  Detecting this before spawn surfaces a
+  //      clear "Repair Runtime" action instead of a cryptic exit-with-signal
+  //      failure message 180 seconds later.
+  if (process.platform === "darwin") {
+    const runtimeDir = dirname(binaryPath);
+    let hasDylibs = false;
+    try {
+      const entries = readdirSync(runtimeDir);
+      hasDylibs = entries.some((e) => e.endsWith(".dylib"));
+    } catch {
+      // Directory unreadable — let the process surface the real error.
+      hasDylibs = true;
+    }
+    if (!hasDylibs) {
+      return {
+        ok: false,
+        phase: "checking-binary",
+        kind: "missing-file",
+        message:
+          `The offline runtime is missing required dynamic libraries (.dylib files) ` +
+          `in ${runtimeDir}. ` +
+          `The runtime installation is incomplete — use "Repair Runtime" to reinstall it.`,
+        recoveryActions: ["reinstall-runtime"],
+        modelPath,
+        binaryPath,
+      };
+    }
   }
 
   return { ok: true, modelPath, modelSizeBytes, binaryPath };
@@ -1362,9 +1397,25 @@ export const runtimeManager = {
 
       let proc: ChildProcess;
       try {
+        // On macOS, add the runtime directory to DYLD_LIBRARY_PATH so the
+        // dynamic linker can resolve @rpath references to .dylib files that
+        // ship alongside the binary (e.g. libllama-common.0.dylib).  This is
+        // belt-and-suspenders alongside copying the dylibs into the runtime
+        // dir at install time: if the binary's embedded @rpath already points
+        // to @loader_path the env var is redundant but harmless; if it doesn't
+        // (or on a system where @rpath resolution is strict), the env var is
+        // the reliable fallback.
+        const spawnEnv: NodeJS.ProcessEnv = { ...process.env };
+        if (process.platform === "darwin") {
+          const runtimeDir = dirname(pre.binaryPath);
+          const existing = spawnEnv.DYLD_LIBRARY_PATH;
+          spawnEnv.DYLD_LIBRARY_PATH = existing
+            ? `${runtimeDir}:${existing}`
+            : runtimeDir;
+        }
         proc = spawn(pre.binaryPath, args, {
           stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env },
+          env: spawnEnv,
         });
       } catch (err) {
         const msg = `Failed to spawn llama-server: ${err instanceof Error ? err.message : String(err)}`;

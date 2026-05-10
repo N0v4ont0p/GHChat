@@ -21,6 +21,7 @@ import {
   Trash2,
   Eraser,
   Stethoscope,
+  Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1385,6 +1386,9 @@ function RuntimeFailureBanner({
                   Reveal Model Folder
                 </Button>
               )}
+            {failure?.recoveryActions?.includes("reinstall-runtime") && (
+              <ReinstallRuntimeButton disabled={disabled} />
+            )}
           </div>
           {technical && (
             <TechnicalDetails tone="danger">{technical}</TechnicalDetails>
@@ -1396,11 +1400,47 @@ function RuntimeFailureBanner({
 }
 
 /**
- * Format a millisecond duration as a compact "Xs" / "X.Ys" / "Xm Ys"
- * label.  Used by both the live elapsed badge in the phase trail and
- * the "stuck for …" line in the failure banner — kept in one place so
- * the two surfaces never disagree.
+ * Self-contained "Repair Runtime" button that calls ipc.reinstallRuntime().
+ * Rendered by RuntimeFailureBanner when recoveryActions includes
+ * "reinstall-runtime".  Kept as a separate component so it can manage its own
+ * loading state without re-rendering the whole banner on each click.
  */
+function ReinstallRuntimeButton({ disabled }: { disabled: boolean }) {
+  const [repairing, setRepairing] = useState(false);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={disabled || repairing}
+      onClick={async () => {
+        setRepairing(true);
+        try {
+          const result = await ipc.reinstallRuntime();
+          if (result.ok) {
+            toast.success("Runtime reinstalled — you can now retry.");
+          } else {
+            toast.error(result.error ?? "Runtime reinstall failed");
+          }
+        } catch (err) {
+          toast.error(
+            err instanceof Error ? err.message : "Runtime reinstall failed",
+          );
+        } finally {
+          setRepairing(false);
+        }
+      }}
+    >
+      {repairing ? (
+        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Wrench className="mr-1 h-3.5 w-3.5" />
+      )}
+      Repair Runtime
+    </Button>
+  );
+}
+
+
 function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   const totalSeconds = ms / 1000;

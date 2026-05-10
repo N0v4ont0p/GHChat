@@ -1257,4 +1257,11 @@ export const IPC = {
    * `{ ok: boolean; freedBytes: number; error?: string }`.
    */
   OFFLINE_CLEAR_CACHE: "offline:clear-cache",
+  /**
+   * Reinstall the offline runtime (llama-server binary + required .dylib
+   * files on macOS) without touching installed models.  Use this to repair
+   * an incomplete runtime installation.
+   * Returns `{ ok: boolean; error?: string }`.
+   */
+  OFFLINE_REINSTALL_RUNTIME: "offline:reinstall-runtime",
 } as const;

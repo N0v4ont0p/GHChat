@@ -1493,6 +1493,29 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
   );
 
   ipcMain.handle(
+    IPC.OFFLINE_REINSTALL_RUNTIME,
+    async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        // Stop the running runtime first so the binary is not locked
+        // (important on Windows) and the process doesn't use stale dylibs
+        // while files are being replaced.
+        await runtimeManager.stop();
+        await installManager.installRuntimeOnly();
+        // Broadcast updated state so the runtime status badge reflects the
+        // repaired installation immediately.
+        broadcastRuntimeState(computeOfflineRuntimeState());
+        return { ok: true };
+      } catch (err) {
+        console.error("[offline] reinstall-runtime failed:", err);
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
     IPC.OFFLINE_REVEAL_MODEL_FOLDER,
     async (_event, modelId: string): Promise<void> => {
       // When the model file exists, show it selected in the OS file
