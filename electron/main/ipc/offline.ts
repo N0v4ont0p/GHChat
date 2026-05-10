@@ -39,6 +39,9 @@ import { formatErrorChain } from "../services/offline/runtime-catalog";
 import {
   RuntimeReleaseInstallError,
   AssetDownloadInstallError,
+  validateMacRuntimeDependencies,
+  listRuntimeDirContents,
+  readRuntimeMeta,
 } from "../services/offline/install-manager";
 import type { ChatMessage } from "../services/offline/runtime-manager";
 import * as os from "os";
@@ -1413,6 +1416,36 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
           return false;
         }
       };
+      const runtimeDir = storageService.getSubdir("runtime");
+      const runtimeDirExists = (() => {
+        try {
+          return existsSync(runtimeDir) && statSync(runtimeDir).isDirectory();
+        } catch {
+          return false;
+        }
+      })();
+      const runtimeDirContents = runtimeDirExists ? listRuntimeDirContents(runtimeDir) : null;
+      const runtimeAsset = runtimeDirExists ? readRuntimeMeta(runtimeDir) : null;
+      // Skip the otool check on non-darwin (helper returns ok:true with
+      // otoolAvailable:false, but the diagnostics field is more useful
+      // as `null` in that case so the UI doesn't render an empty section).
+      let runtimeDependencyCheck: OfflineRuntimeDiagnostics["runtimeDependencyCheck"] = null;
+      if (process.platform === "darwin" && runtimeDirExists) {
+        try {
+          const dep = await validateMacRuntimeDependencies(runtimeDir);
+          runtimeDependencyCheck = {
+            ok: dep.ok,
+            missing: dep.missing,
+            rpathDeps: dep.rpathDeps,
+            otoolAvailable: dep.otoolAvailable,
+          };
+        } catch (err) {
+          // Defensive — we don't want a diagnostics fetch to ever throw.
+          console.warn(
+            `[ipc/offline] dependency check failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       return {
         runtimeState: computeOfflineRuntimeState(),
         isRuntimeRunning: diag.isRunning,
@@ -1436,6 +1469,9 @@ export function registerOfflineHandlers(ipcMain: IpcMain): void {
         runtimeLogPath,
         runtimeLogExists,
         startupStats: runtimeManager.getStartupStats(diag.currentModelId ?? diag.modelId),
+        runtimeDirContents,
+        runtimeDependencyCheck,
+        runtimeAsset,
       };
     },
   );

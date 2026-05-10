@@ -15,6 +15,7 @@ import { dirname, extname, join } from "path";
 import { modelRegistry } from "./model-registry";
 import { resolveRuntimeBinaryPath } from "./runtime-catalog";
 import { storageService } from "./storage";
+import { findMissingMacRuntimeDylibs } from "./install-manager";
 import { touchOfflineModelLastUsed } from "../database";
 
 // ── Port utilities ────────────────────────────────────────────────────────────
@@ -375,32 +376,37 @@ function validateLaunchPreconditions(modelId: string): LaunchPreconditionResult 
     };
   }
 
-  // 8.5. On macOS, verify that required dynamic libraries (.dylib files) are
-  //      present alongside the binary.  llama.cpp ships as a set of
-  //      dynamically-linked files; if the runtime was installed by an older
-  //      version of this app (which only copied the binary), dyld will abort
-  //      immediately with SIGABRT / "Library not loaded: @rpath/…" before
-  //      the HTTP server can start.  Detecting this before spawn surfaces a
-  //      clear "Repair Runtime" action instead of a cryptic exit-with-signal
-  //      failure message 180 seconds later.
+  // 8.5. On macOS, verify that every required dynamic library
+  //      (`@rpath/*.dylib` symlink target) is present alongside the
+  //      binary.  llama.cpp ships as a set of dynamically-linked files
+  //      where each linkable name (e.g. `libllama-common.0.dylib`) is
+  //      itself a symlink to the versioned real file.  If the install /
+  //      copy step dropped the symlinks (the legacy bug this guard
+  //      catches) dyld will abort immediately with SIGABRT /
+  //      "Library not loaded: @rpath/…" before the HTTP server can
+  //      start.  Detecting this before spawn surfaces a clear "Repair
+  //      Runtime" action — including the MISSING DYLIB NAMES — instead
+  //      of a cryptic exit-with-signal failure 180 seconds later.
   if (process.platform === "darwin") {
     const runtimeDir = dirname(binaryPath);
-    let hasDylibs = false;
-    try {
-      const entries = readdirSync(runtimeDir);
-      hasDylibs = entries.some((e) => e.endsWith(".dylib"));
-    } catch {
-      // Directory unreadable — let the process surface the real error.
-      hasDylibs = true;
-    }
-    if (!hasDylibs) {
+    const missing = findMissingMacRuntimeDylibs(runtimeDir);
+    if (missing.length > 0) {
+      let dirContents = "";
+      try {
+        dirContents = readdirSync(runtimeDir).sort().join(", ");
+      } catch {
+        dirContents = "<unreadable>";
+      }
       return {
         ok: false,
         phase: "checking-binary",
         kind: "missing-file",
         message:
-          `The offline runtime is missing required dynamic libraries (.dylib files) ` +
-          `in ${runtimeDir}. ` +
+          `Runtime dependency missing — the offline runtime is missing ` +
+          `${missing.length} required dynamic ${missing.length === 1 ? "library" : "libraries"} ` +
+          `on macOS: ${missing.join(", ")}. ` +
+          `Expected in ${runtimeDir}. ` +
+          `Actual contents: ${dirContents}. ` +
           `The runtime installation is incomplete — use "Repair Runtime" to reinstall it.`,
         recoveryActions: ["reinstall-runtime"],
         modelPath,
