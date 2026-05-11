@@ -1858,22 +1858,82 @@ export const runtimeManager = {
     // sane fallback so direct callers are still safe.
     const maxTokens = gen.maxTokens ?? 1024;
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "local",
-        messages,
-        stream: true,
-        temperature: gen.temperature ?? 0.7,
-        top_p: gen.topP ?? 0.9,
-        // -1 means "no cap" for llama.cpp.  Any positive value is honored
-        // so the server stops generating after N tokens — critical for
-        // killing runaway generations on low-end hardware.
-        max_tokens: maxTokens,
-      }),
-      signal,
+    // llama-server can briefly return 503 or refuse connections immediately
+    // after its /health endpoint flips to 200 — the model is loaded but the
+    // completions slot may not be fully initialised on the very first cold-
+    // start request.  Retry up to 3 times with a short delay for transient
+    // 5xx responses and network-level errors; 4xx errors (bad request) are
+    // not retried because the payload won't change.
+    const MAX_COMPLETION_RETRIES = 3;
+    const COMPLETION_RETRY_DELAY_MS = 500;
+
+    const requestBody = JSON.stringify({
+      model: "local",
+      messages,
+      stream: true,
+      temperature: gen.temperature ?? 0.7,
+      top_p: gen.topP ?? 0.9,
+      // -1 means "no cap" for llama.cpp.  Any positive value is honored
+      // so the server stops generating after N tokens — critical for
+      // killing runaway generations on low-end hardware.
+      max_tokens: maxTokens,
     });
+
+    let response: Response | undefined;
+    let lastFetchError: unknown;
+
+    for (let attempt = 0; attempt < MAX_COMPLETION_RETRIES; attempt++) {
+      if (signal?.aborted) return;
+
+      if (attempt > 0) {
+        // Brief back-off before the retry; respect cancellation.
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, COMPLETION_RETRY_DELAY_MS);
+          signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+        });
+        if (signal?.aborted) return;
+
+        // Verify the server is still up before retrying.
+        if (_port === null) {
+          throw new Error("[runtimeManager] server stopped during completion retry");
+        }
+      }
+
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestBody,
+          signal,
+        });
+        lastFetchError = undefined;
+
+        // 4xx means the request itself is bad — retrying the same payload
+        // won't help, so bail out immediately.
+        if (response.status >= 400 && response.status < 500) break;
+
+        // 2xx / 3xx: success (or redirect — treat as success and let the
+        // !response.ok check below surface any unexpected 3xx).
+        if (response.ok) break;
+
+        // 5xx (including 503 "not ready"): transient server-side error —
+        // retry if we have attempts left.
+        lastFetchError = new Error(`HTTP ${response.status}`);
+        if (attempt < MAX_COMPLETION_RETRIES - 1) {
+          response = undefined;
+        }
+      } catch (err) {
+        if ((err as { name?: string }).name === "AbortError") return;
+        lastFetchError = err;
+        if (attempt >= MAX_COMPLETION_RETRIES - 1) throw err;
+        response = undefined;
+      }
+    }
+
+    if (!response) {
+      if (lastFetchError instanceof Error) throw lastFetchError;
+      throw new Error("[runtimeManager] completion request failed after retries");
+    }
 
     if (!response.ok) {
       const body = await response.text().catch(() => "(no body)");
