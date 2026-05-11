@@ -1374,7 +1374,6 @@ export const runtimeManager = {
         "--ctx-size", String(ctxSize),
         "--n-predict", "-1",
         "--threads", String(threads),
-        "--no-display-prompt",
         "--log-disable",
       ];
 
